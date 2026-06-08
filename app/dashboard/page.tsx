@@ -1,0 +1,204 @@
+"use client";
+import { useState } from "react";
+import CreatorSubNav from "@/components/shell/CreatorSubNav";
+import Link from "next/link";
+
+type Project = {
+  name: string; type: string; a: string; b: string;
+  status: string; statusClass: string; version: string;
+  plays: string; revenue: string; rating: string;
+};
+
+const projects: Project[] = [
+  { name: "Hollow Tide",        type: "Base game · WebGL",      a: "#2a6aa0", b: "#7d4bd0", status: "Live",               statusClass: "badge-green", version: "v1.4.2", plays: "84.2k",   revenue: "$42.1k", rating: "4.7" },
+  { name: "Deeptide Expansion", type: "DLC · Hollow Tide",      a: "#3a3a6a", b: "#7d4bd0", status: "In review",          statusClass: "badge-info",  version: "v0.9",   plays: "—",       revenue: "—",      rating: "—"   },
+  { name: "Saltmarsh Nights",   type: "Co-op · WebGL",          a: "#3a6a8a", b: "#2a9a8a", status: "Draft",              statusClass: "badge-dim",   version: "v0.3",   plays: "—",       revenue: "—",      rating: "—"   },
+  { name: "Lantern Arcade",     type: "Mini-games",              a: "#e0823a", b: "#c43a6a", status: "Changes requested",  statusClass: "badge-warn",  version: "v1.0",   plays: "—",       revenue: "—",      rating: "—"   },
+  { name: "Tideglass (proto)",  type: "Weave Forge project",     a: "#1f9d8a", b: "#2c5fb0", status: "Draft",              statusClass: "badge-dim",   version: "—",      plays: "—",       revenue: "—",      rating: "—"   },
+];
+
+const filters = ["All", "Live", "In review", "Drafts"];
+
+const feed = [
+  { color: "#7bc24a", text: "Payout of <b>$2,141.80</b> sent to Stripe",                 time: "2 days ago" },
+  { color: "#56a6e8", text: "<b>Deeptide Expansion</b> submitted for review",             time: "2 days ago" },
+  { color: "#e8a93a", text: "<b>Lantern Arcade</b> — reviewer requested new capsule art", time: "4 days ago" },
+  { color: "#7bc24a", text: "<b>Hollow Tide</b> patch 1.4.2 approved & live",            time: "3 days ago" },
+  { color: "#56a6e8", text: "New 5★ review on <b>Hollow Tide</b> from @pixel_wren",      time: "5 days ago" },
+];
+
+function GradArt({ a, b, className = "" }: { a: string; b: string; className?: string }) {
+  return (
+    <div className={`relative overflow-hidden ${className}`} style={{ background: `linear-gradient(140deg, ${a}, ${b})` }}>
+      <div className="absolute inset-0" style={{ background: "radial-gradient(70% 60% at 26% 16%, rgba(255,255,255,.26), transparent 60%)" }} />
+      <div className="absolute inset-0 opacity-[.10] mix-blend-overlay" style={{ backgroundImage: "repeating-linear-gradient(135deg,#fff 0 2px,transparent 2px 9px)" }} />
+    </div>
+  );
+}
+
+export default function DashboardPage() {
+  const [activeFilter, setActiveFilter] = useState("All");
+
+  const filtered = projects.filter(p => {
+    if (activeFilter === "All")       return true;
+    if (activeFilter === "Live")      return p.status === "Live";
+    if (activeFilter === "In review") return p.status === "In review";
+    if (activeFilter === "Drafts")    return p.status === "Draft" || p.status === "Changes requested";
+    return true;
+  });
+
+  return (
+    <>
+      <CreatorSubNav />
+      <div className="max-w-[1440px] mx-auto px-12 pt-6 pb-16">
+        {/* Header */}
+        <div className="flex items-end justify-between gap-6 mb-5">
+          <div className="flex items-center gap-3.5">
+            <GradArt a="#2a6aa0" b="#7d4bd0" className="w-[52px] h-[52px] rounded-[13px] shrink-0" />
+            <div>
+              <h1 className="text-[27px] font-extrabold tracking-[-0.02em]">Developer Dashboard</h1>
+              <div className="flex items-center gap-2 text-[13.5px] text-muted mt-0.5">
+                Lantern Few
+                <span className="text-[11px] font-bold px-2 py-0.5 rounded-full uppercase tracking-[.04em]"
+                  style={{ background: "rgba(123,194,74,.16)", color: "#a6e06a" }}>Verified creator</span>
+                · 88% revenue share · payouts via <strong style={{ color: "#9aa8ff" }}>stripe</strong>
+              </div>
+            </div>
+          </div>
+          <div className="flex gap-2.5">
+            <Link href="/engines-sdk" className="px-5 py-2.5 rounded-[9px] font-bold text-[14px] bg-panel2 border border-line text-ink no-underline">Open Weave Forge</Link>
+            <Link href="/upload" className="px-5 py-2.5 rounded-[9px] font-bold text-[14px] no-underline"
+              style={{ background: "linear-gradient(180deg, #56a6e8, #2c6aa0)", color: "#06121d" }}>＋ Upload a game</Link>
+          </div>
+        </div>
+
+        {/* Stats */}
+        <div className="grid grid-cols-4 gap-4 mb-6">
+          {[
+            { label: "Revenue · 30 days", value: "$8,420",  delta: "▲ 12.4% vs. prior 30d" },
+            { label: "Players · 30 days", value: "61.3k",   delta: "▲ 8.1% · 4.2k playing now" },
+            { label: "Published games",   value: "3",        delta: "2 in progress · 1 in review" },
+            { label: "Next payout",       value: "$2,107",   delta: "Jun 15 · Stripe ····4291" },
+          ].map(s => (
+            <div key={s.label} className="bg-panel border border-line rounded-[10px] px-5 py-4.5">
+              <p className="text-[12px] font-bold tracking-[.08em] uppercase text-muted">{s.label}</p>
+              <p className="text-[30px] font-extrabold tracking-[-0.02em] mt-2">{s.value}</p>
+              <p className="text-[12.5px] text-dim mt-1 flex items-center gap-1.5">
+                {s.delta.startsWith("▲") ? (
+                  <><span className="text-[#a6e06a] font-bold">{s.delta.split(" ")[0]}</span> {s.delta.slice(2)}</>
+                ) : s.delta}
+              </p>
+            </div>
+          ))}
+        </div>
+
+        <div className="grid gap-6 items-start" style={{ gridTemplateColumns: "1fr 340px" }}>
+          {/* Projects table */}
+          <div className="bg-panel border border-line rounded-[10px]">
+            <div className="flex items-center px-6 py-4 border-b border-line font-bold text-[15px]">
+              Your projects
+              <span className="ml-2 text-[11px] font-bold px-2 py-0.5 rounded-full uppercase tracking-[.04em]"
+                style={{ background: "rgba(255,255,255,.06)", color: "#8aa0b4" }}>{filtered.length}</span>
+              <div className="flex gap-2 ml-auto">
+                {filters.map(f => {
+                  const on = activeFilter === f;
+                  return (
+                    <button key={f} onClick={() => setActiveFilter(f)}
+                      className="text-[12.5px] px-3 py-1.5 rounded-full border cursor-pointer transition-all"
+                      style={{ background: on ? "rgba(86,166,232,.14)" : "#1b2836", borderColor: on ? "#56a6e8" : "#26384a", color: on ? "#cfe6fb" : "#e7eef4" }}>
+                      {f}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Table head */}
+            <div className="grid px-4.5 py-3 text-[11px] font-bold tracking-[.08em] uppercase text-dim border-b border-line"
+              style={{ gridTemplateColumns: "1fr 132px 88px 98px 70px 40px" }}>
+              <div>Game</div><div>Status</div><div>Plays</div><div>Revenue</div><div>Rating</div><div />
+            </div>
+
+            {/* Rows */}
+            {filtered.map(p => (
+              <div key={p.name}
+                className="grid items-center px-4.5 py-3.5 border-b border-line last:border-none cursor-pointer hover:bg-white/[.025] transition-colors gap-3"
+                style={{ gridTemplateColumns: "1fr 132px 88px 98px 70px 40px" }}>
+                <div className="flex items-center gap-3 min-w-0">
+                  <GradArt a={p.a} b={p.b} className="w-[62px] h-10 rounded-[7px] shrink-0" />
+                  <div className="min-w-0">
+                    <div className="font-bold text-[14.5px] truncate">{p.name}</div>
+                    <div className="text-[11.5px] text-dim mt-0.5">{p.type} · {p.version}</div>
+                  </div>
+                </div>
+                <div>
+                  <span className={`text-[11px] font-bold px-2 py-1 rounded-full uppercase tracking-[.04em] ${
+                    p.statusClass === "badge-green" ? "bg-[rgba(123,194,74,.16)] text-[#a6e06a]" :
+                    p.statusClass === "badge-info"  ? "bg-[rgba(86,166,232,.14)] text-[#8fc6f0]" :
+                    p.statusClass === "badge-warn"  ? "bg-[rgba(232,169,58,.16)] text-[#f0c66a]" :
+                    "bg-[rgba(255,255,255,.06)] text-[#8aa0b4]"}`}>
+                    {p.status}
+                  </span>
+                </div>
+                <div className={`font-bold text-[14px] ${p.plays === "—" ? "text-dim" : ""}`}>{p.plays}</div>
+                <div className={`font-bold text-[14px] ${p.revenue === "—" ? "text-dim" : ""}`}>{p.revenue}</div>
+                <div className={p.rating === "—" ? "font-bold text-[14px] text-dim" : "font-bold text-[14px] text-[#f0c66a]"}>
+                  {p.rating === "—" ? "—" : `★ ${p.rating}`}
+                </div>
+                <div className="text-right text-dim font-bold">›</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Sidebar */}
+          <aside className="sticky top-4 flex flex-col gap-4">
+            {/* Payout */}
+            <div className="bg-panel border border-line rounded-[10px] p-5">
+              <p className="text-[12.5px] font-bold tracking-[.12em] uppercase text-muted mb-2">Next payout</p>
+              <div className="text-[32px] font-extrabold tracking-[-0.02em]">$2,107.40</div>
+              <div className="text-[12.5px] text-dim mt-0.5">Scheduled Jun 15 · then twice monthly</div>
+              <div className="flex justify-between text-[14px] mt-3 py-1.5"><span className="text-muted">This month so far</span><span className="font-semibold">$8,420.16</span></div>
+              <div className="flex justify-between text-[14px] py-1.5"><span className="text-muted">Lifetime payouts</span><span className="font-semibold">$214,880</span></div>
+              <div className="flex items-center gap-2 text-[12.5px] text-muted mt-3.5 pt-3.5 border-t border-line">
+                🔒 Connected · <strong style={{ color: "#9aa8ff" }}>stripe</strong> ····4291
+                <a className="text-accent font-semibold ml-auto cursor-pointer">Manage</a>
+              </div>
+            </div>
+
+            {/* Apply card */}
+            <div className="border border-line rounded-[10px] p-5"
+              style={{ background: "linear-gradient(155deg, #1b2836, #16202c)" }}>
+              <div className="font-extrabold text-[16px] tracking-[-0.01em]">New here? Apply to publish</div>
+              <p className="text-[12.5px] text-muted mt-1.5 mb-3.5 leading-relaxed">Bringing another studio or your first game to Woven? Get a creator account — free to list, 88% to you.</p>
+              <Link href="/creator-signup"
+                className="flex items-center justify-center w-full py-2.5 rounded-[9px] font-bold text-[14px] no-underline mb-2.5"
+                style={{ background: "linear-gradient(180deg, #56a6e8, #2c6aa0)", color: "#06121d" }}>
+                Apply to be a creator
+              </Link>
+              <Link href="/upload"
+                className="flex items-center justify-center w-full py-2.5 rounded-[9px] font-bold text-[14px] no-underline bg-transparent border border-line text-ink">
+                Upload a game build
+              </Link>
+            </div>
+
+            {/* Activity feed */}
+            <div className="bg-panel border border-line rounded-[10px]">
+              <div className="px-6 py-4 border-b border-line font-bold text-[15px]">Recent activity</div>
+              <div className="px-6 pt-1.5 pb-4">
+                {feed.map((f, i) => (
+                  <div key={i} className="flex gap-2.5 py-2.5 border-b border-line last:border-none text-[12.5px]">
+                    <span className="w-2 h-2 rounded-full mt-1.5 shrink-0" style={{ background: f.color }} />
+                    <div>
+                      <div className="text-ink" dangerouslySetInnerHTML={{ __html: f.text }} />
+                      <div className="text-[11.5px] text-dim mt-0.5">{f.time}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </>
+  );
+}

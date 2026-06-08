@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { useClerk } from "@clerk/nextjs";
+import { useClerk, SignIn } from "@clerk/nextjs";
 import Link from "next/link";
 
 function LogoMark() {
@@ -131,21 +131,32 @@ export default function SignInPage() {
                 ))}
               </div>
 
-              {/* OAuth */}
-              <div className="flex flex-col gap-2.5">
-                {[
-                  { provider: "oauth_google" as const,  glyph: "G",  bg: "#fff",    color: "#444",    label: "Continue with Google"  },
-                  { provider: "oauth_apple" as const,   glyph: "",  bg: "#000",    color: "#fff",    label: "Continue with Apple"   },
-                  { provider: "oauth_discord" as const, glyph: "◗",  bg: "#5865f2", color: "#fff",    label: "Continue with Discord" },
-                ].map(o => (
-                  <button key={o.provider} onClick={() => handleOAuth(o.provider)}
-                    className="flex items-center justify-center gap-2.5 py-3 border border-line rounded-[9px] bg-panel2 font-bold text-[13.5px] cursor-pointer hover:brightness-110 transition-all w-full">
-                    <span className="w-[18px] h-[18px] rounded-md flex items-center justify-center text-[12px] font-extrabold"
-                      style={{ background: o.bg, color: o.color }}>{o.glyph}</span>
-                    {o.label}
-                  </button>
-                ))}
-              </div>
+              {/* OAuth — use Clerk's component so Google/Apple/Discord actually work */}
+              <SignIn
+                appearance={{
+                  elements: {
+                    rootBox: "w-full",
+                    card: "bg-transparent shadow-none border-none p-0",
+                    header: "hidden",
+                    footer: "hidden",
+                    formContainer: "hidden",
+                    dividerRow: "hidden",
+                    socialButtons: "w-full",
+                    socialButtonsBlockButton: "bg-panel2 border border-line text-ink hover:brightness-110 rounded-[9px] font-bold text-[13.5px] w-full",
+                    socialButtonsBlockButtonText: "text-ink font-bold",
+                    socialButtonsBlockButtonArrow: "hidden",
+                    internal: "bg-transparent",
+                    main: "w-full",
+                  },
+                  variables: {
+                    colorBackground: "transparent",
+                    colorText: "#e7eef4",
+                    colorPrimary: "#56a6e8",
+                    borderRadius: "9px",
+                    fontFamily: "Inter, sans-serif",
+                  },
+                }}
+              />
 
               <div className="flex items-center gap-3 text-dim text-[12px] my-4.5">
                 <span className="flex-1 h-px bg-line" />or with email<span className="flex-1 h-px bg-line" />

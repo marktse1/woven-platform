@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
-import { getSupabaseClient } from "@/lib/supabase";
+import { getSupabaseClient, getSupabaseEnvStatus } from "@/lib/supabase";
 
 type ToolRow = {
   id: string;
@@ -76,8 +76,13 @@ export default function ForgeClient() {
 
       const supabase = getSupabaseClient();
       if (!supabase) {
+        const env = getSupabaseEnvStatus();
         setAccessState("error");
-        setMessage("Missing Supabase environment variables.");
+        setMessage(
+          env.missing.length
+            ? `Missing Supabase env vars: ${env.missing.join(", ")}.`
+            : "Supabase client could not initialize. Check the Woven Vercel env vars."
+        );
         setLoading(false);
         return;
       }

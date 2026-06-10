@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useUser } from "@clerk/nextjs";
-import { getSupabaseClient } from "@/lib/supabase";
+import { getSupabaseClient, getSupabaseEnvStatus } from "@/lib/supabase";
 
 type CreatorProfile = {
   id: string;
@@ -147,7 +147,12 @@ export default function AdminReviewPage() {
       const supabase = getSupabaseClient();
       if (!supabase) {
         if (active) {
-          setError("Missing Supabase environment variables.");
+          const env = getSupabaseEnvStatus();
+          setError(
+            env.missing.length
+              ? `Missing Supabase env vars: ${env.missing.join(", ")}.`
+              : "Supabase client could not initialize. Check the Woven Vercel env vars."
+          );
           setLoading(false);
         }
         return;
@@ -216,7 +221,12 @@ export default function AdminReviewPage() {
     if (!selected) return;
     const supabase = getSupabaseClient();
     if (!supabase) {
-      setError("Missing Supabase environment variables.");
+      const env = getSupabaseEnvStatus();
+      setError(
+        env.missing.length
+          ? `Missing Supabase env vars: ${env.missing.join(", ")}.`
+          : "Supabase client could not initialize. Check the Woven Vercel env vars."
+      );
       return;
     }
 

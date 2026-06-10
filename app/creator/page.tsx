@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
 import CreatorSubNav from "@/components/shell/CreatorSubNav";
-import { getSupabaseClient } from "@/lib/supabase";
+import { getSupabaseClient, getSupabaseEnvStatus } from "@/lib/supabase";
 
 const engineOptions = [
   { label: "Babylon.js", dot: "#bb464b" },
@@ -99,8 +99,13 @@ export default function BecomeCreatorPage() {
 
     const supabase = getSupabaseClient();
     if (!supabase) {
+      const env = getSupabaseEnvStatus();
       setState("error");
-      setMessage("Missing Supabase environment variables.");
+      setMessage(
+        env.missing.length
+          ? `Missing Supabase env vars: ${env.missing.join(", ")}.`
+          : "Supabase client could not initialize. Check the Woven Vercel env vars."
+      );
       return;
     }
 

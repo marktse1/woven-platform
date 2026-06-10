@@ -25,7 +25,16 @@ export function getSupabaseClient() {
   return browserSupabase;
 }
 
-export const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+// Lazy proxy — defers createClient until first use so the module can be
+// imported at build time before env vars are available.
+export const supabase = new Proxy(
+  {} as NonNullable<ReturnType<typeof getSupabaseClient>>,
+  {
+    get(_, prop) {
+      const client = getSupabaseClient();
+      if (!client) throw new Error("Supabase env vars not configured");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (client as any)[prop];
+    },
+  }
 );

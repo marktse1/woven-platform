@@ -226,6 +226,15 @@ function Step2() {
             <div className="h-24 rounded-lg border border-dashed border-line2 flex items-center justify-center text-dim text-[12px] cursor-pointer">+ add</div>
           </div>
         </div>
+        <div className="bg-panel border border-line rounded-[10px] p-6">
+          <SectionLabel>Gameplay trailer</SectionLabel>
+          <div className="h-[110px] rounded-lg border border-dashed border-line2 flex items-center justify-center text-dim text-[12px] cursor-pointer mb-3">
+            <span className="font-mono text-[12px] text-white/85 bg-black/35 px-2.5 py-1.5 rounded-[7px]">drop video file · mp4 / webm</span>
+          </div>
+          <p className="text-[11.5px] text-dim mb-2">Or paste a YouTube / Vimeo URL:</p>
+          <input className={inputCls()} placeholder="https://youtube.com/watch?v=…" />
+          <p className="text-[11.5px] text-dim mt-2">Shown at the top of your store page. 16:9, max 3 min.</p>
+        </div>
       </div>
     </div>
   );

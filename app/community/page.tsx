@@ -1,11 +1,13 @@
 "use client";
 import { useState, useEffect } from "react";
+import { useUser } from "@clerk/nextjs";
 import CommunitySubNav from "@/components/shell/CommunitySubNav";
+import { supabase } from "@/lib/supabase";
 
 const hubs = ["Hollow Tide", "Mossglow", "Weave Forge", "Tin Can Kingdom", "Foxfire Relay", "Help & Support", "Off-topic", "Multiplayer"];
 const threadCategories = ["Help & Support", "Builds & Showcase", "Bug Reports", "Off-topic", "Multiplayer", "Weave Forge"];
 
-function NewThreadModal({ onClose, onPost }: { onClose: () => void; onPost: (t: Thread) => void }) {
+function NewThreadModal({ onClose, onPost, authorName }: { onClose: () => void; onPost: (t: Thread) => void; authorName: string }) {
   const [title, setTitle]     = useState("");
   const [body, setBody]       = useState("");
   const [hub, setHub]         = useState(hubs[0]);
@@ -23,8 +25,9 @@ function NewThreadModal({ onClose, onPost }: { onClose: () => void; onPost: (t: 
       tags: [],
       title: title.trim(),
       excerpt: body.trim(),
-      author: "maya_b",
+      author: authorName,
       hub,
+      category,
       hubColors: ["#56a6e8", "#2c6aa0"],
       votes: 0,
       replies: 0,
@@ -100,11 +103,13 @@ function NewThreadModal({ onClose, onPost }: { onClose: () => void; onPost: (t: 
 type Tag = "pin" | "dev" | "solved" | "help" | "showcase";
 
 type Thread = {
+  id?: string;
   tags: Tag[];
   title: string;
   excerpt: string;
   author: string;
   hub: string;
+  category: string;
   hubColors: [string, string];
   votes: number;
   replies: number;
@@ -112,16 +117,43 @@ type Thread = {
   pinned: boolean;
 };
 
-const threads: Thread[] = [
-  { tags: ["pin", "dev"], title: "Patch 1.4.2 is live — The Lantern Update changelog & known issues", excerpt: "Free-diving, a reworked trench map, and three new ambient tracks. Drop bug reports in this thread and we'll triage daily this week. Thanks for an incredible launch month, divers.", author: "lanternfew", hub: "Hollow Tide",   hubColors: ["#2a6aa0","#7d4bd0"], votes: 214, replies: 86, time: "12 min ago",  pinned: true  },
-  { tags: ["solved"],     title: "How do you reach the Tideglass vista before the storm timer?",         excerpt: "Been stuck for an hour — the current keeps pushing me back at the second arch. Is there a dive route I'm missing or do I need the Deeptide lantern first?",                      author: "pixel_wren",  hub: "Hollow Tide",   hubColors: ["#2a6aa0","#7d4bd0"], votes: 58,  replies: 23, time: "40 min ago",  pinned: false },
-  { tags: ["dev"],        title: "Weave Forge: weather layers now stack — show me your skies ☁️",        excerpt: "Shipped stacked weather volumes in today's Forge build. Fog + rain + godrays compose properly now. Post your wildest skybox combos and I'll feature a few on the homepage.",     author: "maya_b",      hub: "Weave Forge",   hubColors: ["#56a6e8","#2c6aa0"], votes: 141, replies: 52, time: "1 hr ago",    pinned: false },
-  { tags: [],             title: "[Build log] Procedural tin-can cities in Tin Can Kingdom — 3 weeks in",excerpt: "Sharing my approach to wave-function-collapse district generation, the perf traps I hit on WebGL, and how the SDK cloud saves keep 12k tiles in sync across sessions.",         author: "brassworks",  hub: "Tin Can Kingdom",hubColors: ["#b8923a","#7a4a2a"],votes: 97,  replies: 31, time: "2 hrs ago",   pinned: false },
-  { tags: ["help"],       title: "Multiplayer rooms dropping after ~8 players — relay or my netcode?",   excerpt: "WebRTC mesh holds fine up to 7 then peers start timing out. Is this the relay fallback kicking in, and is there an SDK flag to force TURN earlier? Repro project linked.",     author: "deepfen",     hub: "Multiplayer",   hubColors: ["#1f9d8a","#2c5fb0"], votes: 73,  replies: 40, time: "3 hrs ago",   pinned: false },
-  { tags: ["showcase"],   title: "Mossglow hit 10k players this week — thank you 🌿",                   excerpt: "Tiny two-person team here. We never expected the cozy puzzle crowd to find us like this. Here's what worked: a free first chapter, a Forge level editor, and you all.",           author: "fernlight",   hub: "Mossglow",      hubColors: ["#3a8f5a","#216b7a"], votes: 268, replies: 64, time: "5 hrs ago",   pinned: false },
-  { tags: ["solved"],     title: "Cloud save conflict between desktop install and browser play — fix",    excerpt: "Posting the resolution in case anyone else hits it: the &apos;keep newest&apos; prompt was being skipped on autosave. Force a manual sync from Library → Cloud Saves once and it clears.", author: "orrin_q",     hub: "Help & Support",hubColors: ["#56a6e8","#2c6aa0"], votes: 45,  replies: 12, time: "7 hrs ago",   pinned: false },
-  { tags: [],             title: "Best engine for a first browser game in 2026? (three.js vs PlayCanvas)",excerpt: "Coming from native Unity. Want fast iteration and the Woven SDK to just work. Leaning three.js for control but the PlayCanvas editor looks unbeatable for a solo dev.",          author: "newdrifter",  hub: "Off-topic",     hubColors: ["#6a4bd0","#b03a8a"], votes: 62,  replies: 77, time: "9 hrs ago",   pinned: false },
-];
+const hubColorMap: Record<string, [string, string]> = {
+  "Hollow Tide":    ["#2a6aa0", "#7d4bd0"],
+  "Mossglow":       ["#3a8f5a", "#216b7a"],
+  "Weave Forge":    ["#56a6e8", "#2c6aa0"],
+  "Tin Can Kingdom":["#b8923a", "#7a4a2a"],
+  "Foxfire Relay":  ["#d0552a", "#9a2a4a"],
+  "Help & Support": ["#56a6e8", "#2c6aa0"],
+  "Off-topic":      ["#6a4bd0", "#b03a8a"],
+  "Multiplayer":    ["#1f9d8a", "#2c5fb0"],
+};
+
+function relativeTime(iso: string) {
+  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1)   return "just now";
+  if (mins < 60)  return `${mins} min ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24)   return `${hrs} hr${hrs === 1 ? "" : "s"} ago`;
+  return `${Math.floor(hrs / 24)} days ago`;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function rowToThread(row: any): Thread {
+  return {
+    id: row.id,
+    title: row.title,
+    excerpt: row.excerpt,
+    author: row.author,
+    hub: row.hub,
+    category: row.category ?? "Off-topic",
+    hubColors: hubColorMap[row.hub] ?? ["#56a6e8", "#2c6aa0"],
+    tags: row.tags ?? [],
+    votes: row.votes,
+    replies: row.replies,
+    pinned: row.pinned,
+    time: relativeTime(row.created_at),
+  };
+}
 
 const tagBadge: Record<Tag, { cls: string; label: string }> = {
   pin:      { cls: "bg-[rgba(232,169,58,.16)] text-[#f0c66a]",         label: "📌 Pinned"   },
@@ -178,16 +210,68 @@ function ThreadVotes({ initial }: { initial: number }) {
 }
 
 export default function CommunityPage() {
+  const { user } = useUser();
+  const authorName = user?.username ?? user?.firstName ?? "anon";
+
   const [activeCategory, setActiveCategory] = useState("All");
   const [activeSort, setActiveSort] = useState("🔥 Hot");
   const [showModal, setShowModal] = useState(false);
-  const [threadList, setThreadList] = useState<Thread[]>(threads);
+  const [threadList, setThreadList] = useState<Thread[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState("");
 
-  const handlePost = (t: Thread) => setThreadList(prev => [t, ...prev]);
+  useEffect(() => {
+    supabase
+      .from("threads")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .then(({ data }) => {
+        if (data) setThreadList(data.map(rowToThread));
+        setLoading(false);
+      });
+  }, []);
+
+  const handlePost = async (t: Thread) => {
+    const { data } = await supabase
+      .from("threads")
+      .insert({
+        title: t.title,
+        excerpt: t.excerpt,
+        author: t.author,
+        hub: t.hub,
+        category: t.category,
+        tags: t.tags,
+        votes: 0,
+        replies: 0,
+        pinned: false,
+      })
+      .select()
+      .single();
+    if (data) setThreadList(prev => [rowToThread(data), ...prev]);
+  };
+
+  const q = query.trim().toLowerCase();
+  const visibleThreads = [...threadList]
+    .filter(t => {
+      if (q && !(
+        t.title.toLowerCase().includes(q) ||
+        t.excerpt.toLowerCase().includes(q) ||
+        t.author.toLowerCase().includes(q) ||
+        t.hub.toLowerCase().includes(q) ||
+        t.category.toLowerCase().includes(q)
+      )) return false;
+      if (activeCategory !== "All" && t.category !== activeCategory) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      if (activeSort === "▲ Top")          return b.votes - a.votes;
+      if (activeSort === "◇ Unanswered")   return a.replies - b.replies;
+      return 0; // "🔥 Hot" and "✦ New" use DB order (created_at desc)
+    });
 
   return (
     <>
-      {showModal && <NewThreadModal onClose={() => setShowModal(false)} onPost={handlePost} />}
+      {showModal && <NewThreadModal onClose={() => setShowModal(false)} onPost={handlePost} authorName={authorName} />}
       <CommunitySubNav />
       <div className="max-w-[1440px] mx-auto px-12 pt-6 pb-16">
         <h1 className="text-[30px] font-extrabold tracking-[-0.02em]">Community</h1>
@@ -201,7 +285,8 @@ export default function CommunityPage() {
             {/* Search */}
             <div className="relative mb-3.5 max-w-[420px]">
               <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-dim text-[14px]">⌕</span>
-              <input placeholder="Search discussions, hubs, players…"
+              <input value={query} onChange={e => setQuery(e.target.value)}
+                placeholder="Search discussions, hubs, players…"
                 className="bg-[#0a0e13] border border-line rounded-lg pl-9 pr-3 py-2.5 text-ink text-[14px] w-full outline-none focus:border-accent focus:shadow-[0_0_0_3px_rgba(86,166,232,.14)] transition-all font-[inherit]" />
             </div>
 
@@ -232,8 +317,16 @@ export default function CommunityPage() {
 
             {/* Thread list */}
             <div className="bg-panel border border-line rounded-[10px] overflow-hidden">
-              {threadList.map((t, i) => (
-                <div key={i}
+              {loading && (
+                <div className="px-5 py-8 text-center text-muted text-[14px]">Loading threads…</div>
+              )}
+              {!loading && visibleThreads.length === 0 && (
+                <div className="px-5 py-8 text-center text-muted text-[14px]">
+                  {q ? `No threads matching "${query}"` : "No threads yet. Be the first to post!"}
+                </div>
+              )}
+              {visibleThreads.map((t) => (
+                <div key={t.id ?? t.title}
                   className={`flex gap-4 px-5 py-4.5 border-b border-line last:border-none cursor-pointer transition-colors hover:bg-white/[.025] ${t.pinned ? "bg-[rgba(86,166,232,.05)]" : ""}`}>
                   <ThreadVotes initial={t.votes} />
                   <div className="flex-1 min-w-0">

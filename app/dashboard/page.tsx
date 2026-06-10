@@ -117,7 +117,7 @@ export default function DashboardPage() {
               Open Weave Forge
             </Link>
             <Link href="/upload" className="px-5 py-2.5 rounded-[9px] font-bold text-[14px] no-underline"
-              style={{ background: "linear-gradient(180deg, #56a6e8, #2c6aa0)", color: "#06121d" }}>＋ Upload a game</Link>
+              style={{ background: "linear-gradient(180deg, #56a6e8, #2c6aa0)", color: "#06121d" }}>＋ New game</Link>
           </div>
         </div>
 
@@ -194,7 +194,17 @@ export default function DashboardPage() {
                 <div className={p.rating === "—" ? "font-bold text-[14px] text-dim" : "font-bold text-[14px] text-[#f0c66a]"}>
                   {p.rating === "—" ? "—" : `★ ${p.rating}`}
                 </div>
-                <div className="text-right text-dim font-bold">›</div>
+                <div className="text-right">
+                  {p.status === "Live" ? (
+                    <Link href="/upload" onClick={e => e.stopPropagation()}
+                      className="text-[11px] font-bold px-2.5 py-1.5 rounded-lg no-underline"
+                      style={{ background: "rgba(86,166,232,.14)", color: "#8fc6f0", border: "1px solid #2c6aa0" }}>
+                      Patch
+                    </Link>
+                  ) : (
+                    <span className="text-dim font-bold">›</span>
+                  )}
+                </div>
               </div>
             ))}
           </div>

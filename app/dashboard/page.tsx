@@ -1,7 +1,9 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import CreatorSubNav from "@/components/shell/CreatorSubNav";
 import Link from "next/link";
+import { useUser } from "@clerk/nextjs";
+import { getSupabaseClient } from "@/lib/supabase";
 
 type Project = {
   name: string; type: string; a: string; b: string;
@@ -37,7 +39,45 @@ function GradArt({ a, b, className = "" }: { a: string; b: string; className?: s
 }
 
 export default function DashboardPage() {
+  const { user, isLoaded } = useUser();
   const [activeFilter, setActiveFilter] = useState("All");
+  const [creatorStatus, setCreatorStatus] = useState<"loading" | "none" | "pending" | "approved" | "rejected">("loading");
+
+  useEffect(() => {
+    let active = true;
+    async function loadCreatorStatus() {
+      if (!isLoaded) return;
+      if (!user?.id) {
+        if (active) setCreatorStatus("none");
+        return;
+      }
+
+      const supabase = getSupabaseClient();
+      if (!supabase) {
+        if (active) setCreatorStatus("none");
+        return;
+      }
+
+      const { data } = await supabase
+        .from("creator_profiles")
+        .select("status")
+        .eq("clerk_user_id", user.id)
+        .maybeSingle<{ status: "pending" | "approved" | "rejected" }>();
+
+      if (!active) return;
+      setCreatorStatus(data?.status ?? "none");
+    }
+
+    loadCreatorStatus();
+    return () => { active = false; };
+  }, [isLoaded, user?.id]);
+
+  const creatorBadge = useMemo(() => {
+    if (creatorStatus === "approved") return { label: "Verified creator", color: "#a6e06a", bg: "rgba(123,194,74,.16)" };
+    if (creatorStatus === "pending") return { label: "Creator application pending", color: "#f0c66a", bg: "rgba(232,169,58,.16)" };
+    if (creatorStatus === "rejected") return { label: "Creator application rejected", color: "#e88", bg: "rgba(227,92,92,.16)" };
+    return { label: "Apply to become a creator", color: "#8fc6f0", bg: "rgba(86,166,232,.14)" };
+  }, [creatorStatus]);
 
   const filtered = projects.filter(p => {
     if (activeFilter === "All")       return true;
@@ -60,13 +100,22 @@ export default function DashboardPage() {
               <div className="flex items-center gap-2 text-[13.5px] text-muted mt-0.5">
                 Lantern Few
                 <span className="text-[11px] font-bold px-2 py-0.5 rounded-full uppercase tracking-[.04em]"
-                  style={{ background: "rgba(123,194,74,.16)", color: "#a6e06a" }}>Verified creator</span>
+                  style={{ background: creatorBadge.bg, color: creatorBadge.color }}>{creatorBadge.label}</span>
                 · 88% revenue share · payouts via <strong style={{ color: "#9aa8ff" }}>stripe</strong>
               </div>
             </div>
           </div>
           <div className="flex gap-2.5">
-            <Link href="/engines-sdk" className="px-5 py-2.5 rounded-[9px] font-bold text-[14px] bg-panel2 border border-line text-ink no-underline">Open Weave Forge</Link>
+            <Link href="/admin" className="px-5 py-2.5 rounded-[9px] font-bold text-[14px] bg-panel2 border border-line text-ink no-underline">Review applications</Link>
+            <Link
+              href="/forge"
+              className={[
+                "px-5 py-2.5 rounded-[9px] font-bold text-[14px] border text-ink no-underline",
+                creatorStatus === "approved" ? "bg-panel2 border-line" : "bg-panel2 border-line opacity-60 pointer-events-none",
+              ].join(" ")}
+            >
+              Open Weave Forge
+            </Link>
             <Link href="/upload" className="px-5 py-2.5 rounded-[9px] font-bold text-[14px] no-underline"
               style={{ background: "linear-gradient(180deg, #56a6e8, #2c6aa0)", color: "#06121d" }}>＋ Upload a game</Link>
           </div>

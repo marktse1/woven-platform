@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 const tabs = [
   { label: "Store",       href: "/" },
   { label: "Library",     href: "/library" },
-  { label: "Weave Forge", href: "/creator" },
+  { label: "Forge",       href: "/forge" },
   { label: "Community",   href: "/community" },
 ];
 
@@ -28,6 +28,8 @@ export default function MainNav() {
     pathname.startsWith("/creator") || pathname.startsWith("/upload") ||
     pathname.startsWith("/engines-sdk") || pathname.startsWith("/multiplayer")
       ? "/creator"
+      : pathname.startsWith("/forge")
+      ? "/forge"
       : pathname.startsWith("/library")
       ? "/library"
       : pathname.startsWith("/community")

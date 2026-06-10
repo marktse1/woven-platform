@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 const links = [
   { label: "Become a Creator", href: "/creator" },
   { label: "Upload a Game",    href: "/upload" },
+  { label: "Weave Forge",      href: "/forge" },
   { label: "Engines & SDK",    href: "/engines-sdk" },
   { label: "Multiplayer",      href: "/multiplayer" },
   { label: "Docs",             href: "/docs" },

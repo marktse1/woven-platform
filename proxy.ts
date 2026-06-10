@@ -6,6 +6,8 @@ const isProtectedRoute = createRouteMatcher([
   "/library(.*)",
   "/upload(.*)",
   "/dashboard(.*)",
+  "/admin(.*)",
+  "/forge(.*)",
   "/wishlist(.*)",
 ]);
 

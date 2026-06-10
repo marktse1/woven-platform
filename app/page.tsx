@@ -1,4 +1,5 @@
 "use client";
+import { useEffect, useMemo, useState } from "react";
 import StoreSubNav from "@/components/shell/StoreSubNav";
 
 type GradPair = [string, string];
@@ -40,10 +41,35 @@ const specials = [
 const categories = ["Cozy", "Roguelike", "Made in Weave Forge", "Multiplayer", "Atmospheric", "Free on Pass"];
 
 export default function StorePage() {
+  const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setQuery(new URLSearchParams(window.location.search).get("q")?.trim().toLowerCase() ?? "");
+  }, []);
+
+  const filteredRailGames = useMemo(
+    () => railGames.filter((game) => !query || `${game.name} ${game.genre} ${game.price}`.toLowerCase().includes(query)),
+    [query]
+  );
+  const filteredSpecials = useMemo(
+    () => specials.filter((game) => !query || `${game.name} ${game.genre} ${game.price} ${game.disc}`.toLowerCase().includes(query)),
+    [query]
+  );
+  const filteredCategories = useMemo(
+    () => categories.filter((category) => !query || category.toLowerCase().includes(query)),
+    [query]
+  );
+
   return (
     <>
       <StoreSubNav />
       <div className="max-w-[1440px] mx-auto px-12 pt-6 pb-16">
+        {query ? (
+          <div className="mb-5 rounded-[10px] border border-line bg-panel px-4 py-3 text-[13px] text-dim">
+            Search results for <span className="text-ink font-semibold">"{query}"</span>
+          </div>
+        ) : null}
         {/* Featured */}
         <p className="text-[13px] font-bold tracking-[.12em] uppercase text-muted mb-3.5">Featured & Recommended</p>
         <section className="grid gap-4" style={{ gridTemplateColumns: "1fr 320px" }}>
@@ -82,7 +108,7 @@ export default function StorePage() {
           </GradArt>
 
           <div className="flex flex-col gap-2">
-            {railGames.map((g, i) => (
+            {filteredRailGames.map((g, i) => (
               <div key={g.name}
                 className={`flex gap-2.5 p-2 rounded-[7px] cursor-pointer items-center border transition-colors ${g.active ? "bg-panel2 border-line" : "bg-panel border-transparent hover:bg-panel2 hover:border-line"}`}>
                 <GradArt pair={pal[(i + 1) % pal.length]} className="w-[88px] h-12 rounded-md shrink-0" />
@@ -100,7 +126,7 @@ export default function StorePage() {
         <section className="mt-10">
           <p className="text-[13px] font-bold tracking-[.12em] uppercase text-muted mb-3.5">Special Offers</p>
           <div className="grid grid-cols-5 gap-3.5">
-            {specials.map((s, i) => (
+            {filteredSpecials.map((s, i) => (
               <div key={s.name}
                 className="bg-panel border border-line rounded-lg overflow-hidden cursor-pointer transition-[transform,box-shadow] hover:-translate-y-[3px] hover:shadow-[0_12px_30px_rgba(0,0,0,.5)]">
                 <GradArt pair={pal[(i + 2) % pal.length]} className="h-[130px]" />
@@ -131,12 +157,15 @@ export default function StorePage() {
         <section className="mt-10">
           <p className="text-[13px] font-bold tracking-[.12em] uppercase text-muted mb-3.5">Browse by Category</p>
           <div className="grid grid-cols-6 gap-3">
-            {categories.map((cat, i) => (
+            {filteredCategories.map((cat, i) => (
               <div key={cat} className="relative h-[84px] rounded-lg overflow-hidden flex items-end p-3 font-bold text-[14px] cursor-pointer border border-line">
                 <GradArt pair={pal[(i + 3) % pal.length]} className="absolute inset-0 opacity-85" />
                 <span className="relative z-10">{cat}</span>
               </div>
             ))}
+            {query && filteredCategories.length === 0 ? (
+              <div className="col-span-6 text-dim text-[13px]">No categories matched your search.</div>
+            ) : null}
           </div>
         </section>
 

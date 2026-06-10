@@ -219,10 +219,10 @@ export default function DashboardPage() {
               style={{ background: "linear-gradient(155deg, #1b2836, #16202c)" }}>
               <div className="font-extrabold text-[16px] tracking-[-0.01em]">New here? Apply to publish</div>
               <p className="text-[12.5px] text-muted mt-1.5 mb-3.5 leading-relaxed">Bringing another studio or your first game to Woven? Get a creator account — free to list, 88% to you.</p>
-              <Link href="/creator-signup"
+              <Link href="/creator"
                 className="flex items-center justify-center w-full py-2.5 rounded-[9px] font-bold text-[14px] no-underline mb-2.5"
                 style={{ background: "linear-gradient(180deg, #56a6e8, #2c6aa0)", color: "#06121d" }}>
-                Apply to be a creator
+              Apply to be a creator
               </Link>
               <Link href="/upload"
                 className="flex items-center justify-center w-full py-2.5 rounded-[9px] font-bold text-[14px] no-underline bg-transparent border border-line text-ink">

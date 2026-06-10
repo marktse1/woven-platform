@@ -199,7 +199,7 @@ export default function ForgeClient() {
               <div className="text-[20px] font-extrabold tracking-[-0.02em]">Forge</div>
               <p className="text-[13px] text-dim mt-2 leading-relaxed">{message}</p>
               <div className="flex gap-2 mt-5">
-                <Link href="/creator-signup" className="px-4 py-2 rounded-[8px] font-bold text-[13px] no-underline" style={{ background: "linear-gradient(180deg, #56a6e8, #2c6aa0)", color: "#06121d" }}>
+                <Link href="/creator" className="px-4 py-2 rounded-[8px] font-bold text-[13px] no-underline" style={{ background: "linear-gradient(180deg, #56a6e8, #2c6aa0)", color: "#06121d" }}>
                   Become a creator
                 </Link>
                 <Link href="/dashboard" className="px-4 py-2 rounded-[8px] border border-line bg-panel2 text-[13px] font-semibold no-underline">

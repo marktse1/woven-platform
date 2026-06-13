@@ -17,6 +17,7 @@ const publicLinks = [
 const creatorLinks = [
   { label: "Dashboard",     href: "/dashboard" },
   { label: "Upload a Game", href: "/upload" },
+  { label: "Weave Forge",   href: "/forge" },
   { label: "Engines & SDK", href: "/engines-sdk" },
   { label: "Multiplayer",   href: "/multiplayer" },
   { label: "Docs",          href: "/docs" },

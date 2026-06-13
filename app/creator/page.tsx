@@ -123,6 +123,7 @@ export default function BecomeCreatorPage() {
           team_size,
           about,
           links,
+          engines: Array.from(engines),
         },
         { onConflict: "clerk_user_id" }
       );

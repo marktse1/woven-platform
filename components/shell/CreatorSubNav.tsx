@@ -1,9 +1,7 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useUser } from "@clerk/nextjs";
-import { useEffect, useState } from "react";
-import { supabase } from "@/lib/supabase";
+import { useCreatorStatus } from "@/lib/useCreatorStatus";
 
 const publicLinks = [
   { label: "Become a Creator", href: "/creator" },
@@ -25,20 +23,8 @@ const creatorLinks = [
 
 export default function CreatorSubNav() {
   const pathname = usePathname();
-  const { user } = useUser();
-  const [isApproved, setIsApproved] = useState(false);
-
-  useEffect(() => {
-    if (!user) { setIsApproved(false); return; }
-    supabase
-      .from("creator_profiles")
-      .select("status")
-      .eq("clerk_user_id", user.id)
-      .single()
-      .then(({ data }) => setIsApproved(data?.status === "approved"));
-  }, [user?.id]);
-
-  const links = isApproved ? creatorLinks : publicLinks;
+  const status = useCreatorStatus();
+  const links = status === "approved" ? creatorLinks : publicLinks;
 
   return (
     <div className="flex gap-[22px] px-12 py-3 text-[13px] font-semibold text-muted border-b border-line"

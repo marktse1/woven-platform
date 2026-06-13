@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { useCreatorStatus } from "@/lib/useCreatorStatus";
 
 const tabs = [
   { label: "Store", href: "/" },
@@ -28,6 +29,7 @@ export default function MainNav() {
   const pathname = usePathname();
   const router = useRouter();
   const [query, setQuery] = useState("");
+  const creatorStatus = useCreatorStatus();
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -99,7 +101,7 @@ export default function MainNav() {
             Woven Pass
           </div>
         </>
-      ) : (
+      ) : creatorStatus !== "approved" ? (
         <Link
           href="/creator"
           className="px-4 py-2 rounded-[9px] font-bold text-[14px] text-[#06121d] no-underline"
@@ -107,7 +109,7 @@ export default function MainNav() {
         >
           For Developers
         </Link>
-      )}
+      ) : null}
     </nav>
   );
 }

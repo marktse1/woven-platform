@@ -3,6 +3,8 @@ import { SignInButton, SignUpButton, UserButton, useUser } from "@clerk/nextjs";
 import Link from "next/link";
 import { useCreatorStatus } from "@/lib/useCreatorStatus";
 
+const ADMIN_EMAIL = "starfox.and.mark@gmail.com";
+
 function CreatorBadge() {
   const { isSignedIn } = useUser();
   const status = useCreatorStatus();
@@ -18,7 +20,8 @@ function CreatorBadge() {
 }
 
 export default function AccountStrip() {
-  const { isSignedIn } = useUser();
+  const { isSignedIn, user } = useUser();
+  const isAdmin = isSignedIn && user?.primaryEmailAddress?.emailAddress === ADMIN_EMAIL;
 
   return (
     <div className="flex items-center gap-[18px] px-12 py-2 text-xs text-dim"
@@ -30,6 +33,13 @@ export default function AccountStrip() {
           <div className="flex-1" />
           <span className="text-accent font-semibold">$24.50 wallet</span>
           <CreatorBadge />
+          {isAdmin && (
+            <Link href="/admin"
+              className="text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-[.06em] no-underline"
+              style={{ background: "rgba(232,169,58,.18)", color: "#f0c66a", border: "1px solid rgba(232,169,58,.3)" }}>
+              Admin
+            </Link>
+          )}
           <UserButton
             appearance={{
               elements: { avatarBox: "w-6 h-6" },

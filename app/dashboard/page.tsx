@@ -7,28 +7,31 @@ import { useUser } from "@clerk/nextjs";
 import { getSupabaseClient } from "@/lib/supabase";
 
 type Project = {
-  name: string; type: string; a: string; b: string;
+  id: string; name: string; type: string; a: string; b: string;
   status: string; statusClass: string; version: string;
   plays: string; revenue: string; rating: string;
 };
 
-const projects: Project[] = [
-  { name: "Hollow Tide",        type: "Base game · WebGL",      a: "#2a6aa0", b: "#7d4bd0", status: "Live",               statusClass: "badge-green", version: "v1.4.2", plays: "84.2k",   revenue: "$42.1k", rating: "4.7" },
-  { name: "Deeptide Expansion", type: "DLC · Hollow Tide",      a: "#3a3a6a", b: "#7d4bd0", status: "In review",          statusClass: "badge-info",  version: "v0.9",   plays: "—",       revenue: "—",      rating: "—"   },
-  { name: "Saltmarsh Nights",   type: "Co-op · WebGL",          a: "#3a6a8a", b: "#2a9a8a", status: "Draft",              statusClass: "badge-dim",   version: "v0.3",   plays: "—",       revenue: "—",      rating: "—"   },
-  { name: "Lantern Arcade",     type: "Mini-games",              a: "#e0823a", b: "#c43a6a", status: "Changes requested",  statusClass: "badge-warn",  version: "v1.0",   plays: "—",       revenue: "—",      rating: "—"   },
-  { name: "Tideglass (proto)",  type: "Weave Forge project",     a: "#1f9d8a", b: "#2c5fb0", status: "Draft",              statusClass: "badge-dim",   version: "—",      plays: "—",       revenue: "—",      rating: "—"   },
+const PAL: [string, string][] = [
+  ["#2a6aa0", "#7d4bd0"], ["#3a3a6a", "#7d4bd0"], ["#3a6a8a", "#2a9a8a"],
+  ["#e0823a", "#c43a6a"], ["#1f9d8a", "#2c5fb0"], ["#b8923a", "#7a4a2a"],
 ];
+
+function statusToClass(status: string): string {
+  if (status === "live")              return "badge-green";
+  if (status === "in_review")         return "badge-info";
+  if (status === "rejected")          return "badge-warn";
+  return "badge-dim";
+}
+
+function statusLabel(status: string): string {
+  if (status === "live")      return "Live";
+  if (status === "in_review") return "In review";
+  if (status === "rejected")  return "Changes requested";
+  return "Draft";
+}
 
 const filters = ["All", "Live", "In review", "Drafts"];
-
-const feed = [
-  { color: "#7bc24a", text: "Payout of <b>$2,141.80</b> sent to Stripe",                 time: "2 days ago" },
-  { color: "#56a6e8", text: "<b>Deeptide Expansion</b> submitted for review",             time: "2 days ago" },
-  { color: "#e8a93a", text: "<b>Lantern Arcade</b> — reviewer requested new capsule art", time: "4 days ago" },
-  { color: "#7bc24a", text: "<b>Hollow Tide</b> patch 1.4.2 approved & live",            time: "3 days ago" },
-  { color: "#56a6e8", text: "New 5★ review on <b>Hollow Tide</b> from @pixel_wren",      time: "5 days ago" },
-];
 
 function GradArt({ a, b, className = "" }: { a: string; b: string; className?: string }) {
   return (
@@ -43,10 +46,11 @@ export default function DashboardPage() {
   const { user, isLoaded } = useUser();
   const [activeFilter, setActiveFilter] = useState("All");
   const [creatorStatus, setCreatorStatus] = useState<"loading" | "none" | "pending" | "approved" | "rejected">("loading");
+  const [projects, setProjects] = useState<Project[]>([]);
 
   useEffect(() => {
     let active = true;
-    async function loadCreatorStatus() {
+    async function load() {
       if (!isLoaded) return;
       if (!user?.id) {
         if (active) setCreatorStatus("none");
@@ -59,17 +63,41 @@ export default function DashboardPage() {
         return;
       }
 
-      const { data } = await supabase
+      const { data: profile } = await supabase
         .from("creator_profiles")
-        .select("status")
+        .select("id, status")
         .eq("clerk_user_id", user.id)
-        .maybeSingle<{ status: "pending" | "approved" | "rejected" }>();
+        .maybeSingle<{ id: string; status: "pending" | "approved" | "rejected" }>();
 
       if (!active) return;
-      setCreatorStatus(data?.status ?? "none");
+      setCreatorStatus(profile?.status ?? "none");
+
+      if (profile?.id) {
+        const { data: games } = await supabase
+          .from("games")
+          .select("id, title, engine, status, plays, rating, created_at")
+          .eq("creator_id", profile.id)
+          .order("created_at", { ascending: false });
+
+        if (!active) return;
+        const mapped: Project[] = (games ?? []).map((g, i) => ({
+          id: g.id,
+          name: g.title,
+          type: g.engine ? `${g.engine} · WebGL` : "WebGL",
+          a: PAL[i % PAL.length][0],
+          b: PAL[i % PAL.length][1],
+          status: statusLabel(g.status),
+          statusClass: statusToClass(g.status),
+          version: "—",
+          plays: g.plays > 0 ? String(g.plays) : "—",
+          revenue: "—",
+          rating: g.rating != null ? String(g.rating) : "—",
+        }));
+        setProjects(mapped);
+      }
     }
 
-    loadCreatorStatus();
+    load();
     return () => { active = false; };
   }, [isLoaded, user?.id]);
 
@@ -99,7 +127,6 @@ export default function DashboardPage() {
             <div>
               <h1 className="text-[27px] font-extrabold tracking-[-0.02em]">Developer Dashboard</h1>
               <div className="flex items-center gap-2 text-[13.5px] text-muted mt-0.5">
-                Lantern Few
                 <span className="text-[11px] font-bold px-2 py-0.5 rounded-full uppercase tracking-[.04em]"
                   style={{ background: creatorBadge.bg, color: creatorBadge.color }}>{creatorBadge.label}</span>
                 · 88% revenue share · payouts via <strong style={{ color: "#9aa8ff" }}>stripe</strong>
@@ -125,19 +152,15 @@ export default function DashboardPage() {
         {/* Stats */}
         <div className="grid grid-cols-4 gap-4 mb-6">
           {[
-            { label: "Revenue · 30 days", value: "$8,420",  delta: "▲ 12.4% vs. prior 30d" },
-            { label: "Players · 30 days", value: "61.3k",   delta: "▲ 8.1% · 4.2k playing now" },
-            { label: "Published games",   value: "3",        delta: "2 in progress · 1 in review" },
-            { label: "Next payout",       value: "$2,107",   delta: "Jun 15 · Stripe ····4291" },
+            { label: "Revenue · 30 days", value: "—",  delta: "Connect Stripe to see revenue" },
+            { label: "Players · 30 days", value: "—",  delta: `${projects.filter(p => p.status === "Live").length} game${projects.filter(p => p.status === "Live").length === 1 ? "" : "s"} live` },
+            { label: "Published games",   value: String(projects.filter(p => p.status === "Live").length), delta: `${projects.filter(p => p.status !== "Live").length} in progress or review` },
+            { label: "Next payout",       value: "—",  delta: "Connect Stripe to see payouts" },
           ].map(s => (
             <div key={s.label} className="bg-panel border border-line rounded-[10px] px-5 py-4.5">
               <p className="text-[12px] font-bold tracking-[.08em] uppercase text-muted">{s.label}</p>
               <p className="text-[30px] font-extrabold tracking-[-0.02em] mt-2">{s.value}</p>
-              <p className="text-[12.5px] text-dim mt-1 flex items-center gap-1.5">
-                {s.delta.startsWith("▲") ? (
-                  <><span className="text-[#a6e06a] font-bold">{s.delta.split(" ")[0]}</span> {s.delta.slice(2)}</>
-                ) : s.delta}
-              </p>
+              <p className="text-[12.5px] text-dim mt-1">{s.delta}</p>
             </div>
           ))}
         </div>
@@ -215,13 +238,11 @@ export default function DashboardPage() {
             {/* Payout */}
             <div className="bg-panel border border-line rounded-[10px] p-5">
               <p className="text-[12.5px] font-bold tracking-[.12em] uppercase text-muted mb-2">Next payout</p>
-              <div className="text-[32px] font-extrabold tracking-[-0.02em]">$2,107.40</div>
-              <div className="text-[12.5px] text-dim mt-0.5">Scheduled Jun 15 · then twice monthly</div>
-              <div className="flex justify-between text-[14px] mt-3 py-1.5"><span className="text-muted">This month so far</span><span className="font-semibold">$8,420.16</span></div>
-              <div className="flex justify-between text-[14px] py-1.5"><span className="text-muted">Lifetime payouts</span><span className="font-semibold">$214,880</span></div>
+              <div className="text-[32px] font-extrabold tracking-[-0.02em] text-dim">—</div>
+              <div className="text-[12.5px] text-dim mt-0.5">Connect Stripe to see payouts</div>
               <div className="flex items-center gap-2 text-[12.5px] text-muted mt-3.5 pt-3.5 border-t border-line">
-                🔒 Connected · <strong style={{ color: "#9aa8ff" }}>stripe</strong> ····4291
-                <a className="text-accent font-semibold ml-auto cursor-pointer">Manage</a>
+                <strong style={{ color: "#9aa8ff" }}>stripe</strong> not connected
+                <a className="text-accent font-semibold ml-auto cursor-pointer">Connect</a>
               </div>
             </div>
 
@@ -244,17 +265,7 @@ export default function DashboardPage() {
             {/* Activity feed */}
             <div className="bg-panel border border-line rounded-[10px]">
               <div className="px-6 py-4 border-b border-line font-bold text-[15px]">Recent activity</div>
-              <div className="px-6 pt-1.5 pb-4">
-                {feed.map((f, i) => (
-                  <div key={i} className="flex gap-2.5 py-2.5 border-b border-line last:border-none text-[12.5px]">
-                    <span className="w-2 h-2 rounded-full mt-1.5 shrink-0" style={{ background: f.color }} />
-                    <div>
-                      <div className="text-ink" dangerouslySetInnerHTML={{ __html: f.text }} />
-                      <div className="text-[11.5px] text-dim mt-0.5">{f.time}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <div className="px-6 py-4 text-dim text-[13px]">No activity yet.</div>
             </div>
           </aside>
         </div>

@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import StoreSubNav from "@/components/shell/StoreSubNav";
+import { getSupabaseClient } from "@/lib/supabase";
 
 type GradPair = [string, string];
 const pal: GradPair[] = [
@@ -21,45 +22,63 @@ function GradArt({ pair, children, className = "" }: { pair: GradPair; children?
   );
 }
 
-const railGames = [
-  { name: "Skybound Drifters", genre: "Co-op Roguelike",    price: "$9.99",  free: false, active: true  },
-  { name: "Paper Kingdoms",    genre: "Cozy Strategy",      price: "◆ Pass", free: true,  active: false },
-  { name: "Static Bloom",      genre: "Atmospheric Puzzle", price: "$4.99",  free: false, active: false },
-  { name: "Foxfire",           genre: "Pixel Action",       price: "$12.99", free: false, active: false },
-  { name: "Mossgrove",         genre: "Relaxing Sim",       price: "◆ Pass", free: true,  active: false },
-  { name: "Neon Garden",       genre: "Rhythm Arcade",      price: "$7.99",  free: false, active: false },
-];
+type Game = {
+  id: string;
+  slug: string;
+  title: string;
+  short_description: string | null;
+  price_cents: number;
+  pass_included: boolean;
+  tags: string[];
+};
 
-const specials = [
-  { name: "Cogwork City", genre: "Sandbox Builder",   disc: "−40%", orig: "$14.99", price: "$8.99",  free: false },
-  { name: "Driftwood",    genre: "Adventure",          disc: "−25%", orig: "$14.99", price: "$11.24", free: false },
-  { name: "Lumen",        genre: "Puzzle Platformer",  disc: "",     orig: "",       price: "",       free: true  },
-  { name: "Tangle",       genre: "Co-op Party",        disc: "−50%", orig: "$9.99",  price: "$4.99",  free: false },
-  { name: "Saltmarsh",    genre: "Survival Craft",     disc: "−30%", orig: "$19.99", price: "$13.99", free: false },
-];
+function formatPrice(priceCents: number, passIncluded: boolean): string {
+  if (passIncluded) return "◆ Pass";
+  if (priceCents === 0) return "Free";
+  return `$${(priceCents / 100).toFixed(2)}`;
+}
 
 const categories = ["Cozy", "Roguelike", "Made in Weave Forge", "Multiplayer", "Atmospheric", "Free on Pass"];
 
 export default function StorePage() {
   const [query, setQuery] = useState("");
+  const [games, setGames] = useState<Game[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     setQuery(new URLSearchParams(window.location.search).get("q")?.trim().toLowerCase() ?? "");
   }, []);
 
-  const filteredRailGames = useMemo(
-    () => railGames.filter((game) => !query || `${game.name} ${game.genre} ${game.price}`.toLowerCase().includes(query)),
-    [query]
+  useEffect(() => {
+    const supabase = getSupabaseClient();
+    if (!supabase) { setLoading(false); return; }
+    supabase
+      .from("games")
+      .select("id, slug, title, short_description, price_cents, pass_included, tags")
+      .eq("status", "live")
+      .order("created_at", { ascending: false })
+      .then(({ data }) => {
+        setGames(data ?? []);
+        setLoading(false);
+      });
+  }, []);
+
+  const filteredGames = useMemo(
+    () => games.filter(g =>
+      !query || `${g.title} ${g.tags.join(" ")} ${formatPrice(g.price_cents, g.pass_included)}`.toLowerCase().includes(query)
+    ),
+    [games, query]
   );
-  const filteredSpecials = useMemo(
-    () => specials.filter((game) => !query || `${game.name} ${game.genre} ${game.price} ${game.disc}`.toLowerCase().includes(query)),
-    [query]
-  );
+
   const filteredCategories = useMemo(
-    () => categories.filter((category) => !query || category.toLowerCase().includes(query)),
+    () => categories.filter(cat => !query || cat.toLowerCase().includes(query)),
     [query]
   );
+
+  const featuredGame = filteredGames[0] ?? null;
+  const railGames = filteredGames.slice(1, 7);
+  const specials = filteredGames.slice(7, 12);
 
   return (
     <>
@@ -70,88 +89,93 @@ export default function StorePage() {
             Search results for <span className="text-ink font-semibold">"{query}"</span>
           </div>
         ) : null}
+
         {/* Featured */}
         <p className="text-[13px] font-bold tracking-[.12em] uppercase text-muted mb-3.5">Featured & Recommended</p>
         <section className="grid gap-4" style={{ gridTemplateColumns: "1fr 320px" }}>
-          <GradArt pair={pal[0]} className="rounded-lg border border-line min-h-[440px]">
-            <span className="absolute left-3.5 top-3 font-mono text-[11px] text-white bg-black/40 px-2 py-1 rounded-md z-10">
-              banner art · 16:9
-            </span>
-            <div className="absolute inset-0" style={{ background: "linear-gradient(180deg, transparent 40%, rgba(5,8,11,.92))" }} />
-            <div className="absolute left-6 right-6 bottom-5 flex items-end justify-between gap-5 z-10">
-              <div>
-                <h2 className="text-[34px] font-extrabold tracking-[-0.02em]">Hollow Tide</h2>
-                <p className="text-[#c2d2e0] text-sm mt-1.5 max-w-[420px]">
-                  Drift through a sunken city that rebuilds itself with every tide. A hand-painted exploration game about memory and currents.
-                </p>
-                <div className="flex gap-1.5 mt-3 flex-wrap">
-                  {["Exploration", "Atmospheric", "Browser-native", "Controller"].map(tag => (
-                    <span key={tag} className="text-xs bg-white/10 px-2.5 py-1 rounded-md">{tag}</span>
-                  ))}
-                </div>
-              </div>
-              <div className="flex items-center shrink-0 rounded-lg overflow-hidden">
-                <div className="flex flex-col items-center leading-none px-3 py-3" style={{ background: "#2c6aa0", color: "#cfeaff" }}>
-                  <span className="text-[10px] font-semibold opacity-85 mb-0.5">−25%</span>
-                  <span className="text-lg font-extrabold">SALE</span>
-                </div>
-                <div className="flex flex-col justify-center px-3 py-2" style={{ background: "rgba(0,0,0,.45)" }}>
-                  <span className="text-[11px] text-dim line-through">$15.99</span>
-                  <span className="text-[17px] font-bold">$11.99</span>
-                </div>
-                <button className="self-stretch px-5 font-extrabold text-[14px] cursor-pointer border-none"
-                  style={{ background: "linear-gradient(180deg, #8bc34a, #5c8a1e)", color: "#0e1a06" }}>
-                  Add to cart
-                </button>
-              </div>
-            </div>
-          </GradArt>
-
-          <div className="flex flex-col gap-2">
-            {filteredRailGames.map((g, i) => (
-              <div key={g.name}
-                className={`flex gap-2.5 p-2 rounded-[7px] cursor-pointer items-center border transition-colors ${g.active ? "bg-panel2 border-line" : "bg-panel border-transparent hover:bg-panel2 hover:border-line"}`}>
-                <GradArt pair={pal[(i + 1) % pal.length]} className="w-[88px] h-12 rounded-md shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <div className="text-[13px] font-semibold truncate">{g.name}</div>
-                  <div className="text-[11px] text-dim mt-0.5">{g.genre}</div>
-                </div>
-                <div className={`text-[13px] font-bold ${g.free ? "text-accent text-[11px]" : ""}`}>{g.price}</div>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        {/* Special Offers */}
-        <section className="mt-10">
-          <p className="text-[13px] font-bold tracking-[.12em] uppercase text-muted mb-3.5">Special Offers</p>
-          <div className="grid grid-cols-5 gap-3.5">
-            {filteredSpecials.map((s, i) => (
-              <div key={s.name}
-                className="bg-panel border border-line rounded-lg overflow-hidden cursor-pointer transition-[transform,box-shadow] hover:-translate-y-[3px] hover:shadow-[0_12px_30px_rgba(0,0,0,.5)]">
-                <GradArt pair={pal[(i + 2) % pal.length]} className="h-[130px]" />
-                <div className="px-3 pt-2.5 pb-3">
-                  <div className="text-[14px] font-semibold truncate">{s.name}</div>
-                  <div className="text-[11px] text-dim mt-1 mb-2.5">{s.genre}</div>
-                  <div className="flex items-center justify-end gap-2">
-                    {s.free ? (
-                      <span className="text-accent font-bold text-[12px]">◆ Free on Pass</span>
-                    ) : (
-                      <>
-                        <span className="text-[12px] font-extrabold px-1.5 py-0.5 rounded"
-                          style={{ background: "#2c6aa0", color: "#cfeaff" }}>{s.disc}</span>
-                        <span className="text-[13px] font-bold">
-                          <span className="block text-right text-[10px] text-dim line-through">{s.orig}</span>
-                          {s.price}
-                        </span>
-                      </>
-                    )}
+          {featuredGame ? (
+            <GradArt pair={pal[0]} className="rounded-lg border border-line min-h-[440px]">
+              <span className="absolute left-3.5 top-3 font-mono text-[11px] text-white bg-black/40 px-2 py-1 rounded-md z-10">
+                banner art · 16:9
+              </span>
+              <div className="absolute inset-0" style={{ background: "linear-gradient(180deg, transparent 40%, rgba(5,8,11,.92))" }} />
+              <div className="absolute left-6 right-6 bottom-5 flex items-end justify-between gap-5 z-10">
+                <div>
+                  <h2 className="text-[34px] font-extrabold tracking-[-0.02em]">{featuredGame.title}</h2>
+                  {featuredGame.short_description && (
+                    <p className="text-[#c2d2e0] text-sm mt-1.5 max-w-[420px]">{featuredGame.short_description}</p>
+                  )}
+                  <div className="flex gap-1.5 mt-3 flex-wrap">
+                    {featuredGame.tags.map(tag => (
+                      <span key={tag} className="text-xs bg-white/10 px-2.5 py-1 rounded-md">{tag}</span>
+                    ))}
                   </div>
                 </div>
+                <div className="flex items-center shrink-0 rounded-lg overflow-hidden">
+                  <button className="self-stretch px-5 font-extrabold text-[14px] cursor-pointer border-none"
+                    style={{ background: "linear-gradient(180deg, #8bc34a, #5c8a1e)", color: "#0e1a06" }}>
+                    {featuredGame.pass_included
+                      ? "Play free on Pass"
+                      : `Add to cart · ${formatPrice(featuredGame.price_cents, featuredGame.pass_included)}`}
+                  </button>
+                </div>
+              </div>
+            </GradArt>
+          ) : (
+            <div className="rounded-lg border border-line bg-panel min-h-[440px] flex items-center justify-center">
+              <span className="text-dim text-[13px]">
+                {loading ? "Loading games…" : "No games published yet. Check back soon!"}
+              </span>
+            </div>
+          )}
+
+          <div className="flex flex-col gap-2">
+            {railGames.map((g, i) => (
+              <div key={g.id}
+                className="flex gap-2.5 p-2 rounded-[7px] cursor-pointer items-center border transition-colors bg-panel border-transparent hover:bg-panel2 hover:border-line">
+                <GradArt pair={pal[(i + 1) % pal.length]} className="w-[88px] h-12 rounded-md shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-[13px] font-semibold truncate">{g.title}</div>
+                  <div className="text-[11px] text-dim mt-0.5">{g.tags.slice(0, 2).join(" · ")}</div>
+                </div>
+                <div className={`text-[13px] font-bold ${g.pass_included ? "text-accent text-[11px]" : ""}`}>
+                  {formatPrice(g.price_cents, g.pass_included)}
+                </div>
               </div>
             ))}
+            {!loading && railGames.length === 0 && (
+              <div className="flex-1 flex items-center justify-center text-dim text-[13px] p-4">
+                More games coming soon.
+              </div>
+            )}
           </div>
         </section>
+
+        {/* Special Offers — only shown when enough games exist */}
+        {specials.length > 0 && (
+          <section className="mt-10">
+            <p className="text-[13px] font-bold tracking-[.12em] uppercase text-muted mb-3.5">Special Offers</p>
+            <div className="grid grid-cols-5 gap-3.5">
+              {specials.map((s, i) => (
+                <div key={s.id}
+                  className="bg-panel border border-line rounded-lg overflow-hidden cursor-pointer transition-[transform,box-shadow] hover:-translate-y-[3px] hover:shadow-[0_12px_30px_rgba(0,0,0,.5)]">
+                  <GradArt pair={pal[(i + 2) % pal.length]} className="h-[130px]" />
+                  <div className="px-3 pt-2.5 pb-3">
+                    <div className="text-[14px] font-semibold truncate">{s.title}</div>
+                    <div className="text-[11px] text-dim mt-1 mb-2.5">{s.tags.slice(0, 2).join(" · ")}</div>
+                    <div className="flex items-center justify-end gap-2">
+                      {s.pass_included ? (
+                        <span className="text-accent font-bold text-[12px]">◆ Free on Pass</span>
+                      ) : (
+                        <span className="font-bold text-[13px]">{formatPrice(s.price_cents, s.pass_included)}</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* Categories */}
         <section className="mt-10">

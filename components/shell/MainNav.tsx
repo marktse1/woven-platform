@@ -50,7 +50,7 @@ export default function MainNav() {
 
   return (
     <nav
-      className="flex items-center gap-6 px-12 py-[13px] border-b border-line"
+      className="flex items-center gap-3 px-4 sm:gap-4 sm:px-6 lg:gap-6 lg:px-12 py-[13px] border-b border-line"
       style={{ background: "linear-gradient(180deg, rgba(255,255,255,.03), transparent)" }}
     >
       <Link href="/" className="flex items-center gap-2.5 font-extrabold text-xl tracking-[-0.01em] mr-1 text-ink no-underline">
@@ -82,7 +82,7 @@ export default function MainNav() {
       {activeSection === "/" || activeSection === "/library" || activeSection === "/community" ? (
         <>
           <form
-            className="flex items-center gap-2 bg-[#0a0e13] border border-line rounded-lg px-3 py-2 w-[260px] text-dim text-[13px]"
+            className="flex items-center gap-2 bg-[#0a0e13] border border-line rounded-lg px-3 py-2 w-[160px] sm:w-[220px] lg:w-[260px] text-dim text-[13px]"
             onSubmit={(event) => {
               event.preventDefault();
               const q = query.trim();

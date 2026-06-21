@@ -90,7 +90,7 @@ export default function LibraryPage() {
   return (
     <>
       <LibrarySubNav />
-      <div className="max-w-[1440px] mx-auto px-12 pt-6 pb-16">
+      <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-12 pt-6 pb-16">
         <h1 className="text-[30px] font-extrabold tracking-[-0.02em]">Your Library</h1>
 
         {/* Stats */}
@@ -103,7 +103,7 @@ export default function LibraryPage() {
           ))}
         </div>
 
-        <div className="grid gap-6 items-start" style={{ gridTemplateColumns: "330px 1fr" }}>
+        <div className="grid gap-6 items-start grid-cols-1 lg:grid-cols-[330px_1fr]">
           {/* Left rail */}
           <div className="sticky top-4 bg-panel border border-line rounded-[10px] p-5">
             {/* Search */}
@@ -167,11 +167,11 @@ export default function LibraryPage() {
             {g ? (
               <>
                 {/* Hero */}
-                <GradArt a={g.a} b={g.b} className="h-[340px] rounded-[14px] border border-line">
+                <GradArt a={g.a} b={g.b} className="h-[220px] sm:h-[280px] lg:h-[340px] rounded-[14px] border border-line">
                   <div className="absolute inset-0" style={{ background: "linear-gradient(180deg, rgba(8,12,17,0) 30%, rgba(8,12,17,.55) 64%, rgba(8,12,17,.96) 100%)" }} />
                   <div className="absolute left-6 right-6 bottom-5 z-10">
                     <p className="text-[12px] font-bold tracking-[.10em] uppercase text-[#cfe6fb]">{g.tags.slice(0, 2).join(" · ")}</p>
-                    <h1 className="text-[38px] font-extrabold tracking-[-0.02em] leading-none my-1.5">{g.title}</h1>
+                    <h1 className="text-[24px] sm:text-[32px] lg:text-[38px] font-extrabold tracking-[-0.02em] leading-none my-1.5">{g.title}</h1>
                     <p className="text-[13.5px] text-muted">WebGL build</p>
                   </div>
                 </GradArt>
@@ -186,7 +186,7 @@ export default function LibraryPage() {
                 </div>
 
                 {/* 3-col cards */}
-                <div className="grid grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   {/* Achievements */}
                   <div className="bg-panel border border-line rounded-[10px] p-4.5">
                     <div className="flex items-center justify-between mb-3.5">

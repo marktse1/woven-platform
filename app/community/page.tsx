@@ -274,13 +274,13 @@ export default function CommunityPage() {
     <>
       {showModal && <NewThreadModal onClose={() => setShowModal(false)} onPost={handlePost} authorName={authorName} />}
       <CommunitySubNav />
-      <div className="max-w-[1440px] mx-auto px-12 pt-6 pb-16">
+      <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-12 pt-6 pb-16">
         <h1 className="text-[30px] font-extrabold tracking-[-0.02em]">Community</h1>
         <p className="text-muted text-[15px] mt-2 mb-4 max-w-[620px]">
           Threads, build logs and help across every game on Woven. Jump into a hub or just browse what&apos;s hot.
         </p>
 
-        <div className="grid gap-6 items-start" style={{ gridTemplateColumns: "1fr 332px" }}>
+        <div className="grid gap-6 items-start grid-cols-1 lg:grid-cols-[1fr_332px]">
           {/* Main column */}
           <div>
             {/* Search */}

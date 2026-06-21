@@ -83,7 +83,7 @@ export default function StorePage() {
   return (
     <>
       <StoreSubNav />
-      <div className="max-w-[1440px] mx-auto px-12 pt-6 pb-16">
+      <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-12 pt-6 pb-16">
         {query ? (
           <div className="mb-5 rounded-[10px] border border-line bg-panel px-4 py-3 text-[13px] text-dim">
             Search results for <span className="text-ink font-semibold">"{query}"</span>
@@ -92,16 +92,16 @@ export default function StorePage() {
 
         {/* Featured */}
         <p className="text-[13px] font-bold tracking-[.12em] uppercase text-muted mb-3.5">Featured & Recommended</p>
-        <section className="grid gap-4" style={{ gridTemplateColumns: "1fr 320px" }}>
+        <section className="grid gap-4 grid-cols-1 lg:grid-cols-[1fr_320px]">
           {featuredGame ? (
-            <GradArt pair={pal[0]} className="rounded-lg border border-line min-h-[440px]">
+            <GradArt pair={pal[0]} className="rounded-lg border border-line min-h-[280px] lg:min-h-[440px]">
               <span className="absolute left-3.5 top-3 font-mono text-[11px] text-white bg-black/40 px-2 py-1 rounded-md z-10">
                 banner art · 16:9
               </span>
               <div className="absolute inset-0" style={{ background: "linear-gradient(180deg, transparent 40%, rgba(5,8,11,.92))" }} />
               <div className="absolute left-6 right-6 bottom-5 flex items-end justify-between gap-5 z-10">
                 <div>
-                  <h2 className="text-[34px] font-extrabold tracking-[-0.02em]">{featuredGame.title}</h2>
+                  <h2 className="text-[22px] sm:text-[28px] lg:text-[34px] font-extrabold tracking-[-0.02em]">{featuredGame.title}</h2>
                   {featuredGame.short_description && (
                     <p className="text-[#c2d2e0] text-sm mt-1.5 max-w-[420px]">{featuredGame.short_description}</p>
                   )}
@@ -155,7 +155,7 @@ export default function StorePage() {
         {specials.length > 0 && (
           <section className="mt-10">
             <p className="text-[13px] font-bold tracking-[.12em] uppercase text-muted mb-3.5">Special Offers</p>
-            <div className="grid grid-cols-5 gap-3.5">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
               {specials.map((s, i) => (
                 <div key={s.id}
                   className="bg-panel border border-line rounded-lg overflow-hidden cursor-pointer transition-[transform,box-shadow] hover:-translate-y-[3px] hover:shadow-[0_12px_30px_rgba(0,0,0,.5)]">
@@ -180,7 +180,7 @@ export default function StorePage() {
         {/* Categories */}
         <section className="mt-10">
           <p className="text-[13px] font-bold tracking-[.12em] uppercase text-muted mb-3.5">Browse by Category</p>
-          <div className="grid grid-cols-6 gap-3">
+          <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 gap-3">
             {filteredCategories.map((cat, i) => (
               <div key={cat} className="relative h-[84px] rounded-lg overflow-hidden flex items-end p-3 font-bold text-[14px] cursor-pointer border border-line">
                 <GradArt pair={pal[(i + 3) % pal.length]} className="absolute inset-0 opacity-85" />
@@ -188,13 +188,13 @@ export default function StorePage() {
               </div>
             ))}
             {query && filteredCategories.length === 0 ? (
-              <div className="col-span-6 text-dim text-[13px]">No categories matched your search.</div>
+              <div className="col-span-3 sm:col-span-4 lg:col-span-6 text-dim text-[13px]">No categories matched your search.</div>
             ) : null}
           </div>
         </section>
 
         {/* Woven Pass Banner */}
-        <section className="mt-10 border border-accent2 rounded-[10px] px-6 py-5 flex items-center gap-4"
+        <section className="mt-10 border border-accent2 rounded-[10px] px-4 sm:px-6 py-4 sm:py-5 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4"
           style={{ background: "linear-gradient(100deg, rgba(86,166,232,.12), rgba(86,166,232,.02))" }}>
           <div className="text-[22px] font-extrabold">◆ Woven Pass</div>
           <div>

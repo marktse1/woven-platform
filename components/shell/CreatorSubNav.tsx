@@ -27,7 +27,7 @@ export default function CreatorSubNav() {
   const links = status === "approved" ? creatorLinks : publicLinks;
 
   return (
-    <div className="flex gap-[22px] px-12 py-3 text-[13px] font-semibold text-muted border-b border-line"
+    <div className="flex gap-[22px] px-4 sm:px-6 lg:px-12 py-3 text-[13px] font-semibold text-muted border-b border-line overflow-x-auto scrollbar-none"
       style={{ background: "rgba(0,0,0,.2)" }}>
       {links.map((l) => (
         <Link key={l.href} href={l.href}

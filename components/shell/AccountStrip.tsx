@@ -24,7 +24,7 @@ export default function AccountStrip() {
   const isAdmin = isSignedIn && user?.primaryEmailAddress?.emailAddress === ADMIN_EMAIL;
 
   return (
-    <div className="flex items-center gap-[18px] px-12 py-2 text-xs text-dim"
+    <div className="flex items-center gap-2 px-4 sm:gap-3 sm:px-6 lg:gap-[18px] lg:px-12 py-2 text-xs text-dim"
       style={{ background: "rgba(0,0,0,.35)" }}>
 
       {isSignedIn ? (

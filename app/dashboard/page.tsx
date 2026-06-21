@@ -119,9 +119,9 @@ export default function DashboardPage() {
   return (
     <>
       <CreatorSubNav />
-      <div className="max-w-[1440px] mx-auto px-12 pt-6 pb-16">
+      <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-12 pt-6 pb-16">
         {/* Header */}
-        <div className="flex items-end justify-between gap-6 mb-5">
+        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 sm:gap-6 mb-5">
           <div className="flex items-center gap-3.5">
             <GradArt a="#2a6aa0" b="#7d4bd0" className="w-[52px] h-[52px] rounded-[13px] shrink-0" />
             <div>
@@ -150,7 +150,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           {[
             { label: "Revenue · 30 days", value: "—",  delta: "Connect Stripe to see revenue" },
             { label: "Players · 30 days", value: "—",  delta: `${projects.filter(p => p.status === "Live").length} game${projects.filter(p => p.status === "Live").length === 1 ? "" : "s"} live` },
@@ -165,7 +165,7 @@ export default function DashboardPage() {
           ))}
         </div>
 
-        <div className="grid gap-6 items-start" style={{ gridTemplateColumns: "1fr 340px" }}>
+        <div className="grid gap-6 items-start grid-cols-1 lg:grid-cols-[1fr_340px]">
           {/* Projects table */}
           <div className="bg-panel border border-line rounded-[10px]">
             <div className="flex items-center px-6 py-4 border-b border-line font-bold text-[15px]">
@@ -187,16 +187,14 @@ export default function DashboardPage() {
             </div>
 
             {/* Table head */}
-            <div className="grid px-4.5 py-3 text-[11px] font-bold tracking-[.08em] uppercase text-dim border-b border-line"
-              style={{ gridTemplateColumns: "1fr 132px 88px 98px 70px 40px" }}>
-              <div>Game</div><div>Status</div><div>Plays</div><div>Revenue</div><div>Rating</div><div />
+            <div className="grid px-4.5 py-3 text-[11px] font-bold tracking-[.08em] uppercase text-dim border-b border-line grid-cols-[1fr_auto_auto] lg:grid-cols-[1fr_132px_88px_98px_70px_40px]">
+              <div>Game</div><div>Status</div><div className="hidden lg:block">Plays</div><div className="hidden lg:block">Revenue</div><div className="hidden lg:block">Rating</div><div />
             </div>
 
             {/* Rows */}
             {filtered.map(p => (
               <div key={p.name}
-                className="grid items-center px-4.5 py-3.5 border-b border-line last:border-none cursor-pointer hover:bg-white/[.025] transition-colors gap-3"
-                style={{ gridTemplateColumns: "1fr 132px 88px 98px 70px 40px" }}>
+                className="grid items-center px-4.5 py-3.5 border-b border-line last:border-none cursor-pointer hover:bg-white/[.025] transition-colors gap-3 grid-cols-[1fr_auto_auto] lg:grid-cols-[1fr_132px_88px_98px_70px_40px]">
                 <div className="flex items-center gap-3 min-w-0">
                   <GradArt a={p.a} b={p.b} className="w-[62px] h-10 rounded-[7px] shrink-0" />
                   <div className="min-w-0">
@@ -213,9 +211,9 @@ export default function DashboardPage() {
                     {p.status}
                   </span>
                 </div>
-                <div className={`font-bold text-[14px] ${p.plays === "—" ? "text-dim" : ""}`}>{p.plays}</div>
-                <div className={`font-bold text-[14px] ${p.revenue === "—" ? "text-dim" : ""}`}>{p.revenue}</div>
-                <div className={p.rating === "—" ? "font-bold text-[14px] text-dim" : "font-bold text-[14px] text-[#f0c66a]"}>
+                <div className={`hidden lg:block font-bold text-[14px] ${p.plays === "—" ? "text-dim" : ""}`}>{p.plays}</div>
+                <div className={`hidden lg:block font-bold text-[14px] ${p.revenue === "—" ? "text-dim" : ""}`}>{p.revenue}</div>
+                <div className={`hidden lg:block ${p.rating === "—" ? "font-bold text-[14px] text-dim" : "font-bold text-[14px] text-[#f0c66a]"}`}>
                   {p.rating === "—" ? "—" : `★ ${p.rating}`}
                 </div>
                 <div className="text-right">

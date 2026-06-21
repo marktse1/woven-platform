@@ -111,7 +111,7 @@ function CheckoutForm({
   }
 
   return (
-    <div className="grid gap-7 items-start" style={{ gridTemplateColumns: "1fr 420px" }}>
+    <div className="grid gap-7 items-start grid-cols-1 lg:grid-cols-[1fr_420px]">
       {/* Left — Payment */}
       <div className="bg-panel border border-line rounded-[10px] p-6">
         <p className="text-[12.5px] font-bold tracking-[.12em] uppercase text-muted mb-4">Payment details</p>
@@ -277,7 +277,7 @@ export default function CheckoutPage() {
   }, []);
 
   return (
-    <div className="max-w-[1440px] mx-auto px-12 pt-6 pb-16">
+    <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-12 pt-6 pb-16">
       <div className="flex items-center gap-2 text-[12.5px] text-dim mb-4">
         <a href="/" className="hover:text-ink cursor-pointer">Store</a>
         <span>›</span>

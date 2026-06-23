@@ -1,0 +1,193 @@
+"use client";
+export const dynamic = "force-dynamic";
+
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useUser } from "@clerk/nextjs";
+import { getSupabaseClient, getSupabaseEnvStatus } from "@/lib/supabase";
+
+const BOOTSTRAP_ADMIN_EMAIL = "starfox.and.mark@gmail.com";
+
+type Submission = {
+  id: string;
+  clerk_user_id: string;
+  name: string;
+  slug: string;
+  summary: string | null;
+  description: string | null;
+  category: string;
+  kind: string;
+  build_url: string | null;
+  entry_file: string | null;
+  icon: string | null;
+  engine: string | null;
+  status: "pending" | "approved" | "rejected" | "changes_requested";
+  review_notes: string | null;
+  created_at: string;
+};
+
+type Filter = "pending" | "approved" | "rejected" | "all";
+
+function badge(status: Submission["status"]) {
+  switch (status) {
+    case "approved": return "bg-[rgba(123,194,74,.16)] text-[#a6e06a]";
+    case "rejected": return "bg-[rgba(227,92,92,.16)] text-[#e88]";
+    case "changes_requested": return "bg-[rgba(232,169,58,.16)] text-[#f0c66a]";
+    default: return "bg-[rgba(232,169,58,.16)] text-[#f0c66a]";
+  }
+}
+
+export default function AdminToolsPage() {
+  const { user, isLoaded } = useUser();
+  const [rows, setRows] = useState<Submission[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [filter, setFilter] = useState<Filter>("pending");
+  const [notes, setNotes] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const email = user?.primaryEmailAddress?.emailAddress ?? user?.emailAddresses?.[0]?.emailAddress ?? "";
+  const isAdmin = email.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL;
+
+  async function load() {
+    setLoading(true);
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      const env = getSupabaseEnvStatus();
+      setError(env.missing.length ? `Missing Supabase env vars: ${env.missing.join(", ")}.` : "Supabase not configured.");
+      setLoading(false);
+      return;
+    }
+    const { data, error: e } = await supabase.from("tool_submissions").select("*").order("created_at", { ascending: false });
+    if (e) setError(e.message);
+    else setRows((data as Submission[]) ?? []);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    if (isLoaded && isAdmin) load();
+    else if (isLoaded && !isAdmin) setLoading(false);
+  }, [isLoaded, isAdmin]);
+
+  const filtered = useMemo(
+    () => rows.filter((r) => (filter === "all" ? true : r.status === filter)),
+    [rows, filter],
+  );
+  const selected = rows.find((r) => r.id === selectedId) ?? filtered[0] ?? null;
+
+  async function decide(status: Submission["status"]) {
+    if (!selected) return;
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+    const { error: e } = await supabase
+      .from("tool_submissions")
+      .update({ status, review_notes: notes || selected.review_notes, reviewed_by: email, updated_at: new Date().toISOString() })
+      .eq("id", selected.id);
+    if (e) { setError(e.message); return; }
+    setNotes("");
+    setRows((prev) => prev.map((r) => (r.id === selected.id ? { ...r, status, review_notes: notes || r.review_notes } : r)));
+  }
+
+  if (isLoaded && !isAdmin) {
+    return (
+      <main className="min-h-screen px-12 py-10">
+        <div className="max-w-[640px] bg-panel border border-line rounded-[14px] p-7">
+          <h1 className="text-[24px] font-extrabold">Tool review</h1>
+          <p className="text-[14px] text-dim mt-2">Access denied. Sign in with the admin account to review tool submissions.</p>
+          <Link href="/admin" className="inline-block mt-4 px-4 py-2 rounded-[8px] border border-line bg-panel2 text-[13px] font-semibold no-underline">Creator review console</Link>
+        </div>
+      </main>
+    );
+  }
+
+  return (
+    <main className="min-h-screen px-6 lg:px-12 py-8">
+      <div className="flex items-center gap-3 mb-6">
+        <h1 className="text-[26px] font-extrabold tracking-[-0.02em]">Tool submissions</h1>
+        <div className="flex-1" />
+        <Link href="/admin" className="px-3 py-2 rounded-[8px] border border-line bg-panel2 text-[13px] font-semibold no-underline">Creator review</Link>
+      </div>
+
+      {error && <div className="mb-4 p-3 rounded-[9px] text-[13px]" style={{ background: "rgba(227,92,92,.08)", border: "1px solid rgba(227,92,92,.4)", color: "#f0a6a6" }}>{error}</div>}
+
+      <div className="flex gap-2 mb-5">
+        {(["pending", "approved", "rejected", "all"] as Filter[]).map((f) => (
+          <button key={f} onClick={() => setFilter(f)} className="px-3 py-1.5 rounded-full border text-[12px] font-semibold capitalize" style={{ background: filter === f ? "rgba(86,166,232,.14)" : "#1b2836", borderColor: filter === f ? "#56a6e8" : "#26384a", color: filter === f ? "#cfe6fb" : "#e7eef4" }}>{f}</button>
+        ))}
+      </div>
+
+      <div className="grid gap-6 items-start" style={{ gridTemplateColumns: "360px 1fr" }}>
+        <div className="bg-panel border border-line rounded-[10px] overflow-hidden max-h-[72vh] overflow-y-auto">
+          {loading ? (
+            <div className="p-6 text-dim">Loading…</div>
+          ) : filtered.length ? (
+            filtered.map((r) => (
+              <button key={r.id} onClick={() => setSelectedId(r.id)} className="w-full text-left px-5 py-4 border-b border-line last:border-none hover:bg-white/[.025]" style={{ background: r.id === selected?.id ? "rgba(86,166,232,.08)" : undefined }}>
+                <div className="flex items-center gap-3">
+                  <span className="text-[20px]">{r.icon ?? "🧩"}</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-bold text-[14px] truncate">{r.name}</div>
+                    <div className="text-[12px] text-dim truncate">{r.kind} · {r.category}</div>
+                  </div>
+                  <span className={`text-[10px] font-bold px-2 py-1 rounded-full uppercase ${badge(r.status)}`}>{r.status.replace("_", " ")}</span>
+                </div>
+              </button>
+            ))
+          ) : (
+            <div className="p-6 text-dim">No submissions in this view.</div>
+          )}
+        </div>
+
+        <div className="bg-panel border border-line rounded-[10px]">
+          {!selected ? (
+            <div className="p-8 text-dim">Select a submission.</div>
+          ) : (
+            <>
+              <div className="p-6 border-b border-line">
+                <div className="flex items-center gap-3">
+                  <span className="text-[28px]">{selected.icon ?? "🧩"}</span>
+                  <div>
+                    <h2 className="text-[20px] font-extrabold">{selected.name}</h2>
+                    <div className="text-[12.5px] text-dim">/{selected.slug} · {selected.kind} · {selected.category}</div>
+                  </div>
+                  <span className={`ml-auto text-[11px] font-bold px-2 py-1 rounded-full uppercase ${badge(selected.status)}`}>{selected.status.replace("_", " ")}</span>
+                </div>
+                {selected.summary && <p className="text-[13.5px] text-ink mt-3">{selected.summary}</p>}
+                {selected.description && <p className="text-[13px] text-dim mt-2 whitespace-pre-wrap">{selected.description}</p>}
+              </div>
+
+              <div className="p-6 border-b border-line grid grid-cols-2 gap-3 text-[13px]">
+                <Info label="Submitter">{selected.clerk_user_id}</Info>
+                <Info label="Engine">{selected.engine ?? "—"}</Info>
+                {selected.kind === "hosted" && <>
+                  <Info label="Build URL">{selected.build_url ? <a href={selected.build_url} target="_blank" rel="noreferrer" className="text-accent break-all">{selected.build_url}</a> : "—"}</Info>
+                  <Info label="Entry file">{selected.entry_file ?? "—"}</Info>
+                </>}
+              </div>
+
+              <div className="p-6">
+                <div className="text-[11px] font-bold tracking-[.12em] uppercase text-muted mb-3">Decision</div>
+                <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Review notes (sent with the decision)…" className="w-full min-h-[90px] bg-[#0a0e13] border border-line rounded-[10px] px-3.5 py-3 text-[13px] outline-none mb-3" />
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={() => decide("approved")} className="px-4 py-2 rounded-[8px] font-bold text-[13px]" style={{ background: "linear-gradient(180deg,#8bc34a,#5c8a1e)", color: "#0e1a06" }}>Approve & publish</button>
+                  <button onClick={() => decide("changes_requested")} className="px-4 py-2 rounded-[8px] border border-line bg-panel2 text-[13px] font-semibold">Request changes</button>
+                  <button onClick={() => decide("rejected")} className="px-4 py-2 rounded-[8px] border text-[13px] font-semibold" style={{ borderColor: "rgba(232,136,136,.45)", color: "#e88" }}>Reject</button>
+                </div>
+                {selected.review_notes && <p className="text-[12.5px] text-dim mt-3">Last note: {selected.review_notes}</p>}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </main>
+  );
+}
+
+function Info({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="bg-[#0a0e13] border border-line rounded-[9px] p-3">
+      <div className="text-[11px] text-dim uppercase">{label}</div>
+      <div className="font-semibold mt-1 break-all">{children}</div>
+    </div>
+  );
+}

@@ -142,10 +142,30 @@ export default function SignInPage() {
                     formContainer: "hidden",
                     dividerRow: "hidden",
                     socialButtons: "w-full",
-                    socialButtonsBlockButton: "bg-[#f8fafc] border border-[#cbd5e1] text-[#0f172a] hover:bg-white rounded-[9px] font-bold text-[13.5px] w-full shadow-[0_1px_0_rgba(255,255,255,.5)_inset]",
-                    socialButtonsBlockButtonText: "text-[#0f172a] font-bold",
+                    // Explicit inline styles (not just class names) so this reliably
+                    // renders as a bright, high-contrast button regardless of the
+                    // dark `variables.colorBackground`/`colorText` set below.
+                    socialButtonsBlockButton: {
+                      backgroundColor: "#ffffff",
+                      border: "1px solid #cbd5e1",
+                      color: "#0f172a",
+                      borderRadius: "9px",
+                      fontWeight: 700,
+                      fontSize: "13.5px",
+                      width: "100%",
+                      boxShadow: "0 1px 0 rgba(255,255,255,.5) inset",
+                    },
+                    socialButtonsBlockButtonText: {
+                      color: "#0f172a",
+                      fontWeight: 700,
+                    },
                     socialButtonsBlockButtonArrow: "hidden",
-                    socialButtonsProviderIcon: "brightness-0 saturate-0 opacity-80",
+                    // Show the provider icon (Google's "G") in its native colors instead
+                    // of forcing it to black, so it stays visible on any background.
+                    socialButtonsProviderIcon: {
+                      opacity: 1,
+                      filter: "none",
+                    },
                     internal: "bg-transparent",
                     main: "w-full",
                   },

@@ -300,13 +300,23 @@ export default function ForgeClient() {
         <div className="mt-12">
           <div className="flex items-end justify-between gap-6 mb-2">
             <p className="text-[11px] font-bold tracking-[.14em] uppercase text-accent">3D Dev Tools</p>
-            <Link
-              href="/tools/submit"
-              className="px-3.5 py-2 rounded-[8px] font-bold text-[12.5px] no-underline"
-              style={{ background: "linear-gradient(180deg,#56a6e8,#2c6aa0)", color: "#06121d" }}
-            >
-              Submit a tool
-            </Link>
+            <div className="flex items-center gap-2">
+              <a
+                href="https://buymeacoffee.com/starfox"
+                target="_blank"
+                rel="noreferrer"
+                className="px-3.5 py-2 rounded-[8px] border border-line bg-panel2 text-[12.5px] font-semibold no-underline"
+              >
+                ☕ Buy me a coffee
+              </a>
+              <Link
+                href="/tools/submit"
+                className="px-3.5 py-2 rounded-[8px] font-bold text-[12.5px] no-underline"
+                style={{ background: "linear-gradient(180deg,#56a6e8,#2c6aa0)", color: "#06121d" }}
+              >
+                Submit a tool
+              </Link>
+            </div>
           </div>
           <h2 className="text-[22px] font-extrabold tracking-[-0.02em] mb-1">Optimize & prep your assets</h2>
           <p className="text-[14px] text-muted mb-6">

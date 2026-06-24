@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
 import CreatorSubNav from "@/components/shell/CreatorSubNav";
 import { getSupabaseClient, getSupabaseEnvStatus } from "@/lib/supabase";
+import { getAutoApproveCreators } from "@/lib/platformSettings";
 
 const engineOptions = [
   { label: "Babylon.js", dot: "#bb464b" },
@@ -111,6 +112,7 @@ export default function BecomeCreatorPage() {
     }
 
     setSubmitting(true);
+    const autoApprove = await getAutoApproveCreators();
     const { error } = await supabase
       .from("creator_profiles")
       .upsert(
@@ -118,7 +120,7 @@ export default function BecomeCreatorPage() {
           clerk_user_id: user.id,
           studio_name,
           handle,
-          status: "pending",
+          status: autoApprove ? "approved" : "pending",
           country,
           team_size,
           about,
@@ -136,7 +138,11 @@ export default function BecomeCreatorPage() {
     }
 
     setState("success");
-    setMessage("Application saved. A staff reviewer can now approve creator status.");
+    setMessage(
+      autoApprove
+        ? "Application approved automatically — creator access is unlocked."
+        : "Application saved. A staff reviewer can now approve creator status."
+    );
     router.push("/dashboard");
   }
 

@@ -14,7 +14,7 @@ import {
   type AssetRow,
   type Visibility,
 } from "@/lib/assets";
-import PipelineStudio from "./PipelineStudio";
+import PaintStudio from "./PaintStudio";
 
 function fmt(n: number | null | undefined) {
   if (n == null) return "—";
@@ -26,7 +26,7 @@ function bytes(n: number) {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-export default function RetopologyClient() {
+export default function SubstanceWeaverClient() {
   const { user, isLoaded } = useUser();
   const creatorStatus = useCreatorStatus();
 
@@ -48,7 +48,6 @@ export default function RetopologyClient() {
     if (creatorStatus === "approved" && user?.id && !openedAsset) refreshLibrary();
   }, [creatorStatus, user?.id, openedAsset, refreshLibrary]);
 
-  // Drag in a hi-res GLB: stored privately in the library immediately, then opened in the Studio.
   const onFile = useCallback(
     async (file: File) => {
       if (!user?.id) return;
@@ -74,11 +73,10 @@ export default function RetopologyClient() {
     [user?.id],
   );
 
-  // ---- access gating --------------------------------------------------------
   if (!isLoaded || creatorStatus === "loading") {
     return (
       <main className="min-h-[calc(100vh-73px)] bg-[#070b11] text-ink flex items-center justify-center">
-        <div className="text-[13px] text-dim">Loading Mesh Loom…</div>
+        <div className="text-[13px] text-dim">Loading Substance Weaver…</div>
       </main>
     );
   }
@@ -86,7 +84,7 @@ export default function RetopologyClient() {
     return (
       <main className="min-h-[calc(100vh-73px)] bg-[#070b11] text-ink flex items-center justify-center px-6">
         <div className="max-w-[520px] w-full bg-panel border border-line rounded-[10px] p-6">
-          <div className="text-[20px] font-extrabold tracking-[-0.02em] mb-2">Mesh Loom</div>
+          <div className="text-[20px] font-extrabold tracking-[-0.02em] mb-2">Substance Weaver</div>
           <p className="text-[13px] text-dim leading-relaxed">
             Forge tools are available once your creator profile is approved.
           </p>
@@ -110,7 +108,7 @@ export default function RetopologyClient() {
           <div className="flex items-center gap-3 mb-5">
             <Link href="/forge" className="text-[12px] text-dim no-underline hover:text-ink">← Forge</Link>
             <span className="text-dim">/</span>
-            <div className="text-[13px] font-bold">🔻 Mesh Loom</div>
+            <div className="text-[13px] font-bold">🎨 Substance Weaver</div>
           </div>
         )}
 
@@ -121,7 +119,7 @@ export default function RetopologyClient() {
         )}
 
         {openedAsset && user?.id ? (
-          <PipelineStudio
+          <PaintStudio
             asset={openedAsset}
             userId={user.id}
             onBack={() => {
@@ -133,11 +131,11 @@ export default function RetopologyClient() {
           <div className="grid gap-6" style={{ gridTemplateColumns: "1fr 380px" }}>
             <div className="bg-panel border border-line rounded-[12px] p-8 flex items-center justify-center">
               <div className="w-full max-w-[480px]">
-                <p className="text-[11px] font-bold tracking-[.12em] uppercase text-muted mb-3 text-center">Drop a high-res GLB to start</p>
+                <p className="text-[11px] font-bold tracking-[.12em] uppercase text-muted mb-3 text-center">Drop a textured GLB to start</p>
                 <DropZone onFile={onFile} />
                 {busy && <p className="text-[12px] text-dim mt-3 text-center">Uploading to your library…</p>}
                 <p className="text-[11.5px] text-dim mt-3 text-center">
-                  Decimate, retopologize with edge loops, segment, and finalize in any order — stays private until you share it.
+                  Paint albedo color and relief detail directly on the model, with a channel switcher to inspect the result — stays private until you share it.
                 </p>
               </div>
             </div>

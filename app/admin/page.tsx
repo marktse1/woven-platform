@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useUser } from "@clerk/nextjs";
 import { getSupabaseClient, getSupabaseEnvStatus } from "@/lib/supabase";
+import { getAutoApproveCreators, setAutoApproveCreators } from "@/lib/platformSettings";
 
 type CreatorProfile = {
   id: string;
@@ -84,6 +85,8 @@ export default function AdminReviewPage() {
   const [previewRole, setPreviewRole] = useState<TeamMember["role"]>("admin");
   const [team, setTeam] = useState<TeamMember[]>(DEFAULT_TEAM);
   const [teamOpen, setTeamOpen] = useState(false);
+  const [autoApprove, setAutoApprove] = useState(false);
+  const [autoApproveBusy, setAutoApproveBusy] = useState(false);
 
   const currentEmail = user?.primaryEmailAddress?.emailAddress ?? user?.emailAddresses?.[0]?.emailAddress ?? "";
   const isBootstrapAdmin = currentEmail.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL;
@@ -188,6 +191,34 @@ export default function AdminReviewPage() {
       active = false;
     };
    }, [isBootstrapAdmin, isLoaded, user?.id]);
+
+  useEffect(() => {
+    if (!isBootstrapAdmin) return;
+    let active = true;
+    getAutoApproveCreators()
+      .then((value) => {
+        if (active) setAutoApprove(value);
+      })
+      .catch(() => {
+        // Leave the toggle at its default (off) if this fails to load.
+      });
+    return () => {
+      active = false;
+    };
+  }, [isBootstrapAdmin]);
+
+  async function toggleAutoApprove() {
+    const next = !autoApprove;
+    setAutoApproveBusy(true);
+    try {
+      await setAutoApproveCreators(next);
+      setAutoApprove(next);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not update the auto-approve setting.");
+    } finally {
+      setAutoApproveBusy(false);
+    }
+  }
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -348,6 +379,40 @@ export default function AdminReviewPage() {
           ))}
         </div>
       </div>
+
+      {isBootstrapAdmin ? (
+        <div
+          className="flex items-center gap-4 p-4 rounded-[10px] border mb-6"
+          style={{
+            borderColor: autoApprove ? "rgba(232,169,58,.5)" : "#26384a",
+            background: autoApprove ? "rgba(232,169,58,.08)" : "transparent",
+          }}
+        >
+          <div className="flex-1">
+            <div className="font-bold text-[14px]">Auto-approve creator applications</div>
+            <div className="text-[12.5px] text-dim mt-0.5">
+              {autoApprove
+                ? "On — every new application is approved instantly, skipping this review queue entirely."
+                : "Off — new applications land here as Pending until a reviewer decides."}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={toggleAutoApprove}
+            disabled={autoApproveBusy}
+            className="relative w-[42px] h-6 rounded-full border shrink-0 transition-colors disabled:opacity-50"
+            style={{
+              background: autoApprove ? "rgba(232,169,58,.25)" : "#223345",
+              borderColor: autoApprove ? "#e8a93a" : "#324a61",
+            }}
+          >
+            <span
+              className="absolute top-[3px] w-[18px] h-[18px] rounded-full transition-[left]"
+              style={{ left: autoApprove ? "21px" : "3px", background: autoApprove ? "#e8a93a" : "#5d738a" }}
+            />
+          </button>
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-4 gap-4 mb-6">
         <div className="bg-panel border border-line rounded-[10px] p-4">

@@ -36,6 +36,11 @@ yarn-error.log*
 # vercel
 .vercel
 
+# local-only tooling venv for the Modal worker (worker/)
+/.worker-venv
+supabase/.temp
+worker/__pycache__
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

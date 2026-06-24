@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
 import { getSupabaseClient, getSupabaseEnvStatus } from "@/lib/supabase";
+import { mergeHostedTools, type ApprovedHostedTool } from "@/lib/tools/registry";
 
 type ToolRow = {
   id: string;
@@ -42,16 +43,12 @@ const ENGINE_OPTIONS = [
   { label: "Unity WebGL", slug: "unity-forge",     dot: "#cccccc", desc: "WebGL export tools" },
 ];
 
-// Native (in-repo) asset-prep tools — run directly on Woven, no iframe handoff.
-const DEV_TOOL_OPTIONS = [
-  {
-    label: "Mesh Loom",
-    href: "/tools/retopology",
-    dot: "#7bc24a",
-    desc: "Drag in a hi-res GLB — decimate, retopologize with edge loops, segment, and bake a clean low-poly in any order.",
-    badge: "New",
-  },
-];
+// Per-tool accent dots for the 3D Dev Tools grid - native tools get a
+// distinct color each; hosted/community tools fall back to their own accent.
+const DEV_TOOL_DOTS: Record<string, string> = {
+  retopology: "#7bc24a",
+  "substance-weaver": "#e8a056",
+};
 
 function joinUrl(base: string, entryFile: string) {
   const normalizedBase = base.endsWith("/") ? base : `${base}/`;
@@ -68,6 +65,8 @@ export default function ForgeClient() {
   const [availableTools, setAvailableTools] = useState<Record<string, { tool: ToolRow; build: ToolBuildRow }>>({});
   const [activeTool, setActiveTool] = useState<ToolRow | null>(null);
   const [iframeSrc, setIframeSrc] = useState<string | null>(null);
+  const [approvedHostedTools, setApprovedHostedTools] = useState<ApprovedHostedTool[]>([]);
+  const devTools = useMemo(() => mergeHostedTools(approvedHostedTools), [approvedHostedTools]);
 
   const handoffParams = useMemo(() => {
     const params = new URLSearchParams();
@@ -140,6 +139,15 @@ export default function ForgeClient() {
 
       if (!active) return;
       setAvailableTools(toolMap);
+
+      const { data: hostedData } = await supabase
+        .from("tool_submissions")
+        .select("slug, name, summary, icon, category, build_url, entry_file, engine")
+        .eq("status", "approved")
+        .eq("kind", "hosted");
+
+      if (!active) return;
+      setApprovedHostedTools((hostedData as ApprovedHostedTool[]) ?? []);
       setPhase("picker");
     }
 
@@ -290,36 +298,50 @@ export default function ForgeClient() {
         </div>
 
         <div className="mt-12">
-          <p className="text-[11px] font-bold tracking-[.14em] uppercase text-accent mb-2">3D Dev Tools</p>
+          <div className="flex items-end justify-between gap-6 mb-2">
+            <p className="text-[11px] font-bold tracking-[.14em] uppercase text-accent">3D Dev Tools</p>
+            <Link
+              href="/tools/submit"
+              className="px-3.5 py-2 rounded-[8px] font-bold text-[12.5px] no-underline"
+              style={{ background: "linear-gradient(180deg,#56a6e8,#2c6aa0)", color: "#06121d" }}
+            >
+              Submit a tool
+            </Link>
+          </div>
           <h2 className="text-[22px] font-extrabold tracking-[-0.02em] mb-1">Optimize & prep your assets</h2>
           <p className="text-[14px] text-muted mb-6">
-            In-house pipeline tools for getting models game-ready — native to Woven, no iframe handoff.
+            In-house pipeline tools for getting models game-ready, plus community-built tools — native ones run with no iframe handoff.
           </p>
 
           <div className="grid grid-cols-3 gap-4">
-            {DEV_TOOL_OPTIONS.map((t) => (
-              <Link
-                key={t.href}
-                href={t.href}
-                className="text-left rounded-[12px] border p-5 transition-all block no-underline group"
-                style={{ background: "#111820", borderColor: "#26384a" }}
-              >
-                <div className="flex items-center gap-2.5 mb-3">
-                  <span className="w-3 h-3 rounded-full shrink-0" style={{ background: t.dot }} />
-                  <span className="font-bold text-[15px]" style={{ color: "#e7eef4" }}>{t.label}</span>
-                  {t.badge && (
-                    <span className="ml-auto text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-[.06em]" style={{ background: "rgba(123,194,74,.16)", color: "#a6e06a" }}>
-                      {t.badge}
-                    </span>
-                  )}
-                </div>
-                <p className="text-[12.5px]" style={{ color: "#b9cdd9" }}>{t.desc}</p>
-                <div className="mt-4 flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#7bc24a]" />
-                  <span className="text-[11px] font-semibold text-[#7bc24a]">native · available</span>
-                </div>
-              </Link>
-            ))}
+            {devTools.map((t) => {
+              const dot = DEV_TOOL_DOTS[t.slug] ?? t.accent ?? "#56a6e8";
+              const inner = (
+                <>
+                  <div className="flex items-center gap-2.5 mb-3">
+                    <span className="w-3 h-3 rounded-full shrink-0" style={{ background: dot }} />
+                    <span className="font-bold text-[15px]" style={{ color: "#e7eef4" }}>{t.name}</span>
+                    {t.badge && (
+                      <span className="ml-auto text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-[.06em]" style={{ background: "rgba(123,194,74,.16)", color: "#a6e06a" }}>
+                        {t.badge}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[12.5px]" style={{ color: "#b9cdd9" }}>{t.summary}</p>
+                  <div className="mt-4 flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#7bc24a]" />
+                    <span className="text-[11px] font-semibold text-[#7bc24a]">{t.kind === "native" ? "native · available" : "community · hosted"}</span>
+                  </div>
+                </>
+              );
+              const cardCls = "text-left rounded-[12px] border p-5 transition-all block no-underline group";
+              const cardStyle = { background: "#111820", borderColor: "#26384a" };
+              return t.kind === "native" && t.href ? (
+                <Link key={t.slug} href={t.href} className={cardCls} style={cardStyle}>{inner}</Link>
+              ) : (
+                <a key={t.slug} href={t.buildUrl} target="_blank" rel="noreferrer" className={cardCls} style={cardStyle}>{inner}</a>
+              );
+            })}
           </div>
         </div>
 

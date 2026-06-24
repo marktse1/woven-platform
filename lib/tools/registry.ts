@@ -18,6 +18,18 @@ export const NATIVE_TOOLS: ToolDef[] = [
     accent: "#56a6e8",
     badge: "New",
   },
+  {
+    slug: "substance-weaver",
+    name: "Substance Weaver",
+    summary: "Paint albedo and relief detail directly onto a model's UVs, in real time, on the actual 3D mesh.",
+    icon: "🎨",
+    category: "texturing",
+    kind: "native",
+    access: "creators",
+    href: "/tools/substance-weaver",
+    accent: "#56a6e8",
+    badge: "New",
+  },
 ];
 
 // ---------------------------------------------------------------------------

@@ -9,7 +9,6 @@ const tabs = [
   { label: "Store", href: "/" },
   { label: "Library", href: "/library" },
   { label: "Weave Forge", href: "/forge" },
-  { label: "Tools", href: "/tools" },
   { label: "Community", href: "/community" },
 ];
 

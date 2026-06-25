@@ -1,6 +1,5 @@
 "use client";
 import { useEffect, useState } from "react";
-import LibrarySubNav from "@/components/shell/LibrarySubNav";
 import { useUser } from "@clerk/nextjs";
 import { getSupabaseClient } from "@/lib/supabase";
 
@@ -88,9 +87,7 @@ export default function LibraryPage() {
   );
 
   return (
-    <>
-      <LibrarySubNav />
-      <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-12 pt-6 pb-16">
+    <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-12 pt-6 pb-16">
         <h1 className="text-[30px] font-extrabold tracking-[-0.02em]">Your Library</h1>
 
         {/* Stats */}
@@ -225,7 +222,6 @@ export default function LibraryPage() {
             )}
           </div>
         </div>
-      </div>
-    </>
+    </div>
   );
 }

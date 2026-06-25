@@ -85,7 +85,10 @@ export default function PipelineStudio({ asset, userId, onBack }: Props) {
   const [segmentation, setSegmentation] = useState<SegmentationOverlay | null>(null);
   const [textureChannel, setTextureChannel] = useState<TextureChannel | null>(null);
   const [wireframe, setWireframe] = useState(true);
-  const [compareToSource, setCompareToSource] = useState(false);
+  const [showGrid, setShowGrid] = useState(true);
+  // Defaults to the original upload (matching the poly count shown on the library
+  // card) rather than silently resuming a previously-decimated "current" version.
+  const [compareToSource, setCompareToSource] = useState(true);
 
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
@@ -342,138 +345,147 @@ export default function PipelineStudio({ asset, userId, onBack }: Props) {
         </div>
       )}
 
-      {!session ? (
-        <div className="bg-panel border border-line rounded-[12px] p-5">
-          <p className="text-[11px] font-bold tracking-[.12em] uppercase text-muted mb-3">What is it?</p>
-          <p className="text-[12px] text-dim mb-3">
-            This decides whether the pipeline runs true quad retopology with edge loops, or just decimates — set once per asset.
-          </p>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4">
-            {CLASSIFICATIONS.map((c) => {
-              const on = classification === c.value;
-              return (
-                <button
-                  key={c.value}
-                  onClick={() => setClassification(c.value)}
-                  className="text-left rounded-[10px] border p-3"
-                  style={{ borderColor: on ? ACCENT : "#26384a", background: on ? "rgba(86,166,232,.10)" : "#0d141c" }}
-                >
-                  <div className="flex items-center gap-2">
-                    <span>{c.icon}</span>
-                    <span className="font-bold text-[13px]">{c.label}</span>
-                  </div>
-                  <div className="text-[11.5px] text-dim mt-1">{c.blurb}</div>
-                </button>
-              );
-            })}
-          </div>
-          <button
-            onClick={startPipeline}
-            disabled={busy}
-            className="w-full py-3 rounded-[10px] font-bold text-[13.5px] disabled:opacity-50"
-            style={{ background: "linear-gradient(180deg,#56a6e8,#2c6aa0)", color: "#06121d" }}
-          >
-            Start pipeline
-          </button>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-6 items-start">
-          {/* ---- left: step rail ---- */}
-          <div className="flex flex-col gap-5">
-            <StepCard
-              title="1 · Decimate"
-              description={`Reduce triangle count${decimateMode === "adaptive" ? " — adaptive density keeps detail on sharp/curved regions" : " — uniform reduction across the whole mesh"}.`}
-            >
-              <div className="flex gap-2 mb-3">
-                {(["adaptive", "uniform"] as const).map((m) => (
-                  <button
-                    key={m}
-                    onClick={() => setDecimateMode(m)}
-                    className="flex-1 py-2 rounded-lg border text-[12.5px] font-semibold capitalize"
-                    style={{ borderColor: decimateMode === m ? ACCENT : "#26384a", background: decimateMode === m ? "rgba(86,166,232,.14)" : "#0d141c", color: decimateMode === m ? "#cfe6fb" : "#8aa0b4" }}
-                  >
-                    {m}
-                  </button>
-                ))}
-              </div>
-              <div className="flex items-center justify-between gap-2 mb-2">
-                <span className="text-[12.5px] text-muted">Target triangles</span>
-                <input
-                  type="number"
-                  min={200}
-                  step={100}
-                  value={targetPolys}
-                  onChange={(e) => setTargetPolys(Math.max(200, Math.round(Number(e.target.value) || 0)))}
-                  className="w-[110px] bg-[#0a0e13] border border-line rounded-md px-2 py-1 text-right text-[14px] font-bold outline-none focus:border-accent"
-                  style={{ color: ACCENT }}
-                />
-              </div>
-              <input
-                type="range"
-                min={200}
-                max={Math.max(1000, workingPolys || sourcePolys || 100000)}
-                step={100}
-                value={Math.min(targetPolys, Math.max(1000, workingPolys || sourcePolys || 100000))}
-                onChange={(e) => setTargetPolys(Number(e.target.value))}
-                className="w-full accent-[#56a6e8]"
-              />
-              <button
-                onClick={applyDecimate}
-                disabled={busy || !workingBuf}
-                className="w-full mt-3 py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
-                style={{ background: "linear-gradient(180deg,#56a6e8,#2c6aa0)", color: "#06121d" }}
-              >
-                Apply
-              </button>
-            </StepCard>
-
-            <StepCard title="2 · Segment objects" description="Splits the mesh into parts by existing material/connectivity boundaries — deterministic, works in any order.">
-              <button
-                onClick={applySegment}
-                disabled={busy || !workingBuf}
-                className="w-full py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
-                style={{ background: "linear-gradient(180deg,#56a6e8,#2c6aa0)", color: "#06121d" }}
-              >
-                Apply
-              </button>
-              {segmentation && (
-                <p className="text-[11.5px] text-dim mt-2">Overlay is showing in the viewer — toggle off with the wireframe controls.</p>
-              )}
-            </StepCard>
-
-            {isCharacter && (
+      <div className="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-6 items-start">
+        {/* ---- left: step rail ---- */}
+        <div className="flex flex-col gap-5">
+          {!session ? (
+            <div className="bg-panel border border-line rounded-[12px] p-5 text-[12.5px] text-dim">
+              Pick a classification above and start the pipeline to begin editing.
+            </div>
+          ) : (
+            <>
               <StepCard
-                title="3 · Retopology + edge loops"
-                description={`Quad-dominant remesh with proper edge loops for ${classification} animation, on the Forge worker.`}
+                title="1 · Decimate"
+                description={`Reduce triangle count${decimateMode === "adaptive" ? " — adaptive density keeps detail on sharp/curved regions" : " — uniform reduction across the whole mesh"}.`}
               >
+                <div className="flex gap-2 mb-3">
+                  {(["adaptive", "uniform"] as const).map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => setDecimateMode(m)}
+                      className="flex-1 py-2 rounded-lg border text-[12.5px] font-semibold capitalize"
+                      style={{ borderColor: decimateMode === m ? ACCENT : "#26384a", background: decimateMode === m ? "rgba(86,166,232,.14)" : "#0d141c", color: decimateMode === m ? "#cfe6fb" : "#8aa0b4" }}
+                    >
+                      {m}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <span className="text-[12.5px] text-muted">Target triangles</span>
+                  <input
+                    type="number"
+                    min={200}
+                    step={100}
+                    value={targetPolys}
+                    onChange={(e) => setTargetPolys(Math.max(200, Math.round(Number(e.target.value) || 0)))}
+                    className="w-[110px] bg-[#0a0e13] border border-line rounded-md px-2 py-1 text-right text-[14px] font-bold outline-none focus:border-accent"
+                    style={{ color: ACCENT }}
+                  />
+                </div>
+                <input
+                  type="range"
+                  min={200}
+                  max={Math.max(1000, workingPolys || sourcePolys || 100000)}
+                  step={100}
+                  value={Math.min(targetPolys, Math.max(1000, workingPolys || sourcePolys || 100000))}
+                  onChange={(e) => setTargetPolys(Number(e.target.value))}
+                  className="w-full accent-[#56a6e8]"
+                />
                 <button
-                  onClick={applyRetopo}
-                  disabled={busy || pendingRetopo === "queued" || pendingRetopo === "processing"}
+                  onClick={applyDecimate}
+                  disabled={busy || !workingBuf}
+                  className="w-full mt-3 py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
+                  style={{ background: "linear-gradient(180deg,#56a6e8,#2c6aa0)", color: "#06121d" }}
+                >
+                  Apply
+                </button>
+              </StepCard>
+
+              <StepCard title="2 · Segment objects" description="Splits the mesh into parts by existing material/connectivity boundaries — deterministic, works in any order.">
+                <button
+                  onClick={applySegment}
+                  disabled={busy || !workingBuf}
                   className="w-full py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
                   style={{ background: "linear-gradient(180deg,#56a6e8,#2c6aa0)", color: "#06121d" }}
                 >
-                  {pendingRetopo === "queued" || pendingRetopo === "processing" ? "Queued on Forge worker…" : "Apply"}
+                  Apply
                 </button>
+                {segmentation && (
+                  <p className="text-[11.5px] text-dim mt-2">Overlay is showing in the viewer — toggle off with the wireframe controls.</p>
+                )}
               </StepCard>
-            )}
 
-            <FinalizeStep
-              stepNumber={isCharacter ? 4 : 3}
-              bakeMaps={bakeMaps}
-              onToggleBakeMap={(m) => setBakeMaps((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]))}
-              dilationPx={dilationPx}
-              onDilationChange={setDilationPx}
-              onFinalize={applyFinalize}
-              busy={busy}
-              disabled={!hasSteps}
-              pendingStatus={pendingFinalize}
-              error={null}
-            />
+              {isCharacter && (
+                <StepCard
+                  title="3 · Retopology + edge loops"
+                  description={`Quad-dominant remesh with proper edge loops for ${classification} animation, on the Forge worker.`}
+                >
+                  <button
+                    onClick={applyRetopo}
+                    disabled={busy || pendingRetopo === "queued" || pendingRetopo === "processing"}
+                    className="w-full py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
+                    style={{ background: "linear-gradient(180deg,#56a6e8,#2c6aa0)", color: "#06121d" }}
+                  >
+                    {pendingRetopo === "queued" || pendingRetopo === "processing" ? "Queued on Forge worker…" : "Apply"}
+                  </button>
+                </StepCard>
+              )}
+
+              <FinalizeStep
+                stepNumber={isCharacter ? 4 : 3}
+                bakeMaps={bakeMaps}
+                onToggleBakeMap={(m) => setBakeMaps((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]))}
+                dilationPx={dilationPx}
+                onDilationChange={setDilationPx}
+                onFinalize={applyFinalize}
+                busy={busy}
+                disabled={!hasSteps}
+                pendingStatus={pendingFinalize}
+                error={null}
+              />
+            </>
+          )}
+        </div>
+
+        {/* ---- right: classification + viewer + history ---- */}
+        <div className="flex flex-col gap-5">
+          <div className="bg-panel border border-line rounded-[12px] p-5">
+            <p className="text-[11px] font-bold tracking-[.12em] uppercase text-muted mb-3">What is it?</p>
+            <p className="text-[12px] text-dim mb-3">
+              This decides whether the pipeline runs true quad retopology with edge loops, or just decimates.
+            </p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4">
+              {CLASSIFICATIONS.map((c) => {
+                const on = classification === c.value;
+                return (
+                  <button
+                    key={c.value}
+                    onClick={() => setClassification(c.value)}
+                    className="text-left rounded-[10px] border p-3"
+                    style={{ borderColor: on ? ACCENT : "#26384a", background: on ? "rgba(86,166,232,.10)" : "#0d141c" }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span>{c.icon}</span>
+                      <span className="font-bold text-[13px]">{c.label}</span>
+                    </div>
+                    <div className="text-[11.5px] text-dim mt-1">{c.blurb}</div>
+                  </button>
+                );
+              })}
+            </div>
+            {!session && (
+              <button
+                onClick={startPipeline}
+                disabled={busy}
+                className="w-full py-3 rounded-[10px] font-bold text-[13.5px] disabled:opacity-50"
+                style={{ background: "linear-gradient(180deg,#56a6e8,#2c6aa0)", color: "#06121d" }}
+              >
+                Start pipeline
+              </button>
+            )}
           </div>
 
-          {/* ---- right: viewer + history ---- */}
-          <div className="flex flex-col gap-5">
-            <div className="bg-panel border border-line rounded-[12px] overflow-hidden">
+          <div className="bg-panel border border-line rounded-[12px] overflow-hidden">
               <div className="flex items-center gap-2 px-4 py-3 border-b border-line flex-wrap">
                 <button
                   onClick={() => setCompareToSource((v) => !v)}
@@ -489,6 +501,13 @@ export default function PipelineStudio({ asset, userId, onBack }: Props) {
                   style={{ borderColor: wireframe ? ACCENT : "#26384a", background: wireframe ? "rgba(86,166,232,.14)" : "transparent", color: wireframe ? "#cfe6fb" : "#8aa0b4" }}
                 >
                   Wireframe {wireframe ? "on" : "off"}
+                </button>
+                <button
+                  onClick={() => setShowGrid((v) => !v)}
+                  className="px-3 py-1.5 rounded-lg border text-[12.5px] font-semibold"
+                  style={{ borderColor: showGrid ? ACCENT : "#26384a", background: showGrid ? "rgba(86,166,232,.14)" : "transparent", color: showGrid ? "#cfe6fb" : "#8aa0b4" }}
+                >
+                  Grid {showGrid ? "on" : "off"}
                 </button>
                 {segmentation && (
                   <button
@@ -527,6 +546,7 @@ export default function PipelineStudio({ asset, userId, onBack }: Props) {
                     key={compareToSource ? `source-${asset.id}` : `current-${currentAssetId}`}
                     data={viewerBuf}
                     wireframe={wireframe}
+                    showGrid={showGrid}
                     accent={ACCENT}
                     segmentation={compareToSource ? null : segmentation}
                     textureChannel={compareToSource ? null : textureChannel}
@@ -556,7 +576,7 @@ export default function PipelineStudio({ asset, userId, onBack }: Props) {
             </div>
           </div>
         </div>
-      )}
-    </div>
+      </div>
   );
 }
+

@@ -19,6 +19,8 @@ type Props = {
   data: ArrayBuffer | null;
   /** Show a wireframe overlay on top of the shaded mesh. */
   wireframe: boolean;
+  /** Show the ground-plane grid helper. Defaults to true. */
+  showGrid?: boolean;
   accent?: string;
   /** Color-overlay triangles by segment (from segmentByConnectivity or a Tier-2 part-label job). */
   segmentation?: SegmentationOverlay | null;
@@ -128,12 +130,13 @@ function applyTextureChannelToGroup(
   });
 }
 
-export default function ModelViewer({ data, wireframe, accent = "#56a6e8", segmentation = null, textureChannel = null, onLoadError }: Props) {
+export default function ModelViewer({ data, wireframe, showGrid = true, accent = "#56a6e8", segmentation = null, textureChannel = null, onLoadError }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
   const modelRef = useRef<THREE.Group | null>(null);
+  const gridRef = useRef<THREE.GridHelper | null>(null);
   const wireMatRef = useRef<THREE.LineBasicMaterial | null>(null);
   const originalMaterialsRef = useRef<WeakMap<THREE.Mesh, THREE.Material | THREE.Material[]>>(new WeakMap());
   const onLoadErrorRef = useRef(onLoadError);
@@ -175,6 +178,8 @@ export default function ModelViewer({ data, wireframe, accent = "#56a6e8", segme
     const grid = new THREE.GridHelper(10, 20, 0x26384a, 0x1a2530);
     (grid.material as THREE.Material).transparent = true;
     (grid.material as THREE.Material).opacity = 0.35;
+    grid.visible = showGrid;
+    gridRef.current = grid;
     scene.add(grid);
 
     wireMatRef.current = new THREE.LineBasicMaterial({
@@ -285,6 +290,11 @@ export default function ModelViewer({ data, wireframe, accent = "#56a6e8", segme
       if (o.name === "__wire") o.visible = wireframe;
     });
   }, [wireframe]);
+
+  // ---- toggle grid visibility -------------------------------------------------
+  useEffect(() => {
+    if (gridRef.current) gridRef.current.visible = showGrid;
+  }, [showGrid]);
 
   return <div ref={mountRef} className="w-full h-full min-h-[260px]" />;
 }

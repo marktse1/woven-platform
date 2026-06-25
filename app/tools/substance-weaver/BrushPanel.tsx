@@ -1,7 +1,7 @@
 "use client";
 
 import StepCard from "../retopology/StepCard";
-import type { BrushSettings, PaintChannel, ViewChannel } from "@/components/tools/PaintViewer";
+import type { BrushSettings, LightInfo, PaintChannel } from "@/components/tools/PaintViewer";
 import type { Rgb } from "@/lib/paint/brush";
 
 const ACCENT = "#56a6e8";
@@ -13,13 +13,6 @@ function hexToRgb(hex: string): Rgb {
   const n = parseInt(hex.slice(1), 16);
   return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
 }
-
-const VIEW_CHANNELS: { value: ViewChannel; label: string }[] = [
-  { value: "combined", label: "Combined" },
-  { value: "albedo", label: "Albedo" },
-  { value: "normal", label: "Normal" },
-  { value: "ao", label: "AO" },
-];
 
 function pillButton(active: boolean) {
   return {
@@ -35,39 +28,52 @@ function pillButton(active: boolean) {
 type Props = {
   paintMode: boolean;
   onPaintModeChange: (v: boolean) => void;
+  showGrid: boolean;
+  onShowGridChange: (v: boolean) => void;
   paintChannel: PaintChannel;
   onPaintChannelChange: (c: PaintChannel) => void;
   erasing: boolean;
   onErasingChange: (v: boolean) => void;
   brush: BrushSettings;
   onBrushChange: (b: BrushSettings) => void;
-  viewChannel: ViewChannel;
-  onViewChannelChange: (c: ViewChannel) => void;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
   onRedo: () => void;
-  onSave: () => void;
-  busy: boolean;
+  // Lights
+  selectedLight: LightInfo | null;
+  lightsGizmosVisible: boolean;
+  onAddLight: () => void;
+  onDeleteSelectedLight: () => void;
+  onDeleteAllLights: () => void;
+  onSetLightIntensity: (v: number) => void;
+  onSetLightDistance: (v: number) => void;
+  onSetLightsGizmosVisible: (v: boolean) => void;
 };
 
 export default function BrushPanel({
   paintMode,
   onPaintModeChange,
+  showGrid,
+  onShowGridChange,
   paintChannel,
   onPaintChannelChange,
   erasing,
   onErasingChange,
   brush,
   onBrushChange,
-  viewChannel,
-  onViewChannelChange,
   canUndo,
   canRedo,
   onUndo,
   onRedo,
-  onSave,
-  busy,
+  selectedLight,
+  lightsGizmosVisible,
+  onAddLight,
+  onDeleteSelectedLight,
+  onDeleteAllLights,
+  onSetLightIntensity,
+  onSetLightDistance,
+  onSetLightsGizmosVisible,
 }: Props) {
   return (
     <div className="flex flex-col gap-5">
@@ -88,6 +94,9 @@ export default function BrushPanel({
             </button>
           ))}
         </div>
+        <button onClick={() => onShowGridChange(!showGrid)} {...pillButton(showGrid)} className={pillButton(showGrid).className + " mt-2 w-full"}>
+          Grid {showGrid ? "on" : "off"}
+        </button>
       </StepCard>
 
       <StepCard title="Brush" description="Paint color (albedo) or relief detail (height -> normal map).">
@@ -176,24 +185,85 @@ export default function BrushPanel({
         </div>
       </StepCard>
 
-      <StepCard title="View channel" description="Preview the live painted result, or inspect a single texture.">
-        <div className="flex flex-wrap gap-1.5">
-          {VIEW_CHANNELS.map((c) => (
-            <button key={c.value} onClick={() => onViewChannelChange(c.value)} {...pillButton(viewChannel === c.value)}>
-              {c.label}
-            </button>
-          ))}
+      <StepCard title="Lights" description="Switch to Orbit mode to drag light balls. Click a ball to select it.">
+        <div className="flex gap-2 mb-3">
+          <button
+            onClick={onAddLight}
+            className="flex-1 py-2 rounded-lg border text-[12.5px] font-semibold"
+            style={{ borderColor: ACCENT, background: "rgba(86,166,232,.14)", color: "#cfe6fb" }}
+          >
+            + Add light
+          </button>
+          <button
+            onClick={() => onSetLightsGizmosVisible(!lightsGizmosVisible)}
+            {...pillButton(!lightsGizmosVisible)}
+            className={pillButton(!lightsGizmosVisible).className}
+          >
+            {lightsGizmosVisible ? "Hide" : "Show"}
+          </button>
+          <button
+            onClick={onDeleteAllLights}
+            className="text-[12px] px-2.5 py-1 rounded-full border capitalize"
+            style={{ borderColor: "#5a2020", background: "#1a0a0a", color: "#e88" }}
+          >
+            Clear
+          </button>
         </div>
-      </StepCard>
 
-      <button
-        onClick={onSave}
-        disabled={busy}
-        className="w-full py-3.5 rounded-[10px] font-bold text-[14px] disabled:opacity-50"
-        style={{ background: "linear-gradient(180deg,#56a6e8,#2c6aa0)", color: "#06121d" }}
-      >
-        {busy ? "Saving…" : "Save as new asset"}
-      </button>
+        {selectedLight ? (
+          <div className="flex flex-col gap-2.5 pt-3 border-t border-line">
+            <div className="flex items-center justify-between">
+              <span className="text-[12px] text-dim font-semibold">Selected light</span>
+              <button
+                onClick={onDeleteSelectedLight}
+                className="text-[12px] px-2.5 py-0.5 rounded-full border"
+                style={{ borderColor: "#5a2020", background: "#1a0a0a", color: "#e88" }}
+              >
+                Delete
+              </button>
+            </div>
+
+            <div>
+              <div className="flex items-baseline justify-between mb-1">
+                <span className="text-[12.5px] text-muted">Intensity</span>
+                <span className="font-semibold text-[12.5px]" style={{ color: ACCENT }}>
+                  {selectedLight.intensity.toFixed(2)}
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0.1}
+                max={20}
+                step={0.1}
+                value={selectedLight.intensity}
+                onChange={(e) => onSetLightIntensity(Number(e.target.value))}
+                className="w-full accent-[#56a6e8]"
+              />
+            </div>
+
+            <div>
+              <div className="flex items-baseline justify-between mb-1">
+                <span className="text-[12.5px] text-muted">Range</span>
+                <span className="font-semibold text-[12.5px]" style={{ color: ACCENT }}>
+                  {selectedLight.distance === 0 ? "∞" : selectedLight.distance.toFixed(1)}
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={50}
+                step={0.5}
+                value={selectedLight.distance}
+                onChange={(e) => onSetLightDistance(Number(e.target.value))}
+                className="w-full accent-[#56a6e8]"
+              />
+              <p className="text-[11px] text-dim mt-1">0 = no falloff</p>
+            </div>
+          </div>
+        ) : (
+          <p className="text-[12px] text-dim">No light selected. Switch to Orbit and click a light ball.</p>
+        )}
+      </StepCard>
     </div>
   );
 }

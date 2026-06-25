@@ -11,8 +11,17 @@ import {
   writePaintedTextures,
   exportPaintedGlb,
 } from "@/lib/paint/textures";
-import type { PaintViewerHandle, ViewChannel, PaintChannel, BrushSettings } from "@/components/tools/PaintViewer";
+import type { PaintViewerHandle, ViewChannel, PaintChannel, BrushSettings, LightInfo } from "@/components/tools/PaintViewer";
 import BrushPanel from "./BrushPanel";
+
+const VIEW_CHANNELS: { value: ViewChannel; label: string }[] = [
+  { value: "combined", label: "Combined" },
+  { value: "albedo", label: "Albedo" },
+  { value: "normal", label: "Normal" },
+  { value: "ao", label: "AO" },
+];
+
+const ACCENT = "#56a6e8";
 
 const PaintViewer = dynamic(() => import("@/components/tools/PaintViewer"), {
   ssr: false,
@@ -34,12 +43,16 @@ export default function PaintStudio({ asset, userId, onBack }: Props) {
   const [seedAlbedo, setSeedAlbedo] = useState<ImageBitmap | null>(null);
   const [seedBaseNormal, setSeedBaseNormal] = useState<ImageData | null>(null);
   const [seedAO, setSeedAO] = useState<ImageBitmap | null>(null);
+  const [seedMetallicRoughness, setSeedMetallicRoughness] = useState<ImageBitmap | null>(null);
+  const [roughnessFactor, setRoughnessFactor] = useState(1);
+  const [metallicFactor, setMetallicFactor] = useState(1);
   const [textureSize, setTextureSize] = useState(DEFAULT_TEXTURE_SIZE);
 
   const [viewChannel, setViewChannel] = useState<ViewChannel>("combined");
   const [paintChannel, setPaintChannel] = useState<PaintChannel>("albedo");
   const [erasing, setErasing] = useState(false);
   const [paintMode, setPaintMode] = useState(true);
+  const [showGrid, setShowGrid] = useState(true);
   const [brush, setBrush] = useState<BrushSettings>({
     size: 32,
     opacity: 0.8,
@@ -50,6 +63,8 @@ export default function PaintStudio({ asset, userId, onBack }: Props) {
 
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
+  const [selectedLight, setSelectedLight] = useState<LightInfo | null>(null);
+  const [lightsGizmosVisible, setLightsGizmosVisible] = useState(true);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -92,6 +107,12 @@ export default function PaintStudio({ asset, userId, onBack }: Props) {
         const aoBitmap = await decodeImage(loaded.occlusion);
         if (!active) return;
         setSeedAO(aoBitmap);
+
+        const metallicRoughnessBitmap = await decodeImage(loaded.metallicRoughness);
+        if (!active) return;
+        setSeedMetallicRoughness(metallicRoughnessBitmap);
+        setRoughnessFactor(loaded.roughnessFactor);
+        setMetallicFactor(loaded.metallicFactor);
 
         setStatus("");
       } catch (e) {
@@ -153,8 +174,6 @@ export default function PaintStudio({ asset, userId, onBack }: Props) {
         </button>
         <span className="text-dim">/</span>
         <div className="text-[13px] font-bold truncate max-w-[28ch]">{asset.name}</div>
-        <div className="flex-1" />
-        {status && <div className="text-[12px] text-dim truncate max-w-[34ch]">{status}</div>}
       </div>
 
       {error && (
@@ -166,50 +185,105 @@ export default function PaintStudio({ asset, userId, onBack }: Props) {
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6 items-start">
-        <div className="bg-panel border border-line rounded-[12px] overflow-hidden h-[clamp(260px,38vh,420px)]">
-          {!sourceBuf ? (
-            <div className="w-full h-full flex items-center justify-center text-dim text-[13px]">Loading…</div>
-          ) : (
-            <PaintViewer
-              ref={viewerRef}
-              data={sourceBuf}
-              seedAlbedo={seedAlbedo}
-              seedBaseNormal={seedBaseNormal}
-              seedAO={seedAO}
-              textureSize={textureSize}
-              viewChannel={viewChannel}
-              paintChannel={paintChannel}
-              erasing={erasing}
-              brush={brush}
-              paintMode={paintMode}
-              onUndoRedoChange={(s) => {
-                setCanUndo(s.canUndo);
-                setCanRedo(s.canRedo);
-              }}
-              onLoadError={setError}
-            />
-          )}
-        </div>
-
+      <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-6 items-start">
+        {/* ---- left: brush / mode / lights panel ---- */}
         <BrushPanel
           paintMode={paintMode}
           onPaintModeChange={setPaintMode}
+          showGrid={showGrid}
+          onShowGridChange={setShowGrid}
           paintChannel={paintChannel}
           onPaintChannelChange={setPaintChannel}
           erasing={erasing}
           onErasingChange={setErasing}
           brush={brush}
           onBrushChange={setBrush}
-          viewChannel={viewChannel}
-          onViewChannelChange={setViewChannel}
           canUndo={canUndo}
           canRedo={canRedo}
           onUndo={() => viewerRef.current?.undo()}
           onRedo={() => viewerRef.current?.redo()}
-          onSave={handleSave}
-          busy={busy}
+          selectedLight={selectedLight}
+          lightsGizmosVisible={lightsGizmosVisible}
+          onAddLight={() => viewerRef.current?.addLight()}
+          onDeleteSelectedLight={() => viewerRef.current?.deleteSelectedLight()}
+          onDeleteAllLights={() => viewerRef.current?.deleteAllLights()}
+          onSetLightIntensity={(v) => {
+            viewerRef.current?.setSelectedLightIntensity(v);
+            if (selectedLight) setSelectedLight({ ...selectedLight, intensity: v });
+          }}
+          onSetLightDistance={(v) => {
+            viewerRef.current?.setSelectedLightDistance(v);
+            if (selectedLight) setSelectedLight({ ...selectedLight, distance: v });
+          }}
+          onSetLightsGizmosVisible={(v) => {
+            viewerRef.current?.setLightsGizmosVisible(v);
+            setLightsGizmosVisible(v);
+          }}
         />
+
+        {/* ---- right: top bar + viewer ---- */}
+        <div className="flex flex-col gap-3">
+          {/* view channel pills + save */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex gap-1.5">
+              {VIEW_CHANNELS.map(({ value, label }) => (
+                <button
+                  key={value}
+                  onClick={() => setViewChannel(value)}
+                  className="text-[12px] px-2.5 py-1 rounded-full border capitalize"
+                  style={{
+                    borderColor: viewChannel === value ? ACCENT : "#26384a",
+                    background: viewChannel === value ? "rgba(86,166,232,.14)" : "#0d141c",
+                    color: viewChannel === value ? "#cfe6fb" : "#8aa0b4",
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="flex-1" />
+            {status && <span className="text-[12px] text-dim truncate max-w-[28ch]">{status}</span>}
+            <button
+              onClick={handleSave}
+              disabled={busy || !sourceBuf}
+              className="px-3 py-1.5 rounded-lg text-[12.5px] font-semibold disabled:opacity-40"
+              style={{ background: "linear-gradient(180deg,#56a6e8,#2c6aa0)", color: "#06121d" }}
+            >
+              {busy ? "Saving…" : "Save new asset"}
+            </button>
+          </div>
+
+          {/* viewer */}
+          <div className="bg-panel border border-line rounded-[12px] overflow-hidden h-[clamp(500px,65vh,800px)]">
+            {!sourceBuf ? (
+              <div className="w-full h-full flex items-center justify-center text-dim text-[13px]">Loading…</div>
+            ) : (
+              <PaintViewer
+                ref={viewerRef}
+                data={sourceBuf}
+                seedAlbedo={seedAlbedo}
+                seedBaseNormal={seedBaseNormal}
+                seedAO={seedAO}
+                seedMetallicRoughness={seedMetallicRoughness}
+                roughnessFactor={roughnessFactor}
+                metallicFactor={metallicFactor}
+                textureSize={textureSize}
+                viewChannel={viewChannel}
+                paintChannel={paintChannel}
+                erasing={erasing}
+                brush={brush}
+                paintMode={paintMode}
+                showGrid={showGrid}
+                onUndoRedoChange={(s) => {
+                  setCanUndo(s.canUndo);
+                  setCanRedo(s.canRedo);
+                }}
+                onLoadError={setError}
+                onLightSelect={setSelectedLight}
+              />
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

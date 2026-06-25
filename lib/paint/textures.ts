@@ -13,6 +13,11 @@ export type LoadedForPainting = {
   albedo: EncodedImage | null;
   normal: EncodedImage | null;
   occlusion: EncodedImage | null;
+  metallicRoughness: EncodedImage | null;
+  /** glTF default is 1 (fully rough) when no material/factor is present. */
+  roughnessFactor: number;
+  /** glTF default is 1 (fully metallic) when no material/factor is present. */
+  metallicFactor: number;
 };
 
 function extract(texture: Texture | null): EncodedImage | null {
@@ -34,6 +39,9 @@ export async function loadGlbForPainting(input: ArrayBuffer): Promise<LoadedForP
     albedo: material ? extract(material.getBaseColorTexture()) : null,
     normal: material ? extract(material.getNormalTexture()) : null,
     occlusion: material ? extract(material.getOcclusionTexture()) : null,
+    metallicRoughness: material ? extract(material.getMetallicRoughnessTexture()) : null,
+    roughnessFactor: material ? material.getRoughnessFactor() : 1,
+    metallicFactor: material ? material.getMetallicFactor() : 1,
   };
 }
 

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useUser } from "@clerk/nextjs";
 import DropZone from "@/components/tools/DropZone";
+import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { useCreatorStatus } from "@/lib/useCreatorStatus";
 import { countGlbTriangles } from "@/lib/retopo/optimize";
 import {
@@ -34,6 +35,7 @@ export default function SubstanceWeaverClient() {
   const [assets, setAssets] = useState<AssetRow[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState<AssetRow | null>(null);
 
   const refreshLibrary = useCallback(async () => {
     if (!user?.id) return;
@@ -44,9 +46,10 @@ export default function SubstanceWeaverClient() {
     }
   }, [user?.id]);
 
+  // Library is always visible now, not just on a separate landing screen, so it loads as soon as we're approved.
   useEffect(() => {
-    if (creatorStatus === "approved" && user?.id && !openedAsset) refreshLibrary();
-  }, [creatorStatus, user?.id, openedAsset, refreshLibrary]);
+    if (creatorStatus === "approved" && user?.id) refreshLibrary();
+  }, [creatorStatus, user?.id, refreshLibrary]);
 
   const onFile = useCallback(
     async (file: File) => {
@@ -64,13 +67,14 @@ export default function SubstanceWeaverClient() {
           visibility: "private",
         });
         setOpenedAsset(asset);
+        refreshLibrary();
       } catch (e) {
         setError(e instanceof Error ? e.message : "Could not upload the model.");
       } finally {
         setBusy(false);
       }
     },
-    [user?.id],
+    [user?.id, refreshLibrary],
   );
 
   if (!isLoaded || creatorStatus === "loading") {
@@ -103,14 +107,12 @@ export default function SubstanceWeaverClient() {
 
   return (
     <main className="min-h-[calc(100vh-73px)] bg-[#070b11] text-ink">
-      <div className="max-w-[1440px] mx-auto px-6 lg:px-10 pt-6 pb-16">
-        {!openedAsset && (
-          <div className="flex items-center gap-3 mb-5">
-            <Link href="/forge" className="text-[12px] text-dim no-underline hover:text-ink">← Forge</Link>
-            <span className="text-dim">/</span>
-            <div className="text-[13px] font-bold">🎨 Substance Weaver</div>
-          </div>
-        )}
+      <div className="max-w-[1600px] mx-auto px-6 lg:px-10 pt-6 pb-16">
+        <div className="flex items-center gap-3 mb-5">
+          <Link href="/forge" className="text-[12px] text-dim no-underline hover:text-ink">← Forge</Link>
+          <span className="text-dim">/</span>
+          <div className="text-[13px] font-bold">🎨 Substance Weaver</div>
+        </div>
 
         {error && (
           <div className="mb-4 p-3 rounded-[9px] border text-[13px]" style={{ borderColor: "rgba(227,92,92,.4)", background: "rgba(227,92,92,.08)", color: "#f0a6a6" }}>
@@ -118,26 +120,30 @@ export default function SubstanceWeaverClient() {
           </div>
         )}
 
-        {openedAsset && user?.id ? (
-          <PaintStudio
-            asset={openedAsset}
-            userId={user.id}
-            onBack={() => {
-              setOpenedAsset(null);
-              refreshLibrary();
-            }}
-          />
-        ) : (
-          <div className="grid gap-6" style={{ gridTemplateColumns: "1fr 380px" }}>
-            <div className="bg-panel border border-line rounded-[12px] p-8 flex items-center justify-center">
-              <div className="w-full max-w-[480px]">
-                <p className="text-[11px] font-bold tracking-[.12em] uppercase text-muted mb-3 text-center">Drop a textured GLB to start</p>
-                <DropZone onFile={onFile} />
-                {busy && <p className="text-[12px] text-dim mt-3 text-center">Uploading to your library…</p>}
-                <p className="text-[11.5px] text-dim mt-3 text-center">
-                  Paint albedo color and relief detail directly on the model, with a channel switcher to inspect the result — stays private until you share it.
-                </p>
+        <div className="grid gap-6 items-start" style={{ gridTemplateColumns: "1fr 340px" }}>
+          {/* ---- left+center: paint studio, or an empty placeholder ---- */}
+          <div>
+            {openedAsset && user?.id ? (
+              <PaintStudio asset={openedAsset} userId={user.id} onBack={() => setOpenedAsset(null)} />
+            ) : (
+              <div className="bg-panel border border-line rounded-[12px] flex items-center justify-center min-h-[620px]">
+                <div className="text-center px-6">
+                  <div className="text-[34px] mb-2">🎨</div>
+                  <div className="text-[15px] font-bold">Select or drop a model to begin</div>
+                  <div className="text-[12.5px] text-dim mt-1.5 max-w-[320px] mx-auto">
+                    Paint albedo color and relief detail directly on the model, with a channel switcher to inspect the result — pick an asset from your library on the right, or upload a new one.
+                  </div>
+                </div>
               </div>
+            )}
+          </div>
+
+          {/* ---- right: upload + library, always visible ---- */}
+          <div className="flex flex-col gap-5">
+            <div className="bg-panel border border-line rounded-[12px] p-4">
+              <p className="text-[11px] font-bold tracking-[.12em] uppercase text-muted mb-2.5">Upload</p>
+              <DropZone onFile={onFile} hint="Drop a GLB" compact />
+              {busy && <p className="text-[11.5px] text-dim mt-2 text-center">Uploading…</p>}
             </div>
 
             <div className="bg-panel border border-line rounded-[12px] p-5">
@@ -150,7 +156,11 @@ export default function SubstanceWeaverClient() {
               ) : (
                 <div className="flex flex-col gap-2 max-h-[520px] overflow-y-auto">
                   {assets.map((a) => (
-                    <div key={a.id} className="flex items-center gap-2.5 p-2.5 rounded-[9px] border border-line bg-[#0a0e13]">
+                    <div
+                      key={a.id}
+                      className="flex items-center gap-2.5 p-2.5 rounded-[9px] border bg-[#0a0e13]"
+                      style={{ borderColor: openedAsset?.id === a.id ? "#56a6e8" : "#26384a" }}
+                    >
                       <button onClick={() => setOpenedAsset(a)} className="min-w-0 flex-1 text-left">
                         <div className="font-semibold text-[13px] truncate">{a.name}</div>
                         <div className="text-[11.5px] text-dim">{fmt(a.poly_count)} tris · {bytes(a.file_bytes)}{a.clerk_user_id !== user?.id ? " · shared" : ""}</div>
@@ -166,16 +176,7 @@ export default function SubstanceWeaverClient() {
                             <option value="shared">Shared</option>
                             <option value="public">Public</option>
                           </select>
-                          <button
-                            onClick={() =>
-                              deleteAsset(a)
-                                .then(refreshLibrary)
-                                .catch((e) => setError(e instanceof Error ? e.message : "Could not delete this asset."))
-                            }
-                            className="text-[12px] text-dim hover:text-[#e88]"
-                          >
-                            ✕
-                          </button>
+                          <button onClick={() => setConfirmDelete(a)} className="text-[12px] text-dim hover:text-[#e88]">✕</button>
                         </>
                       ) : (
                         <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ background: "rgba(86,166,232,.14)", color: "#8fc6f0" }}>{a.visibility}</span>
@@ -186,8 +187,24 @@ export default function SubstanceWeaverClient() {
               )}
             </div>
           </div>
-        )}
+        </div>
       </div>
+
+      {confirmDelete && (
+        <ConfirmDialog
+          title="Delete this model?"
+          message={`"${confirmDelete.name}" will be permanently deleted. This can't be undone.`}
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={() => {
+            const target = confirmDelete;
+            setConfirmDelete(null);
+            if (openedAsset?.id === target.id) setOpenedAsset(null);
+            deleteAsset(target)
+              .then(refreshLibrary)
+              .catch((e) => setError(e instanceof Error ? e.message : "Could not delete this asset."));
+          }}
+        />
+      )}
     </main>
   );
 }

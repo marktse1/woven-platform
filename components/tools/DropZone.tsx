@@ -6,12 +6,15 @@ type Props = {
   onFile: (file: File) => void;
   accept?: string;
   hint?: string;
+  /** Smaller padding/icon for use in tight spaces (e.g. a sidebar card) instead of a large centered landing zone. */
+  compact?: boolean;
 };
 
 export default function DropZone({
   onFile,
   accept = ".glb",
   hint = "Drag & drop a .glb model, or click to browse",
+  compact = false,
 }: Props) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [over, setOver] = useState(false);
@@ -40,17 +43,19 @@ export default function DropZone({
         setOver(false);
         handleFiles(e.dataTransfer.files);
       }}
-      className="rounded-[12px] border-2 border-dashed flex flex-col items-center justify-center text-center px-6 py-12 cursor-pointer transition-colors"
+      className={`rounded-[12px] border-2 border-dashed flex flex-col items-center justify-center text-center cursor-pointer transition-colors ${compact ? "px-3 py-5" : "px-6 py-12"}`}
       style={{
         borderColor: over ? "#56a6e8" : "#324a61",
         background: over ? "rgba(86,166,232,.08)" : "#0a0e13",
       }}
     >
-      <div className="text-[34px] mb-2">🔻</div>
-      <div className="text-[15px] font-bold">{hint}</div>
-      <div className="text-[12.5px] text-dim mt-1.5">
-        High-res GLB / glTF · stays private in your library until you share it
-      </div>
+      <div className={compact ? "text-[20px] mb-1" : "text-[34px] mb-2"}>🔻</div>
+      <div className={compact ? "text-[12.5px] font-bold" : "text-[15px] font-bold"}>{hint}</div>
+      {!compact && (
+        <div className="text-[12.5px] text-dim mt-1.5">
+          High-res GLB / glTF · stays private in your library until you share it
+        </div>
+      )}
       <input
         ref={inputRef}
         type="file"

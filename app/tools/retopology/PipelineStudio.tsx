@@ -396,9 +396,17 @@ export default function PipelineStudio({ asset, userId, onBack }: Props) {
                   </button>
                 ))}
               </div>
-              <div className="flex items-baseline justify-between mb-2">
+              <div className="flex items-center justify-between gap-2 mb-2">
                 <span className="text-[12.5px] text-muted">Target triangles</span>
-                <span className="font-bold text-[15px]" style={{ color: ACCENT }}>{fmt(targetPolys)}</span>
+                <input
+                  type="number"
+                  min={200}
+                  step={100}
+                  value={targetPolys}
+                  onChange={(e) => setTargetPolys(Math.max(200, Math.round(Number(e.target.value) || 0)))}
+                  className="w-[110px] bg-[#0a0e13] border border-line rounded-md px-2 py-1 text-right text-[14px] font-bold outline-none focus:border-accent"
+                  style={{ color: ACCENT }}
+                />
               </div>
               <input
                 type="range"
@@ -516,11 +524,13 @@ export default function PipelineStudio({ asset, userId, onBack }: Props) {
                   <div className="w-full h-full flex items-center justify-center text-dim text-[13px]">Loading…</div>
                 ) : (
                   <ModelViewer
+                    key={compareToSource ? `source-${asset.id}` : `current-${currentAssetId}`}
                     data={viewerBuf}
                     wireframe={wireframe}
                     accent={ACCENT}
                     segmentation={compareToSource ? null : segmentation}
                     textureChannel={compareToSource ? null : textureChannel}
+                    onLoadError={setError}
                   />
                 )}
               </div>

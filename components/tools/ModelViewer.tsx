@@ -24,6 +24,8 @@ type Props = {
   segmentation?: SegmentationOverlay | null;
   /** Preview a single baked PBR channel directly instead of standard shading. */
   textureChannel?: TextureChannel | null;
+  /** Called if the GLB fails to parse - without this, a failure left the previous model torn down with nothing shown and no visible signal why. */
+  onLoadError?: (message: string) => void;
 };
 
 /** Deterministic, visually-distinct palette — golden-angle hue stepping needs no lookup table. */
@@ -126,7 +128,7 @@ function applyTextureChannelToGroup(
   });
 }
 
-export default function ModelViewer({ data, wireframe, accent = "#56a6e8", segmentation = null, textureChannel = null }: Props) {
+export default function ModelViewer({ data, wireframe, accent = "#56a6e8", segmentation = null, textureChannel = null, onLoadError }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
@@ -134,6 +136,10 @@ export default function ModelViewer({ data, wireframe, accent = "#56a6e8", segme
   const modelRef = useRef<THREE.Group | null>(null);
   const wireMatRef = useRef<THREE.LineBasicMaterial | null>(null);
   const originalMaterialsRef = useRef<WeakMap<THREE.Mesh, THREE.Material | THREE.Material[]>>(new WeakMap());
+  const onLoadErrorRef = useRef(onLoadError);
+  useEffect(() => {
+    onLoadErrorRef.current = onLoadError;
+  }, [onLoadError]);
 
   // ---- one-time scene setup -------------------------------------------------
   useEffect(() => {
@@ -264,7 +270,10 @@ export default function ModelViewer({ data, wireframe, accent = "#56a6e8", segme
         scene.add(group);
         modelRef.current = group;
       },
-      (err) => console.error("GLB parse error", err),
+      (err) => {
+        console.error("GLB parse error", err);
+        onLoadErrorRef.current?.(err instanceof Error ? err.message : "Could not render this model.");
+      },
     );
   }, [data, wireframe, segmentation, textureChannel]);
 

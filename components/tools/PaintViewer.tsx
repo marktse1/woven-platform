@@ -50,6 +50,8 @@ type Props = {
   /** When true, drag paints; when false, drag orbits. An explicit toggle, not a modifier key. */
   paintMode: boolean;
   onUndoRedoChange?: (state: { canUndo: boolean; canRedo: boolean }) => void;
+  /** Called if the GLB fails to parse or has no UV-mapped mesh - without this, a failure left nothing rendered with no visible signal why. */
+  onLoadError?: (message: string) => void;
 };
 
 function findFirstMesh(root: THREE.Object3D): THREE.Mesh | null {
@@ -75,7 +77,7 @@ function makeFlatNormalImage(size: number): ImageData {
 }
 
 const PaintViewer = forwardRef<PaintViewerHandle, Props>(function PaintViewer(
-  { data, seedAlbedo, seedBaseNormal, seedAO, textureSize, viewChannel, paintChannel, erasing, brush, paintMode, onUndoRedoChange },
+  { data, seedAlbedo, seedBaseNormal, seedAO, textureSize, viewChannel, paintChannel, erasing, brush, paintMode, onUndoRedoChange, onLoadError },
   ref,
 ) {
   const mountRef = useRef<HTMLDivElement | null>(null);
@@ -101,6 +103,10 @@ const PaintViewer = forwardRef<PaintViewerHandle, Props>(function PaintViewer(
   const debugMaterialRef = useRef<THREE.MeshBasicMaterial | null>(null);
 
   const strokeTrackerRef = useRef(new StrokeTracker());
+  const onLoadErrorRef = useRef(onLoadError);
+  useEffect(() => {
+    onLoadErrorRef.current = onLoadError;
+  }, [onLoadError]);
   const undoStackRef = useRef(new PaintUndoStack());
   const activeStrokeRef = useRef(false);
   const albedoDirtyRef = useRef(false);
@@ -230,6 +236,7 @@ const PaintViewer = forwardRef<PaintViewerHandle, Props>(function PaintViewer(
         const mesh = findFirstMesh(group);
         if (!mesh || !mesh.geometry.attributes.uv) {
           console.error("PaintViewer: no UV-mapped mesh found in this GLB.");
+          onLoadErrorRef.current?.("This model has no UV-mapped mesh to paint on.");
           return;
         }
         meshRef.current = mesh;
@@ -261,9 +268,16 @@ const PaintViewer = forwardRef<PaintViewerHandle, Props>(function PaintViewer(
         normalCanvasRef.current = normalCanvas;
         normalCtxRef.current = nctx;
 
+        // GLTFLoader sets flipY = false on every texture it loads (confirmed
+        // in three.js source) - our canvases are seeded from the same image
+        // data GLTFLoader would use, so matching flipY here is what makes
+        // Substance Weaver render identically to Mesh Loom's ModelViewer
+        // instead of vertically mismatched.
         const albedoTexture = new THREE.CanvasTexture(albedoCanvas);
+        albedoTexture.flipY = false;
         albedoTexture.colorSpace = THREE.SRGBColorSpace;
         const normalTexture = new THREE.CanvasTexture(normalCanvas);
+        normalTexture.flipY = false;
         normalTexture.colorSpace = THREE.NoColorSpace;
         albedoTextureRef.current = albedoTexture;
         normalTextureRef.current = normalTexture;
@@ -275,6 +289,7 @@ const PaintViewer = forwardRef<PaintViewerHandle, Props>(function PaintViewer(
           aoCanvas.height = seedAO.height;
           aoCanvas.getContext("2d")!.drawImage(seedAO, 0, 0);
           aoTexture = new THREE.CanvasTexture(aoCanvas);
+          aoTexture.flipY = false;
           aoTexture.colorSpace = THREE.NoColorSpace;
         }
         aoTextureRef.current = aoTexture;
@@ -307,7 +322,10 @@ const PaintViewer = forwardRef<PaintViewerHandle, Props>(function PaintViewer(
 
         scene.add(group);
       },
-      (err) => console.error("PaintViewer: GLB parse error", err),
+      (err) => {
+        console.error("PaintViewer: GLB parse error", err);
+        onLoadErrorRef.current?.(err instanceof Error ? err.message : "Could not load this model for painting.");
+      },
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, seedAlbedo, seedBaseNormal, seedAO, textureSize]);
@@ -360,8 +378,11 @@ const PaintViewer = forwardRef<PaintViewerHandle, Props>(function PaintViewer(
     }
 
     function uvToAlbedoPixel(uv: { x: number; y: number }): { x: number; y: number } {
+      // No vertical flip here - consistent with flipY = false on our
+      // textures above (matching GLTFLoader), v=0 maps directly to canvas
+      // row 0, same orientation the seeded image data already has.
       const canvas = albedoCanvasRef.current!;
-      return { x: uv.x * canvas.width, y: (1 - uv.y) * canvas.height };
+      return { x: uv.x * canvas.width, y: uv.y * canvas.height };
     }
 
     function recomputeNormalRegion(rect: { x: number; y: number; width: number; height: number }) {

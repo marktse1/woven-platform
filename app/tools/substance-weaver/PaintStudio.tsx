@@ -187,6 +187,7 @@ export default function PaintStudio({ asset, userId, onBack }: Props) {
                 setCanUndo(s.canUndo);
                 setCanRedo(s.canRedo);
               }}
+              onLoadError={setError}
             />
           )}
         </div>

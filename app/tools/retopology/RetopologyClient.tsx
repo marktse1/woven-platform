@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useUser } from "@clerk/nextjs";
 import DropZone from "@/components/tools/DropZone";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
@@ -16,6 +17,8 @@ import {
   type Visibility,
 } from "@/lib/assets";
 import PipelineStudio from "./PipelineStudio";
+
+const ModelViewer = dynamic(() => import("@/components/tools/ModelViewer"), { ssr: false });
 
 function fmt(n: number | null | undefined) {
   if (n == null) return "—";
@@ -123,19 +126,13 @@ export default function RetopologyClient() {
         )}
 
         <div className="grid gap-6 items-start" style={{ gridTemplateColumns: "1fr 340px" }}>
-          {/* ---- left+center: pipeline studio, or an empty placeholder ---- */}
+          {/* ---- left+center: pipeline studio, or an empty live viewer ---- */}
           <div>
             {openedAsset && user?.id ? (
               <PipelineStudio asset={openedAsset} userId={user.id} onBack={() => setOpenedAsset(null)} />
             ) : (
-              <div className="bg-panel border border-line rounded-[12px] flex items-center justify-center min-h-[620px]">
-                <div className="text-center px-6">
-                  <div className="text-[34px] mb-2">🔻</div>
-                  <div className="text-[15px] font-bold">Select or drop a model to begin</div>
-                  <div className="text-[12.5px] text-dim mt-1.5 max-w-[320px] mx-auto">
-                    Decimate, retopologize with edge loops, segment, and finalize in any order — pick an asset from your library on the right, or upload a new one.
-                  </div>
-                </div>
+              <div className="bg-panel border border-line rounded-[12px] overflow-hidden min-h-[620px]">
+                <ModelViewer data={null} wireframe={false} accent="#56a6e8" />
               </div>
             )}
           </div>
@@ -146,6 +143,9 @@ export default function RetopologyClient() {
               <p className="text-[11px] font-bold tracking-[.12em] uppercase text-muted mb-2.5">Upload</p>
               <DropZone onFile={onFile} hint="Drop a GLB" compact />
               {busy && <p className="text-[11.5px] text-dim mt-2 text-center">Uploading…</p>}
+              <p className="text-[11px] text-dim mt-2.5 leading-relaxed">
+                Select an asset below, or drop a new one — decimate, retopologize with edge loops, segment, and finalize in any order.
+              </p>
             </div>
 
             <div className="bg-panel border border-line rounded-[12px] p-5">

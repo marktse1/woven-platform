@@ -94,8 +94,6 @@ export default function PipelineStudio({ asset, userId, onBack }: Props) {
 
   const hasSteps = steps.length > 0;
   const isCharacter = needsRetopoWorker(classification);
-  const finalizeStep = [...steps].reverse().find((s) => s.op === "finalize");
-  const hasFinalResult = finalizeStep?.status === "done";
 
   // ---- initial load: source bytes + existing session/steps, if any --------
   useEffect(() => {
@@ -462,9 +460,6 @@ export default function PipelineStudio({ asset, userId, onBack }: Props) {
               disabled={!hasSteps}
               pendingStatus={pendingFinalize}
               error={null}
-              textureChannel={textureChannel}
-              onTextureChannelChange={setTextureChannel}
-              hasFinalResult={hasFinalResult}
             />
           </div>
 
@@ -496,6 +491,21 @@ export default function PipelineStudio({ asset, userId, onBack }: Props) {
                     Clear segment overlay
                   </button>
                 )}
+                <div className="w-px h-5 bg-line mx-1" />
+                {([null, "albedo", "normal", "ao", "roughness", "metallic"] as const).map((c) => (
+                  <button
+                    key={c ?? "shaded"}
+                    onClick={() => setTextureChannel(c)}
+                    className="px-3 py-1.5 rounded-lg border text-[12.5px] font-semibold capitalize"
+                    style={{
+                      borderColor: textureChannel === c ? ACCENT : "#26384a",
+                      background: textureChannel === c ? "rgba(86,166,232,.14)" : "transparent",
+                      color: textureChannel === c ? "#cfe6fb" : "#8aa0b4",
+                    }}
+                  >
+                    {c ?? "Shaded"}
+                  </button>
+                ))}
                 <div className="flex-1" />
                 <div className="text-[12px] text-dim">
                   {compareToSource ? fmt(sourcePolys) : fmt(workingPolys)} tris{!compareToSource && reduction > 0 ? ` · ${reduction}% lighter` : ""}

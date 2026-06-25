@@ -8,7 +8,7 @@
 // is heavier and runs on the Forge worker via a queued retopo_jobs row.
 
 import { WebIO, type Document } from "@gltf-transform/core";
-import { weld, simplify, dedup, prune } from "@gltf-transform/functions";
+import { weld, dedup, prune } from "@gltf-transform/functions";
 import { MeshoptSimplifier } from "meshoptimizer";
 
 export type OptimizeOptions = {
@@ -45,6 +45,63 @@ export async function countGlbTriangles(input: ArrayBuffer): Promise<number> {
   return countTriangles(doc);
 }
 
+// ---------------------------------------------------------------------------
+// Position-based welding for simplification.
+//
+// glTF exports very commonly have ZERO shared vertex indices between
+// triangles - any per-face-normal ("flat shaded") or hard-edged export gives
+// every triangle its own 3 unique vertices even where they're geometrically
+// coincident. @gltf-transform/functions' weld() only merges vertices that
+// are bitwise-identical across EVERY attribute (position AND normal AND UV),
+// so it does nothing in that extremely common case - confirmed directly:
+// a plain Blender icosphere/UV-sphere export has vertex count exactly equal
+// to index count (every triangle fully disconnected from its neighbors).
+// meshoptimizer's simplify() collapses *edges*, and an edge only exists if
+// two triangles share a vertex *index* - with no sharing, there is nothing
+// to collapse and simplify() correctly (and silently) no-ops, regardless of
+// target ratio or error budget. The fix: weld by POSITION ONLY (ignoring
+// normal/UV), establishing real connectivity, simplify on that, then map
+// the result back to the original (unwelded) vertex index space so UVs/
+// normals/everything else stay correctly attached for every other accessor.
+// ---------------------------------------------------------------------------
+
+type WeldedConnectivity = {
+  /** Same length as the original index buffer, values in compact [0, uniqueCount) space. */
+  weldedIndices: Uint32Array;
+  /** Compacted position buffer, length = uniqueCount * 3. */
+  compactPositions: Float32Array;
+  /** compact index -> original vertex index. */
+  reverseRemap: Uint32Array;
+};
+
+function weldByPosition(indices: Uint32Array, positions: Float32Array): WeldedConnectivity {
+  const positionRemap = MeshoptSimplifier.generatePositionRemap(positions, 3);
+
+  const weldedIndices = new Uint32Array(indices.length);
+  for (let i = 0; i < indices.length; i++) weldedIndices[i] = positionRemap[indices[i]];
+
+  // compactMesh mutates weldedIndices in place into a dense [0, uniqueCount)
+  // range and returns the reverse remap (compact index -> original index).
+  const [reverseRemap, uniqueCount] = MeshoptSimplifier.compactMesh(weldedIndices);
+
+  const compactPositions = new Float32Array(uniqueCount * 3);
+  for (let i = 0; i < uniqueCount; i++) {
+    const orig = reverseRemap[i];
+    compactPositions[i * 3] = positions[orig * 3];
+    compactPositions[i * 3 + 1] = positions[orig * 3 + 1];
+    compactPositions[i * 3 + 2] = positions[orig * 3 + 2];
+  }
+
+  return { weldedIndices, compactPositions, reverseRemap: reverseRemap.slice(0, uniqueCount) };
+}
+
+/** Maps simplifier output (compact vertex space) back to the original primitive's vertex index space. */
+function mapToOriginalIndexSpace(compactIndices: Uint32Array | number[], reverseRemap: Uint32Array): Uint32Array {
+  const out = new Uint32Array(compactIndices.length);
+  for (let i = 0; i < compactIndices.length; i++) out[i] = reverseRemap[compactIndices[i]];
+  return out;
+}
+
 export async function optimizeGlb(
   input: ArrayBuffer,
   opts: OptimizeOptions,
@@ -59,12 +116,40 @@ export async function optimizeGlb(
   const sourcePolys = countTriangles(doc);
   const ratio = Math.min(0.99, Math.max(0.01, opts.ratio));
 
-  await doc.transform(
-    weld(),
-    simplify({ simplifier: MeshoptSimplifier, ratio, error: 0.02, lockBorder: true }),
-    dedup(),
-    prune(),
-  );
+  await doc.transform(weld());
+
+  for (const mesh of doc.getRoot().listMeshes()) {
+    for (const prim of mesh.listPrimitives()) {
+      const indicesAccessor = prim.getIndices();
+      const positionAccessor = prim.getAttribute("POSITION");
+      if (!indicesAccessor || !positionAccessor) continue;
+
+      const rawIndices = indicesAccessor.getArray();
+      const rawPositions = positionAccessor.getArray();
+      if (!rawIndices || !rawPositions) continue;
+
+      const srcIndices = rawIndices instanceof Uint32Array ? rawIndices : Uint32Array.from(rawIndices);
+      const srcPositions = rawPositions instanceof Float32Array ? rawPositions : Float32Array.from(rawPositions);
+
+      const targetIndexCount = Math.max(12, Math.round((srcIndices.length / 3) * ratio) * 3);
+      if (targetIndexCount >= srcIndices.length) continue;
+
+      const { weldedIndices, compactPositions, reverseRemap } = weldByPosition(srcIndices, srcPositions);
+
+      const [dstIndices] = MeshoptSimplifier.simplify(
+        weldedIndices,
+        compactPositions,
+        3,
+        targetIndexCount,
+        1, // unbounded relative error - target ratio drives the result, not an error cap
+        ["LockBorder"],
+      );
+
+      indicesAccessor.setArray(Uint32Array.from(mapToOriginalIndexSpace(dstIndices, reverseRemap)));
+    }
+  }
+
+  await doc.transform(dedup(), prune());
 
   const resultPolys = countTriangles(doc);
   const output = await io.writeBinary(doc);
@@ -80,13 +165,13 @@ export async function optimizeGlb(
 // ---------------------------------------------------------------------------
 // Real curvature-weighted adaptive density.
 //
-// The plain `simplify()` transform above only forwards a single uniform
-// `error` threshold to meshoptimizer — it has no concept of "spend more
-// polygons on high-curvature regions." Real per-region density needs
-// meshoptimizer's lower-level `simplifyWithAttributes`, which accepts a
-// per-vertex attribute (we feed it a curvature estimate) plus a weight for
-// that attribute, and an explicit vertex-lock mask so the sharpest creases
-// are pinned and survive simplification entirely.
+// The plain `simplify()` path above only forwards a single uniform `error`
+// threshold to meshoptimizer — it has no concept of "spend more polygons on
+// high-curvature regions." Real per-region density needs meshoptimizer's
+// lower-level `simplifyWithAttributes`, which accepts a per-vertex attribute
+// (we feed it a curvature estimate) plus a weight for that attribute, and an
+// explicit vertex-lock mask so the sharpest creases are pinned and survive
+// simplification entirely.
 // ---------------------------------------------------------------------------
 
 /**
@@ -94,6 +179,9 @@ export async function optimizeGlb(
  * between a vertex's incident face normals and the vertex's own
  * area-weighted average normal. ~0 on flat regions, higher on creases/edges.
  * Pure geometry — no AI, no heuristics beyond "how sharp is this corner."
+ * Requires properly position-welded connectivity (see weldByPosition) -
+ * without shared vertices, every vertex only ever sees its own single face,
+ * which trivially computes to zero curvature everywhere.
  */
 function computeVertexCurvature(positions: Float32Array, indices: Uint32Array): Float32Array {
   const vertexCount = positions.length / 3;
@@ -164,9 +252,38 @@ export type AdaptiveOptimizeOptions = {
   ratio: number;
   /** How strongly curvature steers the simplifier away from sharp regions. */
   curvatureWeight?: number;
-  /** Curvature above this (0–1) hard-locks a vertex so it never collapses. */
-  lockThreshold?: number;
+  /**
+   * Fraction of vertices (by curvature rank, sharpest first) to hard-lock so
+   * they survive simplification entirely - e.g. 0.02 = the sharpest 2%.
+   * Deliberately a bounded percentile rather than an absolute curvature
+   * cutoff: on a smooth test primitive only true creases are sharp, but a
+   * detailed/noisy real-world mesh can have moderate curvature broadly
+   * across its whole surface, and an absolute threshold can then lock a
+   * huge fraction of vertices - capping how much the mesh can shrink at all,
+   * regardless of target ratio. A percentile rank always stays bounded.
+   */
+  lockFraction?: number;
 };
+
+/** Locks only the sharpest `lockFraction` of vertices by curvature rank - never more, regardless of the mesh's curvature distribution. */
+function computeVertexLockMask(curvature: Float32Array, lockFraction: number): Uint8Array {
+  const vertexCount = curvature.length;
+  const lock = new Uint8Array(vertexCount);
+  const lockCount = Math.max(0, Math.min(vertexCount, Math.round(vertexCount * lockFraction)));
+  if (lockCount === 0) return lock;
+
+  const sortedDescending = Float32Array.from(curvature).sort((a, b) => b - a);
+  const cutoff = sortedDescending[lockCount - 1];
+
+  let locked = 0;
+  for (let v = 0; v < vertexCount && locked < lockCount; v++) {
+    if (curvature[v] >= cutoff) {
+      lock[v] = 1;
+      locked++;
+    }
+  }
+  return lock;
+}
 
 /**
  * Decimates with real per-region density: curvature drives both a soft
@@ -186,7 +303,7 @@ export async function optimizeGlbAdaptive(
   const sourcePolys = countTriangles(doc);
   const ratio = Math.min(0.99, Math.max(0.01, opts.ratio));
   const curvatureWeight = opts.curvatureWeight ?? 2.5;
-  const lockThreshold = opts.lockThreshold ?? 0.6;
+  const lockFraction = opts.lockFraction ?? 0.02;
 
   await doc.transform(weld());
 
@@ -206,16 +323,14 @@ export async function optimizeGlbAdaptive(
       const targetIndexCount = Math.max(12, Math.round((srcIndices.length / 3) * ratio) * 3);
       if (targetIndexCount >= srcIndices.length) continue;
 
-      const curvature = computeVertexCurvature(srcPositions, srcIndices);
-      const vertexCount = srcPositions.length / 3;
-      const vertexLock = new Uint8Array(vertexCount);
-      for (let v = 0; v < vertexCount; v++) {
-        if (curvature[v] > lockThreshold) vertexLock[v] = 1;
-      }
+      const { weldedIndices, compactPositions, reverseRemap } = weldByPosition(srcIndices, srcPositions);
+
+      const curvature = computeVertexCurvature(compactPositions, weldedIndices);
+      const vertexLock = computeVertexLockMask(curvature, lockFraction);
 
       const [dstIndices] = MeshoptSimplifier.simplifyWithAttributes(
-        srcIndices,
-        srcPositions,
+        weldedIndices,
+        compactPositions,
         3,
         curvature,
         1,
@@ -226,7 +341,7 @@ export async function optimizeGlbAdaptive(
         ["LockBorder"],
       );
 
-      indicesAccessor.setArray(Uint32Array.from(dstIndices));
+      indicesAccessor.setArray(Uint32Array.from(mapToOriginalIndexSpace(dstIndices, reverseRemap)));
     }
   }
 

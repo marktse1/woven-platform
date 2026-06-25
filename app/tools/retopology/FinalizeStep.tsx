@@ -1,18 +1,9 @@
 "use client";
 
 import { BAKE_OPTIONS } from "@/lib/retopo/optimize";
-import type { TextureChannel } from "@/components/tools/ModelViewer";
 import StepCard from "./StepCard";
 
 const ACCENT = "#56a6e8";
-
-const CHANNELS: { value: TextureChannel; label: string }[] = [
-  { value: "albedo", label: "Albedo" },
-  { value: "normal", label: "Normal" },
-  { value: "ao", label: "AO" },
-  { value: "roughness", label: "Roughness" },
-  { value: "metallic", label: "Metallic" },
-];
 
 type Props = {
   stepNumber: number;
@@ -25,9 +16,6 @@ type Props = {
   disabled: boolean;
   pendingStatus?: "queued" | "processing" | "done" | "failed" | null;
   error?: string | null;
-  textureChannel: TextureChannel | null;
-  onTextureChannelChange: (c: TextureChannel | null) => void;
-  hasFinalResult: boolean;
 };
 
 export default function FinalizeStep({
@@ -41,9 +29,6 @@ export default function FinalizeStep({
   disabled,
   pendingStatus,
   error,
-  textureChannel,
-  onTextureChannelChange,
-  hasFinalResult,
 }: Props) {
   const working = pendingStatus === "queued" || pendingStatus === "processing";
 
@@ -96,31 +81,6 @@ export default function FinalizeStep({
       </button>
 
       {error && <p className="text-[12px] mt-2" style={{ color: "#e88" }}>{error}</p>}
-
-      {hasFinalResult && (
-        <div className="mt-3 pt-3 border-t border-line">
-          <p className="text-[12px] text-muted mb-2">Preview baked map</p>
-          <div className="flex flex-wrap gap-1.5">
-            <button
-              onClick={() => onTextureChannelChange(null)}
-              className="text-[12px] px-2.5 py-1 rounded-full border"
-              style={{ borderColor: !textureChannel ? ACCENT : "#26384a", background: !textureChannel ? "rgba(86,166,232,.14)" : "#0d141c", color: !textureChannel ? "#cfe6fb" : "#8aa0b4" }}
-            >
-              Shaded
-            </button>
-            {CHANNELS.map((c) => (
-              <button
-                key={c.value}
-                onClick={() => onTextureChannelChange(c.value)}
-                className="text-[12px] px-2.5 py-1 rounded-full border"
-                style={{ borderColor: textureChannel === c.value ? ACCENT : "#26384a", background: textureChannel === c.value ? "rgba(86,166,232,.14)" : "#0d141c", color: textureChannel === c.value ? "#cfe6fb" : "#8aa0b4" }}
-              >
-                {c.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
     </StepCard>
   );
 }

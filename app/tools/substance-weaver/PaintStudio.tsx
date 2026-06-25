@@ -166,8 +166,8 @@ export default function PaintStudio({ asset, userId, onBack }: Props) {
         </div>
       )}
 
-      <div className="grid gap-6 items-start" style={{ gridTemplateColumns: "1fr 340px" }}>
-        <div className="bg-panel border border-line rounded-[12px] overflow-hidden h-[600px]">
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6 items-start">
+        <div className="bg-panel border border-line rounded-[12px] overflow-hidden h-[min(62vh,560px)] min-h-[320px]">
           {!sourceBuf ? (
             <div className="w-full h-full flex items-center justify-center text-dim text-[13px]">Loading…</div>
           ) : (

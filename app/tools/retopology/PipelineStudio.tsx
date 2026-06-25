@@ -377,7 +377,7 @@ export default function PipelineStudio({ asset, userId, onBack }: Props) {
           </button>
         </div>
       ) : (
-        <div className="grid gap-6 items-start" style={{ gridTemplateColumns: "340px 1fr" }}>
+        <div className="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-6 items-start">
           {/* ---- left: step rail ---- */}
           <div className="flex flex-col gap-5">
             <StepCard
@@ -519,7 +519,7 @@ export default function PipelineStudio({ asset, userId, onBack }: Props) {
                   {compareToSource ? fmt(sourcePolys) : fmt(workingPolys)} tris{!compareToSource && reduction > 0 ? ` · ${reduction}% lighter` : ""}
                 </div>
               </div>
-              <div className="h-[480px]">
+              <div className="h-[min(62vh,560px)] min-h-[320px]">
                 {!viewerBuf ? (
                   <div className="w-full h-full flex items-center justify-center text-dim text-[13px]">Loading…</div>
                 ) : (

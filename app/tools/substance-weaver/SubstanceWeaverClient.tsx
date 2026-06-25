@@ -125,13 +125,13 @@ export default function SubstanceWeaverClient() {
           </div>
         )}
 
-        <div className="grid gap-6 items-start" style={{ gridTemplateColumns: "1fr 340px" }}>
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6 items-start">
           {/* ---- left+center: paint studio, or an empty live viewer ---- */}
           <div>
             {openedAsset && user?.id ? (
               <PaintStudio asset={openedAsset} userId={user.id} onBack={() => setOpenedAsset(null)} />
             ) : (
-              <div className="bg-panel border border-line rounded-[12px] overflow-hidden min-h-[620px]">
+              <div className="bg-panel border border-line rounded-[12px] overflow-hidden h-[min(62vh,560px)] min-h-[320px]">
                 <ModelViewer data={null} wireframe={false} accent="#56a6e8" />
               </div>
             )}

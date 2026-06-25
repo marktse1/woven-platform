@@ -186,7 +186,7 @@ export default function ModelViewer({ data, wireframe, accent = "#56a6e8", segme
     const resize = () => {
       const w = mount.clientWidth || 1;
       const h = mount.clientHeight || 1;
-      renderer.setSize(w, h, false);
+      renderer.setSize(w, h);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
     };

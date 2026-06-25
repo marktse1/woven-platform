@@ -2,6 +2,7 @@
 export const dynamic = "force-dynamic";
 
 import { useEffect, useMemo, useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
@@ -48,6 +49,11 @@ const ENGINE_OPTIONS = [
 const DEV_TOOL_DOTS: Record<string, string> = {
   retopology: "#7bc24a",
   "substance-weaver": "#e8a056",
+};
+
+const DEV_TOOL_LOGOS: Record<string, string> = {
+  retopology: "/mesh_loom.png",
+  "substance-weaver": "/substance_weaver.png",
 };
 
 function joinUrl(base: string, entryFile: string) {
@@ -326,10 +332,19 @@ export default function ForgeClient() {
           <div className="grid grid-cols-3 gap-4">
             {devTools.map((t) => {
               const dot = DEV_TOOL_DOTS[t.slug] ?? t.accent ?? "#56a6e8";
+              const logo = DEV_TOOL_LOGOS[t.slug];
               const inner = (
                 <>
+                  {logo && (
+                    <div
+                      className="-m-5 mb-4 rounded-t-[12px] flex items-center justify-center overflow-hidden"
+                      style={{ height: 132, background: `radial-gradient(circle at 50% 38%, ${dot}29, #0c1117 75%)` }}
+                    >
+                      <Image src={logo} alt={`${t.name} logo`} width={112} height={112} className="object-contain" />
+                    </div>
+                  )}
                   <div className="flex items-center gap-2.5 mb-3">
-                    <span className="w-3 h-3 rounded-full shrink-0" style={{ background: dot }} />
+                    {!logo && <span className="w-3 h-3 rounded-full shrink-0" style={{ background: dot }} />}
                     <span className="font-bold text-[15px]" style={{ color: "#e7eef4" }}>{t.name}</span>
                     {t.badge && (
                       <span className="ml-auto text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-[.06em]" style={{ background: "rgba(123,194,74,.16)", color: "#a6e06a" }}>

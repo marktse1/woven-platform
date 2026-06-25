@@ -131,7 +131,7 @@ export default function SubstanceWeaverClient() {
             {openedAsset && user?.id ? (
               <PaintStudio asset={openedAsset} userId={user.id} onBack={() => setOpenedAsset(null)} />
             ) : (
-              <div className="bg-panel border border-line rounded-[12px] overflow-hidden h-[min(62vh,560px)] min-h-[320px]">
+              <div className="bg-panel border border-line rounded-[12px] overflow-hidden h-[clamp(260px,38vh,420px)]">
                 <ModelViewer data={null} wireframe={false} accent="#56a6e8" />
               </div>
             )}

@@ -519,7 +519,7 @@ export default function PipelineStudio({ asset, userId, onBack }: Props) {
                   {compareToSource ? fmt(sourcePolys) : fmt(workingPolys)} tris{!compareToSource && reduction > 0 ? ` · ${reduction}% lighter` : ""}
                 </div>
               </div>
-              <div className="h-[min(62vh,560px)] min-h-[320px]">
+              <div className="h-[clamp(260px,38vh,420px)]">
                 {!viewerBuf ? (
                   <div className="w-full h-full flex items-center justify-center text-dim text-[13px]">Loading…</div>
                 ) : (

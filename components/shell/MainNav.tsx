@@ -45,7 +45,7 @@ export default function MainNav() {
     pathname.startsWith("/creator") || pathname.startsWith("/upload") ||
     pathname.startsWith("/engines-sdk") || pathname.startsWith("/multiplayer")
       ? "/creator"
-      : pathname.startsWith("/forge")
+      : pathname.startsWith("/forge") || pathname.startsWith("/tools/")
       ? "/forge"
       : pathname.startsWith("/library")
       ? "/library"

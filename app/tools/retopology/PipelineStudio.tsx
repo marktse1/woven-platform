@@ -12,6 +12,7 @@ import {
   appendTier1Step,
   queueTier2Step,
   syncStepFromJob,
+  deletePipelineStep,
   getJob,
   getJobForStep,
   getAsset,
@@ -559,7 +560,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
               {steps.length === 0 ? (
                 <div className="text-[12.5px]" style={{ color: "#c7bfb2" }}>Applied steps will appear here, in the order you run them.</div>
               ) : (
-                <div className="flex flex-col gap-2 max-h-[220px] overflow-y-auto">
+                <div className="flex flex-col gap-2">
                   {steps.map((s) => (
                     <div key={s.id} className="flex items-center gap-2.5 p-2.5 rounded-[9px] border border-[#2a2420] bg-[#201d1a]">
                       <div className="min-w-0 flex-1">
@@ -567,6 +568,19 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                         <div className="text-[11.5px]" style={{ color: "#8e8579" }}>{s.tier} {s.error ? `· ${s.error}` : ""}</div>
                       </div>
                       <StepBadge status={s.status} />
+                      <button
+                        onClick={async () => {
+                          try {
+                            await deletePipelineStep(s.id);
+                            setSteps((prev) => prev.filter((x) => x.id !== s.id));
+                          } catch (e) {
+                            setError(e instanceof Error ? e.message : "Could not delete step.");
+                          }
+                        }}
+                        className="text-[12px] shrink-0 hover:text-[#f3946a]"
+                        style={{ color: "#8e8579" }}
+                        title="Delete step"
+                      >✕</button>
                     </div>
                   ))}
                 </div>

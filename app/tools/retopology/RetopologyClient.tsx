@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import dynamic from "next/dynamic";
 import { useUser } from "@clerk/nextjs";
 import DropZone from "@/components/tools/DropZone";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
@@ -17,8 +16,6 @@ import {
   type Visibility,
 } from "@/lib/assets";
 import PipelineStudio from "./PipelineStudio";
-
-const ModelViewer = dynamic(() => import("@/components/tools/ModelViewer"), { ssr: false });
 
 function fmt(n: number | null | undefined) {
   if (n == null) return "—";
@@ -127,17 +124,11 @@ export default function RetopologyClient() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6 items-start">
-          {/* ---- left+center: pipeline studio, or an empty live viewer ---- */}
-          <div>
-            {openedAsset && user?.id ? (
-              <PipelineStudio asset={openedAsset} userId={user.id} onBack={() => setOpenedAsset(null)} onAssetCreated={refreshLibrary} />
-            ) : (
-              <div className="bg-[#131110] rounded-[12px] overflow-hidden h-[clamp(260px,38vh,420px)]">
-                <ModelViewer data={null} wireframe={false} accent="#e2562a" />
-              </div>
-            )}
-          </div>
+        <div className={openedAsset ? "grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6 items-start" : "max-w-[480px]"}>
+          {/* ---- left+center: pipeline studio (only when an asset is open) ---- */}
+          {openedAsset && user?.id && (
+            <PipelineStudio asset={openedAsset} userId={user.id} onBack={() => setOpenedAsset(null)} onAssetCreated={refreshLibrary} />
+          )}
 
           {/* ---- right: upload + library, always visible ---- */}
           <div className="flex flex-col gap-5">

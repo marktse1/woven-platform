@@ -114,7 +114,7 @@ export async function optimizeGlb(
   const doc = await io.readBinary(new Uint8Array(input));
 
   const sourcePolys = countTriangles(doc);
-  const ratio = Math.min(0.99, Math.max(0.01, opts.ratio));
+  const ratio = Math.min(0.99, Math.max(0.0005, opts.ratio));
 
   await doc.transform(weld());
 
@@ -301,7 +301,7 @@ export async function optimizeGlbAdaptive(
   const doc = await io.readBinary(new Uint8Array(input));
 
   const sourcePolys = countTriangles(doc);
-  const ratio = Math.min(0.99, Math.max(0.01, opts.ratio));
+  const ratio = Math.min(0.99, Math.max(0.0005, opts.ratio));
   const curvatureWeight = opts.curvatureWeight ?? 2.5;
   const lockFraction = opts.lockFraction ?? 0.02;
 

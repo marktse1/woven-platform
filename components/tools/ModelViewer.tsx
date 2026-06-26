@@ -175,9 +175,9 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
     rim.position.set(-5, 2, -4);
     scene.add(rim);
 
-    const grid = new THREE.GridHelper(10, 20, 0x26384a, 0x1a2530);
+    const grid = new THREE.GridHelper(10, 20, 0x6b5d52, 0x3d3530);
     (grid.material as THREE.Material).transparent = true;
-    (grid.material as THREE.Material).opacity = 0.35;
+    (grid.material as THREE.Material).opacity = 0.6;
     grid.visible = showGrid;
     gridRef.current = grid;
     scene.add(grid);

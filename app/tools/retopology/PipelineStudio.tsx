@@ -473,7 +473,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
             <p className="text-[12px] mb-3" style={{ color: "#c7bfb2" }}>
               This decides whether the pipeline runs true quad retopology with edge loops, or just decimates.
             </p>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
               {CLASSIFICATIONS.map((c) => {
                 const on = classification === c.value;
                 return (
@@ -483,11 +483,8 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                     className="text-left rounded-[10px] border p-3"
                     style={{ borderColor: on ? ACCENT : "rgba(255,255,255,.08)", background: on ? "rgba(226,86,42,.10)" : "#2c2926" }}
                   >
-                    <div className="flex items-center gap-2">
-                      <span>{c.icon}</span>
-                      <span className="font-bold text-[13px]" style={{ color: on ? "#f7e9df" : "#e2dbcf" }}>{c.label}</span>
-                    </div>
-                    <div className="text-[11.5px] mt-1" style={{ color: "#c7bfb2" }}>{c.blurb}</div>
+                    <span className="font-bold text-[13px] block mb-1" style={{ color: on ? "#f7e9df" : "#e2dbcf" }}>{c.label}</span>
+                    <div className="text-[11px] leading-snug" style={{ color: "#c7bfb2" }}>{c.blurb}</div>
                   </button>
                 );
               })}

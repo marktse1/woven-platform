@@ -74,7 +74,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
   const [classification, setClassification] = useState<Classification>("auto");
 
   const [sourceBuf, setSourceBuf] = useState<ArrayBuffer | null>(null);
-  const [sourcePolys, setSourcePolys] = useState(0);
+  const [sourcePolys, setSourcePolys] = useState(asset.poly_count ?? 0);
   const [workingBuf, setWorkingBuf] = useState<ArrayBuffer | null>(null);
   const [workingPolys, setWorkingPolys] = useState(0);
 
@@ -85,7 +85,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
 
   const [segmentation, setSegmentation] = useState<SegmentationOverlay | null>(null);
   const [textureChannel, setTextureChannel] = useState<TextureChannel | null>(null);
-  const [wireframe, setWireframe] = useState(true);
+  const [wireframe, setWireframe] = useState(false);
   const [showGrid, setShowGrid] = useState(true);
   // Defaults to the original upload (matching the poly count shown on the library
   // card) rather than silently resuming a previously-decimated "current" version.
@@ -214,7 +214,8 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
     setError("");
     setStatus("Optimizing geometry…");
     try {
-      const ratio = Math.min(0.99, Math.max(0.01, targetPolys / (workingPolys || sourcePolys || 1)));
+      const basePoly = workingPolys || sourcePolys || 1;
+      const ratio = Math.min(0.99, Math.max(0.001, targetPolys / basePoly));
       const res =
         decimateMode === "adaptive"
           ? await optimizeGlbAdaptive(workingBuf, { ratio })
@@ -386,13 +387,14 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                     min={200}
                     step={100}
                     value={targetPolys}
-                    onChange={(e) => setTargetPolys(Math.max(200, Math.round(Number(e.target.value) || 0)))}
+                    onChange={(e) => { const n = Math.round(Number(e.target.value)); if (n > 0) setTargetPolys(n); }}
+                    onBlur={() => setTargetPolys((v) => Math.max(200, v))}
                     className="w-[110px] bg-[#26231f] border border-[#3d3530] rounded-md px-2 py-1 text-right text-[14px] font-bold outline-none"
                     style={{ color: "#f3946a" }}
                   />
                 </div>
                 {(() => {
-                  const sMax = Math.max(1000, workingPolys || sourcePolys || 100000);
+                  const sMax = Math.max(1000, sourcePolys || asset.poly_count || 1000);
                   const sVal = Math.min(targetPolys, sMax);
                   const pct = sMax > 200 ? Math.round(((sVal - 200) / (sMax - 200)) * 100) : 0;
                   return (

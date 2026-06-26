@@ -84,21 +84,21 @@ export default function RetopologyClient() {
   // ---- access gating --------------------------------------------------------
   if (!isLoaded || creatorStatus === "loading") {
     return (
-      <main className="min-h-[calc(100vh-73px)] bg-[#070b11] text-ink flex items-center justify-center">
+      <main className="min-h-[calc(100vh-73px)] bg-[#1b1815] text-ink flex items-center justify-center">
         <div className="text-[13px] text-dim">Loading Mesh Loom…</div>
       </main>
     );
   }
   if (creatorStatus !== "approved") {
     return (
-      <main className="min-h-[calc(100vh-73px)] bg-[#070b11] text-ink flex items-center justify-center px-6">
+      <main className="min-h-[calc(100vh-73px)] bg-[#1b1815] text-ink flex items-center justify-center px-6">
         <div className="max-w-[520px] w-full bg-panel border border-line rounded-[10px] p-6">
           <div className="text-[20px] font-extrabold tracking-[-0.02em] mb-2">Mesh Loom</div>
           <p className="text-[13px] text-dim leading-relaxed">
             Forge tools are available once your creator profile is approved.
           </p>
           <div className="flex gap-2 mt-5">
-            <Link href="/creator" className="px-4 py-2 rounded-[8px] font-bold text-[13px] no-underline" style={{ background: "linear-gradient(180deg,#56a6e8,#2c6aa0)", color: "#06121d" }}>
+            <Link href="/creator" className="px-4 py-2 rounded-[8px] font-bold text-[13px] no-underline" style={{ background: "linear-gradient(180deg,#e2562a,#2c6aa0)", color: "#06121d" }}>
               Become a creator
             </Link>
             <Link href="/forge" className="px-4 py-2 rounded-[8px] border border-line bg-panel2 text-[13px] font-semibold no-underline">
@@ -111,7 +111,7 @@ export default function RetopologyClient() {
   }
 
   return (
-    <main className="min-h-[calc(100vh-73px)] bg-[#070b11] text-ink">
+    <main className="min-h-[calc(100vh-73px)] bg-[#1b1815] text-ink">
       <div className="max-w-[1600px] mx-auto px-6 lg:px-10 pt-6 pb-16">
         {!openedAsset && (
           <div className="flex items-center gap-3 mb-5">
@@ -134,7 +134,7 @@ export default function RetopologyClient() {
               <PipelineStudio asset={openedAsset} userId={user.id} onBack={() => setOpenedAsset(null)} onAssetCreated={refreshLibrary} />
             ) : (
               <div className="bg-panel border border-line rounded-[12px] overflow-hidden h-[clamp(260px,38vh,420px)]">
-                <ModelViewer data={null} wireframe={false} accent="#56a6e8" />
+                <ModelViewer data={null} wireframe={false} accent="#e2562a" />
               </div>
             )}
           </div>
@@ -163,7 +163,7 @@ export default function RetopologyClient() {
                     <div
                       key={a.id}
                       className="flex items-center gap-2.5 p-2.5 rounded-[9px] border bg-[#0a0e13]"
-                      style={{ borderColor: openedAsset?.id === a.id ? "#56a6e8" : "#26384a" }}
+                      style={{ borderColor: openedAsset?.id === a.id ? "#e2562a" : "#26384a" }}
                     >
                       <button onClick={() => setOpenedAsset(a)} className="min-w-0 flex-1 text-left">
                         <div className="font-semibold text-[13px] truncate">{a.name}</div>
@@ -183,7 +183,7 @@ export default function RetopologyClient() {
                           <button onClick={() => setConfirmDelete(a)} className="text-[12px] text-dim hover:text-[#e88]">✕</button>
                         </>
                       ) : (
-                        <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ background: "rgba(86,166,232,.14)", color: "#8fc6f0" }}>{a.visibility}</span>
+                        <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ background: "rgba(226,86,42,.14)", color: "#ffb09a" }}>{a.visibility}</span>
                       )}
                     </div>
                   ))}

@@ -3,7 +3,7 @@
 import { BAKE_OPTIONS } from "@/lib/retopo/optimize";
 import StepCard from "./StepCard";
 
-const ACCENT = "#56a6e8";
+const ACCENT = "#e2562a";
 
 type Props = {
   stepNumber: number;
@@ -46,7 +46,7 @@ export default function FinalizeStep({
               key={m}
               onClick={() => onToggleBakeMap(m)}
               className="text-[12px] px-2.5 py-1 rounded-full border capitalize"
-              style={{ borderColor: on ? ACCENT : "#26384a", background: on ? "rgba(86,166,232,.14)" : "#0d141c", color: on ? "#cfe6fb" : "#8aa0b4" }}
+              style={{ borderColor: on ? ACCENT : "#26384a", background: on ? "rgba(226,86,42,.14)" : "#0d141c", color: on ? "#fff3ec" : "#8aa0b4" }}
             >
               {m}
             </button>
@@ -65,7 +65,7 @@ export default function FinalizeStep({
         step={2}
         value={dilationPx}
         onChange={(e) => onDilationChange(Number(e.target.value))}
-        className="w-full accent-[#56a6e8] mb-1.5"
+        className="w-full accent-[#e2562a] mb-1.5"
       />
       <p className="text-[11px] text-dim mb-3">
         Pushes edge-texel color past each UV island&apos;s boundary so filtering never samples blank padding — the actual fix for bleeding at seams.
@@ -75,7 +75,7 @@ export default function FinalizeStep({
         onClick={onFinalize}
         disabled={busy || disabled || working}
         className="w-full py-3 rounded-[10px] font-bold text-[13.5px] disabled:opacity-50"
-        style={{ background: "linear-gradient(180deg,#56a6e8,#2c6aa0)", color: "#06121d" }}
+        style={{ background: "#e2562a", color: "#fff3ec" }}
       >
         {working ? "Finalizing on Forge worker…" : "Finalize"}
       </button>

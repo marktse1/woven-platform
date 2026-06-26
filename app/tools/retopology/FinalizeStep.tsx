@@ -65,7 +65,8 @@ export default function FinalizeStep({
         step={2}
         value={dilationPx}
         onChange={(e) => onDilationChange(Number(e.target.value))}
-        className="w-full accent-[#e2562a] mb-1.5 [&::-webkit-slider-runnable-track]:bg-[#26231f] [&::-webkit-slider-runnable-track]:rounded-full [&::-moz-range-track]:bg-[#26231f] [&::-moz-range-track]:rounded-full"
+        className="w-full h-[4px] rounded-full cursor-pointer appearance-none mb-1.5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-[14px] [&::-webkit-slider-thumb]:h-[14px] [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#f2ede3] [&::-webkit-slider-thumb]:mt-[-5px] [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-track]:h-[4px] [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-[#26231f] [&::-moz-range-progress]:h-[4px] [&::-moz-range-progress]:rounded-full [&::-moz-range-progress]:bg-[#e2562a]"
+        style={{ background: `linear-gradient(to right, #e2562a ${Math.round(((dilationPx - 4) / 28) * 100)}%, #26231f ${Math.round(((dilationPx - 4) / 28) * 100)}%)` }}
       />
       <p className="text-[11px] mb-3" style={{ color: "#c7bfb2" }}>
         Pushes edge-texel color past each UV island&apos;s boundary so filtering never samples blank padding — the actual fix for bleeding at seams.

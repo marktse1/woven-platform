@@ -391,15 +391,23 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                     style={{ color: "#f3946a" }}
                   />
                 </div>
-                <input
-                  type="range"
-                  min={200}
-                  max={Math.max(1000, workingPolys || sourcePolys || 100000)}
-                  step={100}
-                  value={Math.min(targetPolys, Math.max(1000, workingPolys || sourcePolys || 100000))}
-                  onChange={(e) => setTargetPolys(Number(e.target.value))}
-                  className="w-full accent-[#e2562a] [&::-webkit-slider-runnable-track]:bg-[#26231f] [&::-webkit-slider-runnable-track]:rounded-full [&::-moz-range-track]:bg-[#26231f] [&::-moz-range-track]:rounded-full"
-                />
+                {(() => {
+                  const sMax = Math.max(1000, workingPolys || sourcePolys || 100000);
+                  const sVal = Math.min(targetPolys, sMax);
+                  const pct = sMax > 200 ? Math.round(((sVal - 200) / (sMax - 200)) * 100) : 0;
+                  return (
+                    <input
+                      type="range"
+                      min={200}
+                      max={sMax}
+                      step={100}
+                      value={sVal}
+                      onChange={(e) => setTargetPolys(Number(e.target.value))}
+                      className="w-full h-[4px] rounded-full cursor-pointer appearance-none [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-[14px] [&::-webkit-slider-thumb]:h-[14px] [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#f2ede3] [&::-webkit-slider-thumb]:mt-[-5px] [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-track]:h-[4px] [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-[#26231f] [&::-moz-range-progress]:h-[4px] [&::-moz-range-progress]:rounded-full [&::-moz-range-progress]:bg-[#e2562a]"
+                      style={{ background: `linear-gradient(to right, #e2562a ${pct}%, #26231f ${pct}%)` }}
+                    />
+                  );
+                })()}
                 <button
                   onClick={applyDecimate}
                   disabled={busy || !workingBuf}

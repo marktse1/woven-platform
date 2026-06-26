@@ -110,14 +110,6 @@ export default function RetopologyClient() {
   return (
     <main className="min-h-[calc(100vh-73px)] bg-[#1b1815] text-ink">
       <div className="max-w-[1600px] mx-auto px-6 lg:px-10 pt-6 pb-16">
-        {!openedAsset && (
-          <div className="flex items-center gap-3 mb-5">
-            <Link href="/forge" className="text-[12px] no-underline" style={{ color: "#9b9082" }}>← Forge</Link>
-            <span style={{ color: "#9b9082" }}>/</span>
-            <div className="text-[13px] font-bold">🔻 Mesh Loom</div>
-          </div>
-        )}
-
         {error && (
           <div className="mb-4 p-3 rounded-[9px] border text-[13px]" style={{ borderColor: "rgba(227,92,92,.4)", background: "rgba(227,92,92,.08)", color: "#f0a6a6" }}>
             {error}
@@ -125,19 +117,8 @@ export default function RetopologyClient() {
         )}
 
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6 items-start">
-          {/* ---- left+center: pipeline studio, or empty placeholder ---- */}
-          <div>
-            {openedAsset && user?.id ? (
-              <PipelineStudio asset={openedAsset} userId={user.id} onBack={() => setOpenedAsset(null)} onAssetCreated={refreshLibrary} />
-            ) : (
-              <div
-                className="rounded-[12px] border border-dashed flex items-center justify-center h-[clamp(300px,42vh,520px)]"
-                style={{ borderColor: "rgba(255,255,255,0.08)" }}
-              >
-                <p className="text-[13px]" style={{ color: "#9b9082" }}>Select a model from your library or drop a GLB to begin</p>
-              </div>
-            )}
-          </div>
+          {/* ---- left+center: pipeline studio, always visible ---- */}
+          <PipelineStudio asset={openedAsset} userId={user?.id ?? ""} onBack={() => setOpenedAsset(null)} onAssetCreated={refreshLibrary} />
 
           {/* ---- right: upload + library, always visible ---- */}
           <div className="flex flex-col gap-5">

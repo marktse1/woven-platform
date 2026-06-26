@@ -62,7 +62,7 @@ function StepBadge({ status }: { status: PipelineStepRow["status"] }) {
 }
 
 type Props = {
-  asset: AssetRow;
+  asset: AssetRow | null;
   userId: string;
   onBack: () => void;
   onAssetCreated?: () => void;
@@ -74,7 +74,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
   const [classification, setClassification] = useState<Classification>("auto");
 
   const [sourceBuf, setSourceBuf] = useState<ArrayBuffer | null>(null);
-  const [sourcePolys, setSourcePolys] = useState(asset.poly_count ?? 0);
+  const [sourcePolys, setSourcePolys] = useState(asset?.poly_count ?? 0);
   const [workingBuf, setWorkingBuf] = useState<ArrayBuffer | null>(null);
   const [workingPolys, setWorkingPolys] = useState(0);
 
@@ -101,6 +101,17 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
 
   // ---- initial load: source bytes + existing session/steps, if any --------
   useEffect(() => {
+    if (!asset) {
+      setSourceBuf(null);
+      setWorkingBuf(null);
+      setSourcePolys(0);
+      setWorkingPolys(0);
+      setSession(null);
+      setSteps([]);
+      setStatus("");
+      setError("");
+      return;
+    }
     let active = true;
     (async () => {
       setBusy(true);
@@ -157,7 +168,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
     return () => {
       active = false;
     };
-  }, [asset.id, asset.storage_path]);
+  }, [asset?.id, asset?.storage_path]);
 
   // ---- poll queued/processing Tier-2 steps ----------------------------------
   useEffect(() => {
@@ -192,13 +203,13 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
     return () => clearInterval(interval);
   }, [pendingTier2]);
 
-  const currentAssetId = session?.current_asset_id ?? asset.id;
+  const currentAssetId = session?.current_asset_id ?? asset?.id ?? "";
 
   const startPipeline = useCallback(async () => {
     setBusy(true);
     setError("");
     try {
-      const created = await openOrGetSession(userId, asset.id, classification);
+      const created = await openOrGetSession(userId, asset!.id, classification);
       setSession(created);
       setSteps([]);
     } catch (e) {
@@ -206,7 +217,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
     } finally {
       setBusy(false);
     }
-  }, [userId, asset.id, classification]);
+  }, [userId, asset?.id, classification]);
 
   const applyDecimate = useCallback(async () => {
     if (!session || !workingBuf) return;
@@ -226,7 +237,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
         userId,
         op: decimateMode === "adaptive" ? "adaptive_density" : "decimate",
         inputAssetId: currentAssetId,
-        outputName: `${asset.name.replace(/\.(glb|gltf)$/i, "")}-step${steps.length + 1}.glb`,
+        outputName: `${(asset?.name ?? "model").replace(/\.(glb|gltf)$/i, "")}-step${steps.length + 1}.glb`,
         outputBytes: res.output.slice().buffer,
         outputPolyCount: res.resultPolys,
         params: { targetPolys, mode: decimateMode },
@@ -250,7 +261,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
     } finally {
       setBusy(false);
     }
-  }, [session, workingBuf, targetPolys, workingPolys, sourcePolys, decimateMode, userId, asset.name, steps.length, currentAssetId]);
+  }, [session, workingBuf, targetPolys, workingPolys, sourcePolys, decimateMode, userId, asset?.name, steps.length, currentAssetId]);
 
   const applySegment = useCallback(async () => {
     if (!session || !workingBuf) return;
@@ -394,7 +405,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                   />
                 </div>
                 {(() => {
-                  const sMax = Math.max(1000, sourcePolys || asset.poly_count || 1000);
+                  const sMax = Math.max(1000, sourcePolys || asset?.poly_count || 1000);
                   const sVal = Math.min(targetPolys, sMax);
                   const pct = sMax > 200 ? Math.round(((sVal - 200) / (sMax - 200)) * 100) : 0;
                   return (
@@ -559,7 +570,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                   <div className="w-full h-full flex items-center justify-center text-[13px]" style={{ color: "#9b9082" }}>Loading…</div>
                 ) : (
                   <ModelViewer
-                    key={compareToSource ? `source-${asset.id}` : `current-${currentAssetId}`}
+                    key={compareToSource ? `source-${asset?.id}` : `current-${currentAssetId}`}
                     data={viewerBuf}
                     wireframe={wireframe}
                     showGrid={showGrid}

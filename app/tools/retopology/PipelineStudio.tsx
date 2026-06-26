@@ -451,7 +451,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                 </button>
               </StepCard>
 
-              <StepCard title="2 · Segment objects" description="Splits the mesh into parts by existing material/connectivity boundaries — deterministic, works in any order.">
+              <StepCard title="2 · Segment objects" description="Splits the mesh into parts by existing material/connectivity boundaries — deterministic, works in any order." badge="Optional">
                 <button
                   onClick={applySegment}
                   disabled={busy || !workingBuf}
@@ -484,11 +484,10 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
               <StepCard
                 title={`${isCharacter ? 4 : 3} · UV Map`}
                 description="Auto-unwrap the lo-res mesh with xatlas — packs UV islands to minimise wasted atlas space, ready for baking."
-                disabled={!hasSteps}
               >
                 <button
                   onClick={applyUVMap}
-                  disabled={busy || !workingBuf || !hasSteps}
+                  disabled={busy || !workingBuf}
                   className="w-full py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
                   style={{ background: "#e2562a", color: "#fff3ec" }}
                 >

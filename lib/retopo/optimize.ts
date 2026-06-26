@@ -46,51 +46,78 @@ export async function countGlbTriangles(input: ArrayBuffer): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------
-// Position-based welding for simplification.
+// Core decimation helper: simplify indices that are already in the
+// gltf-transform-welded vertex space.
 //
-// glTF exports very commonly have ZERO shared vertex indices between
-// triangles - any per-face-normal ("flat shaded") or hard-edged export gives
-// every triangle its own 3 unique vertices even where they're geometrically
-// coincident. @gltf-transform/functions' weld() only merges vertices that
-// are bitwise-identical across EVERY attribute (position AND normal AND UV),
-// so it does nothing in that extremely common case - confirmed directly:
-// a plain Blender icosphere/UV-sphere export has vertex count exactly equal
-// to index count (every triangle fully disconnected from its neighbors).
-// meshoptimizer's simplify() collapses *edges*, and an edge only exists if
-// two triangles share a vertex *index* - with no sharing, there is nothing
-// to collapse and simplify() correctly (and silently) no-ops, regardless of
-// target ratio or error budget. The fix: weld by POSITION ONLY (ignoring
-// normal/UV), establishing real connectivity, simplify on that, then map
-// the result back to the original (unwelded) vertex index space so UVs/
-// normals/everything else stay correctly attached for every other accessor.
+// Why we do NOT use position-only welding for the final output:
+//   Many glTF exports have UV seams where two vertices share the same
+//   geometric position but have different UV coordinates (one per side of the
+//   seam). Position-only welding collapses them to a single canonical vertex
+//   and picks ONE of the two UVs — which is wrong for the other side of every
+//   seam. The output texture looks scrambled.
+//
+// Strategy:
+//   1. Try edge-collapse simplify() on the gltf-welded index buffer.
+//      gltf-transform's weld() shares vertices that are identical across ALL
+//      attributes, so this gives proper connectivity for smooth-shaded meshes.
+//   2. If the result is ≥ 90% of the source (flat-shaded / no connectivity),
+//      fall back to simplifySloppy with target_error=1e-2.  Voxel-based,
+//      needs no connectivity, and the output indices still point into the
+//      original (N-welded) vertex buffer — UVs stay correct.
+// ---------------------------------------------------------------------------
+function decimatePrimIndices(
+  srcIndices: Uint32Array,
+  srcPositions: Float32Array,
+  targetIndexCount: number,
+): Uint32Array {
+  const [dstIndices] = MeshoptSimplifier.simplify(srcIndices, srcPositions, 3, targetIndexCount, 1);
+
+  if (dstIndices.length > srcIndices.length * 0.9) {
+    // Edge-collapse found no collapsible edges (flat-shaded / fully disconnected mesh).
+    // Fall back to voxel-based decimation — no connectivity required.
+    return MeshoptSimplifier.simplifySloppy(srcIndices, srcPositions, 3, null, targetIndexCount, 1e-2)[0];
+  }
+  return dstIndices;
+}
+
+// ---------------------------------------------------------------------------
+// Position-only welding — used ONLY for curvature estimation in the adaptive
+// path, never for the final index output.
 // ---------------------------------------------------------------------------
 
 type WeldedConnectivity = {
-  /** Same length as the original index buffer, values in compact [0, uniqueCount) space. */
   weldedIndices: Uint32Array;
-  /** Compacted position buffer, length = uniqueCount * 3. */
   compactPositions: Float32Array;
-  /** compact index -> original vertex index. */
+  /** compact index → N-welded canonical vertex index */
   reverseRemap: Uint32Array;
+  /** N-welded vertex → compact index (0xffffffff if unreferenced) */
+  nWeldedToCompact: Uint32Array;
 };
 
 function weldByPosition(indices: Uint32Array, positions: Float32Array): WeldedConnectivity {
+  const nWelded = positions.length / 3;
   const positionRemap = MeshoptSimplifier.generatePositionRemap(positions, 3);
 
-  // Convert original vertex indices → canonical position indices.
   const weldedIndices = new Uint32Array(indices.length);
   for (let i = 0; i < indices.length; i++) weldedIndices[i] = positionRemap[indices[i]];
 
-  // compactMesh remaps weldedIndices IN PLACE to a dense [0, uniqueCount) range and returns
+  // compactMesh remaps weldedIndices IN PLACE to [0, uniqueCount) and returns
   // [forwardRemap, uniqueCount] where forwardRemap[canonical] = compact.
-  // This is a FORWARD map (old → new). We need the reverse (new → old) to rebuild positions
-  // and to map simplifier output back to the original vertex index space, so we invert it.
   const [forwardRemap, uniqueCount] = MeshoptSimplifier.compactMesh(weldedIndices);
 
+  // Build true reverse: reverseRemap[compact] = canonical (a valid N-welded index)
   const reverseRemap = new Uint32Array(uniqueCount);
   for (let canonical = 0; canonical < forwardRemap.length; canonical++) {
     const compact = forwardRemap[canonical];
     if (compact < uniqueCount) reverseRemap[compact] = canonical;
+  }
+
+  // Build N-welded → compact lookup for curvature expansion
+  const nWeldedToCompact = new Uint32Array(nWelded).fill(0xffffffff);
+  for (let v = 0; v < nWelded; v++) {
+    const canonical = positionRemap[v];
+    const compact = forwardRemap[canonical];
+    if (compact < uniqueCount) nWeldedToCompact[v] = compact;
   }
 
   const compactPositions = new Float32Array(uniqueCount * 3);
@@ -101,14 +128,7 @@ function weldByPosition(indices: Uint32Array, positions: Float32Array): WeldedCo
     compactPositions[i * 3 + 2] = positions[src * 3 + 2];
   }
 
-  return { weldedIndices, compactPositions, reverseRemap };
-}
-
-/** Maps simplifier output (compact vertex space) back to the original primitive's vertex index space. */
-function mapToOriginalIndexSpace(compactIndices: Uint32Array | number[], reverseRemap: Uint32Array): Uint32Array {
-  const out = new Uint32Array(compactIndices.length);
-  for (let i = 0; i < compactIndices.length; i++) out[i] = reverseRemap[compactIndices[i]];
-  return out;
+  return { weldedIndices, compactPositions, reverseRemap, nWeldedToCompact };
 }
 
 export async function optimizeGlb(
@@ -123,7 +143,6 @@ export async function optimizeGlb(
   const doc = await io.readBinary(new Uint8Array(input));
 
   const sourcePolys = countTriangles(doc);
-  // Compute ratio from the actual mesh — never trust caller-side poly count state.
   const ratio = Math.min(0.99, Math.max(0.001, opts.targetPolys / Math.max(1, sourcePolys)));
 
   await doc.transform(weld());
@@ -144,28 +163,10 @@ export async function optimizeGlb(
       const targetIndexCount = Math.max(12, Math.round((srcIndices.length / 3) * ratio) * 3);
       if (targetIndexCount >= srcIndices.length) continue;
 
-      const { weldedIndices, compactPositions, reverseRemap } = weldByPosition(srcIndices, srcPositions);
+      const finalIndices = decimatePrimIndices(srcIndices, srcPositions, targetIndexCount);
 
-      const [dstIndices] = MeshoptSimplifier.simplify(
-        weldedIndices,
-        compactPositions,
-        3,
-        targetIndexCount,
-        1,
-      );
-
-      // simplifySloppy fallback: edge-collapse requires shared indices between adjacent triangles,
-      // but many game-mesh exports give every triangle its own 3 vertices (no sharing) so the
-      // simplifier finds no edges to collapse and returns the mesh unchanged. Detect that case
-      // (result > 90% of source) and use voxel-based sloppy decimation instead, which always
-      // achieves the target regardless of connectivity. target_error=1e-2 keeps voxels at 1% of
-      // the bbox so the grid is fine enough to represent thousands of triangles.
-      const finalIndices =
-        dstIndices.length > srcIndices.length * 0.9
-          ? MeshoptSimplifier.simplifySloppy(weldedIndices, compactPositions, 3, null, targetIndexCount, 1e-2)[0]
-          : dstIndices;
-
-      indicesAccessor.setArray(Uint32Array.from(mapToOriginalIndexSpace(finalIndices, reverseRemap)));
+      // Output indices reference the N-welded vertex space — UVs stay attached.
+      indicesAccessor.setArray(new Uint32Array(finalIndices));
     }
   }
 
@@ -185,24 +186,13 @@ export async function optimizeGlb(
 // ---------------------------------------------------------------------------
 // Real curvature-weighted adaptive density.
 //
-// The plain `simplify()` path above only forwards a single uniform `error`
-// threshold to meshoptimizer — it has no concept of "spend more polygons on
-// high-curvature regions." Real per-region density needs meshoptimizer's
-// lower-level `simplifyWithAttributes`, which accepts a per-vertex attribute
-// (we feed it a curvature estimate) plus a weight for that attribute, and an
-// explicit vertex-lock mask so the sharpest creases are pinned and survive
-// simplification entirely.
+// Per-vertex curvature is estimated on a position-welded mesh (which has
+// real connectivity), then expanded back to the N-welded vertex space so
+// it can be used as an attribute weight with simplifyWithAttributes.
+// The output indices still reference the original N-welded vertex space,
+// preserving correct UVs/normals across seams.
 // ---------------------------------------------------------------------------
 
-/**
- * Per-vertex curvature estimate in [0, 1]: the average angular deviation
- * between a vertex's incident face normals and the vertex's own
- * area-weighted average normal. ~0 on flat regions, higher on creases/edges.
- * Pure geometry — no AI, no heuristics beyond "how sharp is this corner."
- * Requires properly position-welded connectivity (see weldByPosition) -
- * without shared vertices, every vertex only ever sees its own single face,
- * which trivially computes to zero curvature everywhere.
- */
 function computeVertexCurvature(positions: Float32Array, indices: Uint32Array): Float32Array {
   const vertexCount = positions.length / 3;
   const faceCount = indices.length / 3;
@@ -225,7 +215,6 @@ function computeVertexCurvature(positions: Float32Array, indices: Uint32Array): 
     let nx = ey1 * ez2 - ez1 * ey2;
     let ny = ez1 * ex2 - ex1 * ez2;
     let nz = ex1 * ey2 - ey1 * ex2;
-    // Magnitude is proportional to 2x triangle area — keep it as the area weight.
     const area = Math.hypot(nx, ny, nz) || 1e-8;
     nx /= area; ny /= area; nz /= area;
 
@@ -267,25 +256,6 @@ function computeVertexCurvature(positions: Float32Array, indices: Uint32Array): 
   return curvature;
 }
 
-export type AdaptiveOptimizeOptions = {
-  /** Absolute triangle target — ratio is computed inside from the actual mesh count. */
-  targetPolys: number;
-  /** How strongly curvature steers the simplifier away from sharp regions. */
-  curvatureWeight?: number;
-  /**
-   * Fraction of vertices (by curvature rank, sharpest first) to hard-lock so
-   * they survive simplification entirely - e.g. 0.02 = the sharpest 2%.
-   * Deliberately a bounded percentile rather than an absolute curvature
-   * cutoff: on a smooth test primitive only true creases are sharp, but a
-   * detailed/noisy real-world mesh can have moderate curvature broadly
-   * across its whole surface, and an absolute threshold can then lock a
-   * huge fraction of vertices - capping how much the mesh can shrink at all,
-   * regardless of target ratio. A percentile rank always stays bounded.
-   */
-  lockFraction?: number;
-};
-
-/** Locks only the sharpest `lockFraction` of vertices by curvature rank - never more, regardless of the mesh's curvature distribution. */
 function computeVertexLockMask(curvature: Float32Array, lockFraction: number): Uint8Array {
   const vertexCount = curvature.length;
   const lock = new Uint8Array(vertexCount);
@@ -297,20 +267,17 @@ function computeVertexLockMask(curvature: Float32Array, lockFraction: number): U
 
   let locked = 0;
   for (let v = 0; v < vertexCount && locked < lockCount; v++) {
-    if (curvature[v] >= cutoff) {
-      lock[v] = 1;
-      locked++;
-    }
+    if (curvature[v] >= cutoff) { lock[v] = 1; locked++; }
   }
   return lock;
 }
 
-/**
- * Decimates with real per-region density: curvature drives both a soft
- * attribute weight (meshoptimizer prefers collapsing flat regions first) and
- * a hard per-vertex lock (the sharpest creases are pinned outright). Falls
- * back to leaving a primitive untouched if it has no indices/positions.
- */
+export type AdaptiveOptimizeOptions = {
+  targetPolys: number;
+  curvatureWeight?: number;
+  lockFraction?: number;
+};
+
 export async function optimizeGlbAdaptive(
   input: ArrayBuffer,
   opts: AdaptiveOptimizeOptions,
@@ -343,31 +310,48 @@ export async function optimizeGlbAdaptive(
       const targetIndexCount = Math.max(12, Math.round((srcIndices.length / 3) * ratio) * 3);
       if (targetIndexCount >= srcIndices.length) continue;
 
-      const { weldedIndices, compactPositions, reverseRemap } = weldByPosition(srcIndices, srcPositions);
+      // Build position-welded connectivity to estimate per-vertex curvature.
+      // We then EXPAND the curvature back to the N-welded vertex space so
+      // simplifyWithAttributes can operate on the original data with correct UVs.
+      const { weldedIndices, compactPositions, nWeldedToCompact } = weldByPosition(srcIndices, srcPositions);
 
-      const curvature = computeVertexCurvature(compactPositions, weldedIndices);
-      const vertexLock = computeVertexLockMask(curvature, lockFraction);
+      const compactCurvature = computeVertexCurvature(compactPositions, weldedIndices);
+      const compactLock = computeVertexLockMask(compactCurvature, lockFraction);
 
+      // Expand curvature + lock from compact → N-welded space
+      const nwv = srcPositions.length / 3;
+      const nWeldedCurvature = new Float32Array(nwv);
+      const nWeldedLock = new Uint8Array(nwv);
+      for (let v = 0; v < nwv; v++) {
+        const c = nWeldedToCompact[v];
+        if (c !== 0xffffffff) {
+          nWeldedCurvature[v] = compactCurvature[c];
+          nWeldedLock[v] = compactLock[c];
+        }
+      }
+
+      // Attempt attribute-weighted simplification on the N-welded (original) mesh.
+      // Works for smooth-shaded meshes; for flat-shaded (no connectivity) it no-ops.
       const [dstIndices] = MeshoptSimplifier.simplifyWithAttributes(
-        weldedIndices,
-        compactPositions,
+        srcIndices,
+        srcPositions,
         3,
-        curvature,
+        nWeldedCurvature,
         1,
         [curvatureWeight],
-        vertexLock,
+        nWeldedLock,
         targetIndexCount,
         1,
       );
 
-      // Same sloppy fallback as optimizeGlb: if the attribute-weighted simplifier
-      // couldn't reduce (no shared indices in the source mesh), fall back to voxel decimation.
+      // Fall back to sloppy with the curvature lock mask — voxel-based, no connectivity
+      // needed, and output indices are still in N-welded space so UVs stay correct.
       const finalIndices =
         dstIndices.length > srcIndices.length * 0.9
-          ? MeshoptSimplifier.simplifySloppy(weldedIndices, compactPositions, 3, null, targetIndexCount, 1e-2)[0]
+          ? MeshoptSimplifier.simplifySloppy(srcIndices, srcPositions, 3, nWeldedLock, targetIndexCount, 1e-2)[0]
           : dstIndices;
 
-      indicesAccessor.setArray(Uint32Array.from(mapToOriginalIndexSpace(finalIndices, reverseRemap)));
+      indicesAccessor.setArray(new Uint32Array(finalIndices));
     }
   }
 
@@ -402,8 +386,6 @@ export const CLASSIFICATIONS: {
 ];
 
 export function needsRetopoWorker(cls: Classification): boolean {
-  // Characters/creatures need true quad retopology + edgeloops (Tier-2 worker).
-  // Objects are well served by in-browser decimation (Tier-1).
   return cls === "biped" || cls === "creature";
 }
 

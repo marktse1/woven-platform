@@ -143,7 +143,7 @@ export default function RetopologyClient() {
           <div className="flex flex-col gap-5">
             <div className="rounded-[12px] p-4">
               <p className="text-[11px] font-bold tracking-[.12em] uppercase mb-2.5" style={{ color: "#e8e1d5" }}>Upload</p>
-              <DropZone onFile={onFile} hint="Drop a GLB" compact accentColor="#e2562a" inactiveBorder="rgba(226,86,42,.25)" baseBg="#1b1815" />
+              <DropZone onFile={onFile} hint="Drop a GLB" compact accentColor="#e2562a" inactiveBorder="rgba(226,86,42,.30)" baseBg="rgba(226,86,42,0.05)" />
               {busy && <p className="text-[11.5px] mt-2 text-center" style={{ color: "#c7bfb2" }}>Uploading…</p>}
               <p className="text-[11px] mt-2.5 leading-relaxed" style={{ color: "#c7bfb2" }}>
                 Select an asset below, or drop a new one — decimate, retopologize with edge loops, segment, and finalize in any order.

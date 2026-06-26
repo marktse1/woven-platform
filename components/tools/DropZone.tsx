@@ -58,7 +58,7 @@ export default function DropZone({
       <div className={compact ? "text-[20px] mb-1" : "text-[34px] mb-2"}>🔻</div>
       <div className={compact ? "text-[12.5px] font-bold" : "text-[15px] font-bold"}>{hint}</div>
       {!compact && (
-        <div className="text-[12.5px] text-dim mt-1.5">
+        <div className="text-[12.5px] mt-1.5" style={{ color: "#9b9082" }}>
           High-res GLB / glTF · stays private in your library until you share it
         </div>
       )}

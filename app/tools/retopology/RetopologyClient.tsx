@@ -178,7 +178,11 @@ export default function RetopologyClient() {
                             value={a.visibility}
                             onChange={(e) => setAssetVisibility(a.id, e.target.value as Visibility, a.shared_with).then(refreshLibrary)}
                             className="rounded-md px-1.5 py-1 text-[11.5px]"
-                            style={{ background: "#2c2926", border: "1px solid rgba(255,255,255,.10)", color: "#e8e1d5" }}
+                            style={{
+                              background: "#2c2926",
+                              border: `1px solid ${openedAsset?.id === a.id ? "rgba(226,86,42,.45)" : "rgba(255,255,255,0.08)"}`,
+                              color: openedAsset?.id === a.id ? "#f3946a" : "#9b9082",
+                            }}
                           >
                             <option value="private">Private</option>
                             <option value="shared">Shared</option>

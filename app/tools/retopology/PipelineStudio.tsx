@@ -414,8 +414,8 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                 <button
                   onClick={applySegment}
                   disabled={busy || !workingBuf}
-                  className="w-full py-2.5 font-bold text-[13px] disabled:opacity-50"
-                  style={{ color: "#f3946a" }}
+                  className="w-full py-2.5 rounded-[9px] font-bold text-[13px] border disabled:opacity-50"
+                  style={{ background: "#2c2926", borderColor: "rgba(255,255,255,0.08)", color: "#9b9082" }}
                 >
                   Apply
                 </button>

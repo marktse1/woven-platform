@@ -83,6 +83,8 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
   const [decimateMode, setDecimateMode] = useState<"uniform" | "adaptive">("adaptive");
   const [bakeMaps, setBakeMaps] = useState<string[]>(["albedo", "normal", "ao"]);
   const [dilationPx, setDilationPx] = useState(16);
+  const [bakeProgress, setBakeProgress] = useState(0);
+  const [bakeStage, setBakeStage] = useState("");
 
   const [segmentation, setSegmentation] = useState<SegmentationOverlay | null>(null);
   const [textureChannel, setTextureChannel] = useState<TextureChannel | null>(null);
@@ -307,6 +309,8 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
     if (!session || !workingBuf) return;
     setBusy(true);
     setError("");
+    setBakeProgress(0);
+    setBakeStage("");
     setStatus("Baking textures — UV unwrap + texture transfer running on the server…");
     try {
       const res = await fetch("/api/tools/retopology/bake", {
@@ -318,7 +322,34 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
         const body = await res.json().catch(() => ({}));
         throw new Error((body as { error?: string }).error ?? `Bake failed (${res.status})`);
       }
-      const { outputAssetId } = (await res.json()) as { outputAssetId: string };
+
+      // Read the streaming NDJSON response
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let outputAssetId = "";
+      let lineBuf = "";
+      outer: while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        lineBuf += decoder.decode(value, { stream: true });
+        const parts = lineBuf.split("\n");
+        lineBuf = parts.pop() ?? "";
+        for (const line of parts) {
+          if (!line.trim()) continue;
+          const evt = JSON.parse(line) as {
+            stage?: string;
+            progress?: number;
+            done?: boolean;
+            outputAssetId?: string;
+            error?: string;
+          };
+          if (evt.progress != null) setBakeProgress(evt.progress);
+          if (evt.stage)            setBakeStage(evt.stage);
+          if (evt.done)             { outputAssetId = evt.outputAssetId ?? ""; break outer; }
+          if (evt.error)            throw new Error(evt.error);
+        }
+      }
+      if (!outputAssetId) throw new Error("Bake completed but no asset ID returned.");
 
       const step = await appendTier1Step({
         sessionId: session.id,
@@ -342,6 +373,8 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
       setError(e instanceof Error ? e.message : "Bake failed.");
     } finally {
       setBusy(false);
+      setBakeProgress(0);
+      setBakeStage("");
     }
   }, [session, workingBuf, userId, currentAssetId, bakeMaps, asset?.name, steps.length, workingPolys]);
 
@@ -499,8 +532,22 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                   className="w-full py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
                   style={{ background: "#e2562a", color: "#fff3ec" }}
                 >
-                  Apply
+                  {busy && bakeProgress > 0 ? "Baking…" : "Apply"}
                 </button>
+                {busy && bakeProgress > 0 && (
+                  <div className="mt-3">
+                    <div className="flex justify-between text-[11px] mb-1.5" style={{ color: "#9b9082" }}>
+                      <span className="capitalize">{bakeStage}</span>
+                      <span>{Math.round(bakeProgress * 100)}%</span>
+                    </div>
+                    <div className="h-[3px] rounded-full overflow-hidden" style={{ background: "#26231f" }}>
+                      <div
+                        className="h-full rounded-full transition-all duration-500 ease-out"
+                        style={{ width: `${bakeProgress * 100}%`, background: "#e2562a" }}
+                      />
+                    </div>
+                  </div>
+                )}
               </StepCard>
           </>
         </div>

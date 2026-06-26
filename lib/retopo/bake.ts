@@ -28,7 +28,9 @@ async function decodeTex(tex: GltfTexture | null | undefined): Promise<TexData |
     .ensureAlpha()
     .raw()
     .toBuffer({ resolveWithObject: true });
-  return { pixels: new Uint8Array(data.buffer), width: info.width, height: info.height };
+  // Use new Uint8Array(data) — not data.buffer — to respect byteOffset when
+  // the Buffer comes from Node's shared memory pool.
+  return { pixels: new Uint8Array(data), width: info.width, height: info.height };
 }
 
 function sampleBilinear(t: TexData, u: number, v: number, out: number[]) {
@@ -100,6 +102,7 @@ function rasteriseTri(
 
 export type BakeOptions = {
   bakeMaps?: string[]; // subset of ["albedo", "normal", "ao"]
+  onProgress?: (stage: string, fraction: number) => void;
 };
 
 export async function unwrapAndBake(
@@ -107,24 +110,28 @@ export async function unwrapAndBake(
   opts: BakeOptions = {},
 ): Promise<Uint8Array> {
   const bakeMaps = opts.bakeMaps ?? ["albedo", "normal", "ao"];
+  const onProgress = opts.onProgress;
 
   const io = new WebIO();
   const doc = await io.readBinary(new Uint8Array(inputBuf));
   const xatlasModule = await createXAtlas();
 
-  // Use the first material's embedded textures as the bake source.
-  const mat = doc.getRoot().listMaterials()[0] ?? null;
-
-  // Decode source textures (still the original hi-res ones from the upload)
-  const [albedoSrc, normalSrc, aoSrc] = await Promise.all([
-    bakeMaps.includes("albedo") ? decodeTex(mat?.getBaseColorTexture()) : Promise.resolve(null),
-    bakeMaps.includes("normal") ? decodeTex(mat?.getNormalTexture()) : Promise.resolve(null),
-    bakeMaps.includes("ao")     ? decodeTex(mat?.getOcclusionTexture()) : Promise.resolve(null),
-  ]);
-
   for (const mesh of doc.getRoot().listMeshes()) {
     for (const prim of mesh.listPrimitives()) {
       if (!prim.getIndices() || !prim.getAttribute("POSITION")) continue;
+
+      // Per-primitive material — each prim may reference different textures
+      const mat = prim.getMaterial() ?? null;
+
+      onProgress?.("decoding textures", 0.05);
+      const [albedoSrc, normalSrc, aoSrc] = await Promise.all([
+        bakeMaps.includes("albedo") ? decodeTex(mat?.getBaseColorTexture()) : Promise.resolve(null),
+        bakeMaps.includes("normal") ? decodeTex(mat?.getNormalTexture())    : Promise.resolve(null),
+        bakeMaps.includes("ao")     ? decodeTex(mat?.getOcclusionTexture()) : Promise.resolve(null),
+      ]);
+
+      // Skip prims with no embedded textures — avoid replacing valid UVs with a useless atlas
+      if (!albedoSrc && !normalSrc && !aoSrc) continue;
 
       const rawPos = prim.getAttribute("POSITION")!.getArray()!;
       const rawIdx = prim.getIndices()!.getArray()!;
@@ -135,6 +142,7 @@ export async function unwrapAndBake(
       const origUVs   = rawUV instanceof Float32Array  ? rawUV   : (rawUV ? Float32Array.from(rawUV as ArrayLike<number>) : null);
 
       // Run xatlas to generate a new packed UV atlas
+      onProgress?.("running xatlas", 0.15);
       const atlas = xatlasModule.createAtlas();
       const addErr = atlas.addMesh({ positions, indices });
       if (addErr !== 0) {
@@ -145,11 +153,12 @@ export async function unwrapAndBake(
         { maxCost: 2, normalSeamWeight: 4, maxIterations: 1 },
         { resolution: ATLAS_SIZE, padding: 4, bilinear: true },
       );
+      onProgress?.("uv atlas done", 0.25);
 
       const outMesh = atlas.getMesh(0);
       const outVC = outMesh.vertexCount;
 
-      // New UV coordinates (normalised)
+      // New UV coordinates (normalised to [0, 1])
       const newUVs = new Float32Array(outVC * 2);
       for (let i = 0; i < outVC; i++) {
         const v = outMesh.vertices[i];
@@ -157,49 +166,19 @@ export async function unwrapAndBake(
         newUVs[i * 2 + 1] = v.uv[1] / atlas.height;
       }
 
-      // Bake each requested map
-      const mapJobs: Array<{ src: TexData; setter: () => void }> = [];
+      const bakedPixelSets: Array<{ pixels: Uint8Array; src: TexData; name: string }> = [];
       if (albedoSrc) {
-        const outPixels = new Uint8Array(ATLAS_SIZE * ATLAS_SIZE * 4);
-        mapJobs.push({
-          src: albedoSrc,
-          setter: () => {
-            if (!mat) return;
-            const pngBuf = outPixels; // placeholder — replaced below
-            const tex = doc.createTexture().setImage(pngBuf).setMimeType("image/png").setURI("");
-            mat.setBaseColorTexture(tex);
-          },
-        });
+        onProgress?.("baking albedo", 0.30);
+        bakedPixelSets.push({ pixels: new Uint8Array(ATLAS_SIZE * ATLAS_SIZE * 4), src: albedoSrc, name: "albedo" });
       }
       if (normalSrc) {
-        const outPixels = new Uint8Array(ATLAS_SIZE * ATLAS_SIZE * 4);
-        mapJobs.push({
-          src: normalSrc,
-          setter: () => {
-            if (!mat) return;
-            const tex = doc.createTexture().setImage(outPixels).setMimeType("image/png").setURI("");
-            mat.setNormalTexture(tex);
-          },
-        });
+        onProgress?.("baking normal", 0.55);
+        bakedPixelSets.push({ pixels: new Uint8Array(ATLAS_SIZE * ATLAS_SIZE * 4), src: normalSrc, name: "normal" });
       }
       if (aoSrc) {
-        const outPixels = new Uint8Array(ATLAS_SIZE * ATLAS_SIZE * 4);
-        mapJobs.push({
-          src: aoSrc,
-          setter: () => {
-            if (!mat) return;
-            const tex = doc.createTexture().setImage(outPixels).setMimeType("image/png").setURI("");
-            mat.setOcclusionTexture(tex);
-          },
-        });
+        onProgress?.("baking ao", 0.72);
+        bakedPixelSets.push({ pixels: new Uint8Array(ATLAS_SIZE * ATLAS_SIZE * 4), src: aoSrc, name: "ao" });
       }
-
-      // Separate the pixel buffers from the job closures (the setter captures wrong ref above
-      // since we did const in a loop — rebuild with correct refs)
-      const bakedPixelSets: Array<{ pixels: Uint8Array; src: TexData; name: string }> = [];
-      if (albedoSrc) bakedPixelSets.push({ pixels: new Uint8Array(ATLAS_SIZE * ATLAS_SIZE * 4), src: albedoSrc, name: "albedo" });
-      if (normalSrc) bakedPixelSets.push({ pixels: new Uint8Array(ATLAS_SIZE * ATLAS_SIZE * 4), src: normalSrc, name: "normal" });
-      if (aoSrc)     bakedPixelSets.push({ pixels: new Uint8Array(ATLAS_SIZE * ATLAS_SIZE * 4), src: aoSrc,     name: "ao" });
 
       const triCount = outMesh.indexCount / 3;
       for (let t = 0; t < triCount; t++) {
@@ -213,7 +192,7 @@ export async function unwrapAndBake(
           [newUVs[i2 * 2] * ATLAS_SIZE, newUVs[i2 * 2 + 1] * ATLAS_SIZE],
         ];
 
-        // Original UVs via xref — the vertex the xatlas output vertex was derived from
+        // Original UVs via xref — maps xatlas output vertex → input vertex index
         const getOrigUV = (outIdx: number): [number, number] => {
           if (!origUVs) return [0, 0];
           const src = outMesh.vertices[outIdx].xref;
@@ -229,15 +208,18 @@ export async function unwrapAndBake(
       }
 
       // Encode baked pixels to PNG and embed as new material textures
+      onProgress?.("encoding", 0.88);
       for (const { pixels, name } of bakedPixelSets) {
-        const pngBuf = await sharp(Buffer.from(pixels.buffer), {
+        // Buffer.from(pixels) respects byteOffset; Buffer.from(pixels.buffer) would not.
+        const pngBuf = await sharp(Buffer.from(pixels), {
           raw: { width: ATLAS_SIZE, height: ATLAS_SIZE, channels: 4 },
         })
           .png()
           .toBuffer();
         const newTex = doc
           .createTexture(name)
-          .setImage(new Uint8Array(pngBuf.buffer))
+          // new Uint8Array(pngBuf) copies correctly; new Uint8Array(pngBuf.buffer) may not.
+          .setImage(new Uint8Array(pngBuf))
           .setMimeType("image/png")
           .setURI("");
         if (name === "albedo" && mat) mat.setBaseColorTexture(newTex);

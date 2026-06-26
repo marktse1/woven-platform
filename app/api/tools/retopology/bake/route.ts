@@ -45,55 +45,77 @@ export async function POST(req: NextRequest) {
     }
 
     const inputBuf = await fileBlob.arrayBuffer();
+    const maps = bakeMaps ?? ["albedo", "normal", "ao"];
 
-    // Run UV unwrap + texture bake
-    const output = await unwrapAndBake(inputBuf, {
-      bakeMaps: bakeMaps ?? ["albedo", "normal", "ao"],
+    // Stream NDJSON progress events to the client
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        const send = (obj: object) =>
+          controller.enqueue(encoder.encode(JSON.stringify(obj) + "\n"));
+
+        try {
+          const output = await unwrapAndBake(inputBuf, {
+            bakeMaps: maps,
+            onProgress: (stage, progress) => send({ stage, progress }),
+          });
+
+          send({ stage: "uploading", progress: 0.95 });
+
+          const baseName = (asset.name as string).replace(/\.(glb|gltf)$/i, "");
+          const outputName = `${baseName}-baked.glb`;
+          const safeName = outputName.replace(/[^a-zA-Z0-9._-]/g, "_");
+          const outputId = crypto.randomUUID();
+          const outputPath = `${userId}/${outputId}-${safeName}`;
+
+          const { error: upErr } = await admin.storage
+            .from(BUCKET)
+            .upload(outputPath, new Blob([output], { type: "model/gltf-binary" }), {
+              contentType: "model/gltf-binary",
+              upsert: false,
+            });
+          if (upErr) throw new Error(`Upload failed: ${upErr.message}`);
+
+          const { data: outputAsset, error: insertErr } = await admin
+            .from("creator_assets")
+            .insert({
+              id: outputId,
+              clerk_user_id: userId,
+              name: outputName,
+              kind: "model",
+              format: "glb",
+              visibility: "private",
+              storage_path: outputPath,
+              file_bytes: output.byteLength,
+              poly_count: null,
+              meta: { pipelineOp: "bake", bakeMaps: maps },
+            })
+            .select("id")
+            .single();
+          if (insertErr || !outputAsset) {
+            throw new Error(`DB insert failed: ${insertErr?.message ?? "no data returned"}`);
+          }
+
+          send({ done: true, outputAssetId: outputAsset.id, progress: 1.0 });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error("[bake] error:", msg, e);
+          send({ error: msg });
+        } finally {
+          controller.close();
+        }
+      },
     });
 
-    // Upload the baked GLB
-    const baseName = (asset.name as string).replace(/\.(glb|gltf)$/i, "");
-    const outputName = `${baseName}-baked.glb`;
-    const safeName = outputName.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const outputId = crypto.randomUUID();
-    const outputPath = `${userId}/${outputId}-${safeName}`;
-
-    const { error: upErr } = await admin.storage
-      .from(BUCKET)
-      .upload(outputPath, new Blob([output.buffer as ArrayBuffer], { type: "model/gltf-binary" }), {
-        contentType: "model/gltf-binary",
-        upsert: false,
-      });
-    if (upErr) {
-      return NextResponse.json({ error: "Failed to upload baked result" }, { status: 500 });
-    }
-
-    const { data: outputAsset, error: insertErr } = await admin
-      .from("creator_assets")
-      .insert({
-        id: outputId,
-        clerk_user_id: userId,
-        name: outputName,
-        kind: "model",
-        format: "glb",
-        visibility: "private",
-        storage_path: outputPath,
-        file_bytes: output.byteLength,
-        poly_count: null,
-        meta: { pipelineOp: "bake", bakeMaps: bakeMaps ?? ["albedo", "normal", "ao"] },
-      })
-      .select("id")
-      .single();
-    if (insertErr || !outputAsset) {
-      return NextResponse.json({ error: "Failed to record baked asset" }, { status: 500 });
-    }
-
-    return NextResponse.json({ outputAssetId: outputAsset.id });
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "application/x-ndjson",
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
   } catch (e) {
-    console.error("[bake] error:", e);
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : "Bake failed" },
-      { status: 500 },
-    );
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[bake] outer error:", msg, e);
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

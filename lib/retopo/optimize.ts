@@ -376,7 +376,7 @@ export async function optimizeGlbAdaptive(
 // ---------------------------------------------------------------------------
 // Classification presets — drive the Tier-2 retopo job request.
 // ---------------------------------------------------------------------------
-export type Classification = "auto" | "object" | "biped" | "quadruped" | "creature";
+export type Classification = "auto" | "object" | "biped" | "creature";
 
 export const CLASSIFICATIONS: {
   value: Classification;
@@ -387,14 +387,13 @@ export const CLASSIFICATIONS: {
   { value: "auto", label: "Auto-detect", icon: "✨", blurb: "Inspect the mesh and pick the best strategy." },
   { value: "object", label: "Object / Prop", icon: "📦", blurb: "Optimize for silhouette & surface detail. No edgeloops." },
   { value: "biped", label: "Biped", icon: "🧍", blurb: "Edgeloops for eyes, mouth, and limb articulation." },
-  { value: "quadruped", label: "Quadruped", icon: "🐾", blurb: "Spine + 4-limb deformation loops." },
   { value: "creature", label: "Creature", icon: "🐉", blurb: "Adaptive loops for non-standard anatomy." },
 ];
 
 export function needsRetopoWorker(cls: Classification): boolean {
   // Characters/creatures need true quad retopology + edgeloops (Tier-2 worker).
   // Objects are well served by in-browser decimation (Tier-1).
-  return cls === "biped" || cls === "quadruped" || cls === "creature";
+  return cls === "biped" || cls === "creature";
 }
 
 export const BAKE_OPTIONS = ["normal", "ao", "albedo", "roughness", "metallic", "thickness"] as const;

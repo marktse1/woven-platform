@@ -177,6 +177,7 @@ export default function PipelineStudio({ asset, userId, onBack }: Props) {
             setWorkingBuf(bytes);
             setWorkingPolys(await countGlbTriangles(bytes));
             setSegmentation(null);
+            setCompareToSource(false);
             setStatus(`${updatedStep.op === "finalize" ? "Finalize" : "Retopology"} complete.`);
           } else if (job.status === "failed") {
             setError(job.error || `${entry.step.op} job failed.`);
@@ -235,6 +236,7 @@ export default function PipelineStudio({ asset, userId, onBack }: Props) {
       setWorkingBuf(outBytes);
       setWorkingPolys(res.resultPolys);
       setSegmentation(null);
+      setCompareToSource(false);
       setStatus(`Reduced to ${res.resultPolys.toLocaleString()} tris (${Math.round(res.reduction * 100)}% lighter).`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Decimate failed.");

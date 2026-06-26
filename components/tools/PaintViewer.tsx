@@ -465,7 +465,10 @@ const PaintViewer = forwardRef<PaintViewerHandle, Props>(function PaintViewer(
       (gltf) => {
         const group = gltf.scene;
         const mesh = findFirstMesh(group);
-        if (!mesh || !mesh.geometry.attributes.uv) {
+        // Accept uv (TEXCOORD_0) or uv2 (TEXCOORD_1) — gltf-transform may
+        // normalise the channel index after dedup/prune.
+        const hasUV = mesh?.geometry.attributes.uv || mesh?.geometry.attributes.uv2;
+        if (!mesh || !hasUV) {
           console.error("PaintViewer: no UV-mapped mesh found in this GLB.");
           onLoadErrorRef.current?.("This model has no UV-mapped mesh to paint on.");
           return;

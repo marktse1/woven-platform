@@ -34,9 +34,10 @@ type Props = {
   asset: AssetRow;
   userId: string;
   onBack: () => void;
+  onAssetCreated?: () => void;
 };
 
-export default function PaintStudio({ asset, userId, onBack }: Props) {
+export default function PaintStudio({ asset, userId, onBack, onAssetCreated }: Props) {
   const viewerRef = useRef<PaintViewerHandle>(null);
 
   const [sourceBuf, setSourceBuf] = useState<ArrayBuffer | null>(null);
@@ -159,6 +160,7 @@ export default function PaintStudio({ asset, userId, onBack }: Props) {
         meta: { sourceAssetId: asset.id, tool: "substance-weaver" },
       });
       setStatus(`Saved as "${saved.name}".`);
+      onAssetCreated?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Save failed.");
     } finally {

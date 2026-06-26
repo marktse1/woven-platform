@@ -220,21 +220,21 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
           ? await optimizeGlbAdaptive(workingBuf, { ratio })
           : await optimizeGlb(workingBuf, { ratio, adaptive: false });
 
-      // Keep two independent copies: fetch may transfer/neuter the upload buffer.
-      const uploadBytes = res.output.slice().buffer;
-      const viewerBytes = res.output.slice().buffer;
-
       const step = await appendTier1Step({
         sessionId: session.id,
         userId,
         op: decimateMode === "adaptive" ? "adaptive_density" : "decimate",
         inputAssetId: currentAssetId,
         outputName: `${asset.name.replace(/\.(glb|gltf)$/i, "")}-step${steps.length + 1}.glb`,
-        outputBytes: uploadBytes,
+        outputBytes: res.output.slice().buffer,
         outputPolyCount: res.resultPolys,
         params: { targetPolys, mode: decimateMode },
         stats: { sourcePolys: res.sourcePolys, resultPolys: res.resultPolys, reduction: res.reduction },
       });
+
+      // Fetch the stored bytes directly — guarantees the viewer shows exactly
+      // what was written to storage rather than an in-memory copy.
+      const viewerBytes = await fetchAssetBytes(step.output_asset_id!);
 
       setSteps((prev) => [...prev, step]);
       setSession((prev) => (prev ? { ...prev, current_asset_id: step.output_asset_id, current_step_id: step.id } : prev));

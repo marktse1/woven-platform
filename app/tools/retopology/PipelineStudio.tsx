@@ -153,7 +153,9 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
           if (!active) return;
           setPendingTier2(resumed.filter((r): r is { step: PipelineStepRow; jobId: string } => !!r));
         } else {
-          setSession(null);
+          const newSession = await openOrGetSession(userId, asset.id, "auto");
+          if (!active) return;
+          setSession(newSession);
           setSteps([]);
           setWorkingBuf(buf);
           setWorkingPolys(tris);
@@ -205,19 +207,6 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
 
   const currentAssetId = session?.current_asset_id ?? asset?.id ?? "";
 
-  const startPipeline = useCallback(async () => {
-    setBusy(true);
-    setError("");
-    try {
-      const created = await openOrGetSession(userId, asset!.id, classification);
-      setSession(created);
-      setSteps([]);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not start the pipeline.");
-    } finally {
-      setBusy(false);
-    }
-  }, [userId, asset?.id, classification]);
 
   const applyDecimate = useCallback(async () => {
     if (!session || !workingBuf) return;
@@ -369,12 +358,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
       <div className="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-6 items-start">
         {/* ---- left: step rail ---- */}
         <div className="flex flex-col gap-5">
-          {!session ? (
-            <div className="rounded-[12px] p-5 text-[12.5px]" style={{ color: "#c7bfb2" }}>
-              Pick a classification above and start the pipeline to begin editing.
-            </div>
-          ) : (
-            <>
+          <>
               <StepCard
                 title="1 · Decimate"
                 description={`Reduce triangle count${decimateMode === "adaptive" ? " — adaptive density keeps detail on sharp/curved regions" : " — uniform reduction across the whole mesh"}.`}
@@ -473,8 +457,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                 pendingStatus={pendingFinalize}
                 error={null}
               />
-            </>
-          )}
+          </>
         </div>
 
         {/* ---- right: classification + viewer + history ---- */}
@@ -500,16 +483,6 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                 );
               })}
             </div>
-            {!session && (
-              <button
-                onClick={startPipeline}
-                disabled={busy}
-                className="w-full py-3 rounded-[10px] font-bold text-[13.5px] disabled:opacity-50"
-                style={{ background: "#e2562a", color: "#fff3ec" }}
-              >
-                Start pipeline
-              </button>
-            )}
           </div>
 
           <div className="rounded-[12px] overflow-hidden bg-[#241f1b]">

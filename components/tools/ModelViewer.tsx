@@ -150,7 +150,7 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
     if (!mount) return;
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color("#0a0e13");
+    scene.background = new THREE.Color("#241f1b");
     sceneRef.current = scene;
 
     const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 5000);

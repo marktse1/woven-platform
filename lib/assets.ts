@@ -326,10 +326,12 @@ export async function listSteps(sessionId: string): Promise<PipelineStepRow[]> {
 export async function appendTier1Step(params: {
   sessionId: string;
   userId: string;
-  op: "decimate" | "segment" | "adaptive_density" | "uv_map";
+  op: "decimate" | "segment" | "adaptive_density" | "uv_map" | "bake";
   inputAssetId: string;
   /** True for steps that don't change the mesh bytes (e.g. segmentation is metadata-only) — skips re-upload. */
   reuseInputAsOutput?: boolean;
+  /** Asset already uploaded externally (e.g. by a server route) — skips re-upload and uses this ID directly. */
+  existingOutputAssetId?: string;
   outputName?: string;
   outputBytes?: Uint8Array | ArrayBuffer;
   outputPolyCount?: number;
@@ -340,9 +342,11 @@ export async function appendTier1Step(params: {
   const supabase = client();
 
   let outputAssetId = params.inputAssetId;
-  if (!params.reuseInputAsOutput) {
+  if (params.existingOutputAssetId) {
+    outputAssetId = params.existingOutputAssetId;
+  } else if (!params.reuseInputAsOutput) {
     if (!params.outputBytes || !params.outputName) {
-      throw new Error("outputBytes/outputName are required unless reuseInputAsOutput is set.");
+      throw new Error("outputBytes/outputName are required unless reuseInputAsOutput or existingOutputAssetId is set.");
     }
     const outputAsset = await uploadAsset({
       userId: params.userId,

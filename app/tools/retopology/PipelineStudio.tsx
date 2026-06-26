@@ -28,7 +28,6 @@ import {
 } from "@/lib/retopo/optimize";
 import { segmentByConnectivity } from "@/lib/retopo/segment";
 import type { SegmentationOverlay, TextureChannel } from "@/components/tools/ModelViewer";
-import { unwrapUVs } from "@/lib/retopo/uv";
 import { BAKE_OPTIONS } from "@/lib/retopo/optimize";
 import StepCard from "./StepCard";
 
@@ -84,7 +83,6 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
   const [decimateMode, setDecimateMode] = useState<"uniform" | "adaptive">("adaptive");
   const [bakeMaps, setBakeMaps] = useState<string[]>(["albedo", "normal", "ao"]);
   const [dilationPx, setDilationPx] = useState(16);
-  const [hasUVMap, setHasUVMap] = useState(false);
 
   const [segmentation, setSegmentation] = useState<SegmentationOverlay | null>(null);
   const [textureChannel, setTextureChannel] = useState<TextureChannel | null>(null);
@@ -305,68 +303,49 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
     }
   }, [session, userId, currentAssetId, classification, targetPolys, decimateMode]);
 
-  const applyUVMap = useCallback(async () => {
+  const applyBake = useCallback(async () => {
     if (!session || !workingBuf) return;
     setBusy(true);
     setError("");
-    setStatus("Generating UV atlas…");
+    setStatus("Baking textures — UV unwrap + texture transfer running on the server…");
     try {
-      const result = await unwrapUVs(workingBuf);
+      const res = await fetch("/api/tools/retopology/bake", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, loResAssetId: currentAssetId, bakeMaps }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as { error?: string }).error ?? `Bake failed (${res.status})`);
+      }
+      const { outputAssetId } = (await res.json()) as { outputAssetId: string };
 
       const step = await appendTier1Step({
         sessionId: session.id,
         userId,
-        op: "uv_map",
-        inputAssetId: currentAssetId,
-        outputName: `${(asset?.name ?? "model").replace(/\.(glb|gltf)$/i, "")}-uvmap${steps.length + 1}.glb`,
-        outputBytes: result.output.slice().buffer,
-        outputPolyCount: workingPolys,
-        params: { atlasWidth: result.atlasWidth, atlasHeight: result.atlasHeight },
-        stats: { chartCount: result.chartCount, inputVertexCount: result.inputVertexCount, outputVertexCount: result.outputVertexCount },
-      });
-
-      const viewerBytes = await fetchAssetBytes(step.output_asset_id!);
-      setSteps((prev) => [...prev, step]);
-      setSession((prev) => (prev ? { ...prev, current_asset_id: step.output_asset_id, current_step_id: step.id } : prev));
-      setWorkingBuf(viewerBytes);
-      setHasUVMap(true);
-      setCompareToSource(false);
-      setStatus(`UV atlas generated — ${result.chartCount} charts, ${result.atlasWidth}×${result.atlasHeight}px.`);
-      onAssetCreated?.();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "UV unwrap failed.");
-    } finally {
-      setBusy(false);
-    }
-  }, [session, workingBuf, userId, currentAssetId, asset?.name, steps.length, workingPolys]);
-
-  const applyBake = useCallback(async () => {
-    if (!session) return;
-    setBusy(true);
-    setError("");
-    try {
-      const { step, job } = await queueTier2Step({
-        sessionId: session.id,
-        userId,
         op: "bake",
         inputAssetId: currentAssetId,
-        classification,
-        targetPolys: workingPolys || targetPolys,
-        bakeMaps,
-        params: { dilationPx, hiResAssetId: session.source_asset_id },
+        existingOutputAssetId: outputAssetId,
+        outputPolyCount: workingPolys,
+        stats: { bakeMaps },
       });
+
+      const viewerBytes = await fetchAssetBytes(outputAssetId);
       setSteps((prev) => [...prev, step]);
-      setPendingTier2((prev) => [...prev, { step, jobId: job.id }]);
-      setStatus("Texture bake queued on the Forge worker.");
+      setSession((prev) => (prev ? { ...prev, current_asset_id: outputAssetId, current_step_id: step.id } : prev));
+      setWorkingBuf(viewerBytes);
+      setWorkingPolys(await countGlbTriangles(viewerBytes));
+      setCompareToSource(false);
+      setStatus("Texture bake complete — new UV atlas and baked maps applied.");
+      onAssetCreated?.();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not queue texture bake.");
+      setError(e instanceof Error ? e.message : "Bake failed.");
     } finally {
       setBusy(false);
     }
-  }, [session, userId, currentAssetId, classification, workingPolys, targetPolys, bakeMaps, dilationPx]);
+  }, [session, workingBuf, userId, currentAssetId, bakeMaps, asset?.name, steps.length, workingPolys]);
 
   const pendingRetopo = pendingTier2.find((p) => p.step.op === "retopo")?.step.status ?? null;
-  const pendingBake = pendingTier2.find((p) => p.step.op === "bake")?.step.status ?? null;
 
   const reduction = useMemo(
     () => (sourcePolys && workingPolys ? Math.round((1 - workingPolys / sourcePolys) * 100) : 0),
@@ -482,26 +461,8 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
               )}
 
               <StepCard
-                title={`${isCharacter ? 4 : 3} · UV Map`}
-                description="Auto-unwrap the lo-res mesh with xatlas — packs UV islands to minimise wasted atlas space, ready for baking."
-              >
-                <button
-                  onClick={applyUVMap}
-                  disabled={busy || !workingBuf}
-                  className="w-full py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
-                  style={{ background: "#e2562a", color: "#fff3ec" }}
-                >
-                  Apply
-                </button>
-                {hasUVMap && (
-                  <p className="text-[11.5px] mt-2" style={{ color: "#a6e06a" }}>UV atlas generated — ready to bake.</p>
-                )}
-              </StepCard>
-
-              <StepCard
-                title={`${isCharacter ? 5 : 4} · Bake Textures`}
-                description="Project the hi-res source texture onto the new UV layout on the Forge worker — albedo, normal, AO and more."
-                disabled={!hasUVMap}
+                title={`${isCharacter ? 4 : 3} · Bake Textures`}
+                description="Generates a new UV atlas with xatlas on the server, then bakes the original texture onto it — albedo, normal, and AO in one step."
               >
                 <div className="flex flex-wrap gap-1.5 mb-3">
                   {BAKE_OPTIONS.map((m) => {
@@ -534,11 +495,11 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                 />
                 <button
                   onClick={applyBake}
-                  disabled={busy || !hasUVMap || pendingBake === "queued" || pendingBake === "processing"}
+                  disabled={busy || !workingBuf}
                   className="w-full py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
                   style={{ background: "#e2562a", color: "#fff3ec" }}
                 >
-                  {pendingBake === "queued" || pendingBake === "processing" ? "Baking on Forge worker…" : "Apply"}
+                  Apply
                 </button>
               </StepCard>
           </>

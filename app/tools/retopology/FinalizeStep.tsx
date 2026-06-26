@@ -46,7 +46,7 @@ export default function FinalizeStep({
               key={m}
               onClick={() => onToggleBakeMap(m)}
               className="text-[12px] px-2.5 py-1 rounded-full border capitalize"
-              style={{ borderColor: on ? ACCENT : "#26384a", background: on ? "rgba(226,86,42,.14)" : "#0d141c", color: on ? "#fff3ec" : "#8aa0b4" }}
+              style={{ borderColor: on ? ACCENT : "rgba(255,255,255,0.08)", background: on ? "rgba(226,86,42,.14)" : "#2c2926", color: on ? "#fff3ec" : "#9b9082" }}
             >
               {m}
             </button>
@@ -55,7 +55,7 @@ export default function FinalizeStep({
       </div>
 
       <div className="flex items-center justify-between mb-2">
-        <span className="text-[12.5px] text-muted">Seam dilation</span>
+        <span className="text-[12.5px]" style={{ color: "#c7bfb2" }}>Seam dilation</span>
         <span className="font-bold text-[13px]" style={{ color: "#f3946a" }}>{dilationPx}px</span>
       </div>
       <input
@@ -65,7 +65,7 @@ export default function FinalizeStep({
         step={2}
         value={dilationPx}
         onChange={(e) => onDilationChange(Number(e.target.value))}
-        className="w-full accent-[#e2562a] mb-1.5"
+        className="w-full accent-[#e2562a] mb-1.5 [&::-webkit-slider-runnable-track]:bg-[#26231f] [&::-webkit-slider-runnable-track]:rounded-full [&::-moz-range-track]:bg-[#26231f] [&::-moz-range-track]:rounded-full"
       />
       <p className="text-[11px] mb-3" style={{ color: "#c7bfb2" }}>
         Pushes edge-texel color past each UV island&apos;s boundary so filtering never samples blank padding — the actual fix for bleeding at seams.

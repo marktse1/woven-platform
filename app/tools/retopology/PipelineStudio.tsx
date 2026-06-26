@@ -373,7 +373,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                       key={m}
                       onClick={() => setDecimateMode(m)}
                       className="flex-1 py-2 rounded-lg border text-[12.5px] font-semibold capitalize"
-                      style={{ borderColor: decimateMode === m ? ACCENT : "#26384a", background: decimateMode === m ? "rgba(226,86,42,.14)" : "#0d141c", color: decimateMode === m ? "#fff3ec" : "#8aa0b4" }}
+                      style={{ borderColor: decimateMode === m ? ACCENT : "rgba(255,255,255,0.08)", background: decimateMode === m ? "rgba(226,86,42,.14)" : "#2c2926", color: decimateMode === m ? "#fff3ec" : "#9b9082" }}
                     >
                       {m}
                     </button>
@@ -398,7 +398,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                   step={100}
                   value={Math.min(targetPolys, Math.max(1000, workingPolys || sourcePolys || 100000))}
                   onChange={(e) => setTargetPolys(Number(e.target.value))}
-                  className="w-full accent-[#e2562a]"
+                  className="w-full accent-[#e2562a] [&::-webkit-slider-runnable-track]:bg-[#26231f] [&::-webkit-slider-runnable-track]:rounded-full [&::-moz-range-track]:bg-[#26231f] [&::-moz-range-track]:rounded-full"
                 />
                 <button
                   onClick={applyDecimate}
@@ -500,21 +500,21 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                   onClick={() => setCompareToSource((v) => !v)}
                   disabled={!sourceBuf}
                   className="px-3 py-1.5 rounded-lg border text-[12.5px] font-semibold disabled:opacity-40"
-                  style={{ borderColor: compareToSource ? ACCENT : "#26384a", background: compareToSource ? "rgba(226,86,42,.14)" : "transparent", color: compareToSource ? "#fff3ec" : "#8aa0b4" }}
+                  style={{ borderColor: compareToSource ? ACCENT : "rgba(255,255,255,0.08)", background: compareToSource ? "rgba(226,86,42,.14)" : "transparent", color: compareToSource ? "#fff3ec" : "#9b9082" }}
                 >
                   {compareToSource ? "Viewing source" : "Viewing current"}
                 </button>
                 <button
                   onClick={() => setWireframe((v) => !v)}
                   className="px-3 py-1.5 rounded-lg border text-[12.5px] font-semibold"
-                  style={{ borderColor: wireframe ? ACCENT : "#26384a", background: wireframe ? "rgba(226,86,42,.14)" : "transparent", color: wireframe ? "#fff3ec" : "#8aa0b4" }}
+                  style={{ borderColor: wireframe ? ACCENT : "rgba(255,255,255,0.08)", background: wireframe ? "rgba(226,86,42,.14)" : "transparent", color: wireframe ? "#fff3ec" : "#9b9082" }}
                 >
                   Wireframe {wireframe ? "on" : "off"}
                 </button>
                 <button
                   onClick={() => setShowGrid((v) => !v)}
                   className="px-3 py-1.5 rounded-lg border text-[12.5px] font-semibold"
-                  style={{ borderColor: showGrid ? ACCENT : "#26384a", background: showGrid ? "rgba(226,86,42,.14)" : "transparent", color: showGrid ? "#fff3ec" : "#8aa0b4" }}
+                  style={{ borderColor: showGrid ? ACCENT : "rgba(255,255,255,0.08)", background: showGrid ? "rgba(226,86,42,.14)" : "transparent", color: showGrid ? "#fff3ec" : "#9b9082" }}
                 >
                   Grid {showGrid ? "on" : "off"}
                 </button>
@@ -522,7 +522,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                   <button
                     onClick={() => setSegmentation(null)}
                     className="px-3 py-1.5 rounded-lg border text-[12.5px] font-semibold"
-                    style={{ borderColor: "#26384a", color: "#8aa0b4" }}
+                    style={{ borderColor: "rgba(255,255,255,0.08)", color: "#9b9082" }}
                   >
                     Clear segment overlay
                   </button>
@@ -534,9 +534,9 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                     onClick={() => setTextureChannel(c)}
                     className="px-3 py-1.5 rounded-lg border text-[12.5px] font-semibold capitalize"
                     style={{
-                      borderColor: textureChannel === c ? ACCENT : "#26384a",
+                      borderColor: textureChannel === c ? ACCENT : "rgba(255,255,255,0.08)",
                       background: textureChannel === c ? "rgba(226,86,42,.14)" : "transparent",
-                      color: textureChannel === c ? "#fff3ec" : "#8aa0b4",
+                      color: textureChannel === c ? "#fff3ec" : "#9b9082",
                     }}
                   >
                     {c ?? "Shaded"}

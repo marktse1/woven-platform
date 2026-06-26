@@ -79,13 +79,21 @@ export default function MainNav() {
               href={t.href}
               className={[
                 "px-3.5 py-2.5 rounded-[7px] font-bold text-[12.5px] tracking-[.04em] uppercase whitespace-nowrap no-underline transition-colors",
-                active && t.href === "/forge" ? "" : active ? "text-[#06121d]" : "text-muted hover:text-ink hover:bg-white/[.04]",
+                active && t.href === "/forge"
+                  ? ""
+                  : active
+                  ? "text-[#06121d]"
+                  : isForge
+                  ? "hover:bg-[#2c2926]"
+                  : "text-muted hover:text-ink hover:bg-white/[.04]",
               ].join(" ")}
               style={
                 active && t.href === "/forge"
                   ? { background: "#e2562a", color: "#fff3ec" }
                   : active
                   ? { background: "linear-gradient(180deg, #56a6e8, #2c6aa0)" }
+                  : isForge
+                  ? { color: "#9b9082" }
                   : {}
               }
             >
@@ -122,8 +130,11 @@ export default function MainNav() {
       ) : creatorStatus !== "approved" ? (
         <Link
           href="/creator"
-          className="px-4 py-2 rounded-[9px] font-bold text-[14px] text-[#06121d] no-underline"
-          style={{ background: "linear-gradient(180deg, #56a6e8, #2c6aa0)" }}
+          className="px-4 py-2 rounded-[9px] font-bold text-[14px] no-underline"
+          style={isForge
+            ? { background: "#e2562a", color: "#fff3ec" }
+            : { background: "linear-gradient(180deg, #56a6e8, #2c6aa0)", color: "#06121d" }
+          }
         >
           For Developers
         </Link>

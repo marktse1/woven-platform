@@ -12,14 +12,19 @@ const tabs = [
   { label: "Community", href: "/community" },
 ];
 
-function LogoMark() {
+function LogoMark({ warm }: { warm?: boolean }) {
   return (
     <div
-      className="w-[27px] h-[27px] rounded-[7px] border border-accent2 shrink-0"
+      className="w-[27px] h-[27px] rounded-[7px] shrink-0"
       style={{
-        background: `repeating-linear-gradient(45deg, #56a6e8 0 3px, transparent 3px 7px),
-                     repeating-linear-gradient(-45deg, #2c6aa0 0 3px, transparent 3px 7px),
-                     #0b0f14`,
+        border: warm ? "1px solid rgba(226,86,42,.4)" : "1px solid var(--color-accent2)",
+        background: warm
+          ? `repeating-linear-gradient(45deg, #e2562a 0 3px, transparent 3px 7px),
+             repeating-linear-gradient(-45deg, #b03e18 0 3px, transparent 3px 7px),
+             #1b1815`
+          : `repeating-linear-gradient(45deg, #56a6e8 0 3px, transparent 3px 7px),
+             repeating-linear-gradient(-45deg, #2c6aa0 0 3px, transparent 3px 7px),
+             #0b0f14`,
       }}
     />
   );
@@ -48,13 +53,20 @@ export default function MainNav() {
       ? "/community"
       : pathname === "/" ? "/" : pathname;
 
+  const isForge = activeSection === "/forge";
+
   return (
     <nav
-      className="flex items-center gap-3 px-4 sm:gap-4 sm:px-6 lg:gap-6 lg:px-12 py-[13px] border-b border-line"
-      style={{ background: "linear-gradient(180deg, rgba(255,255,255,.03), transparent)" }}
+      className="flex items-center gap-3 px-4 sm:gap-4 sm:px-6 lg:gap-6 lg:px-12 py-[13px] border-b"
+      style={{
+        borderBottomColor: isForge ? "#2a2420" : "var(--color-line)",
+        background: isForge
+          ? "linear-gradient(180deg, rgba(226,86,42,.06), transparent)"
+          : "linear-gradient(180deg, rgba(255,255,255,.03), transparent)",
+      }}
     >
       <Link href="/" className="flex items-center gap-2.5 font-extrabold text-xl tracking-[-0.01em] mr-1 text-ink no-underline">
-        <LogoMark />
+        <LogoMark warm={isForge} />
         Woven
       </Link>
 

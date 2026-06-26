@@ -210,6 +210,7 @@ export default function RetopologyClient() {
 
       {confirmDelete && (
         <ConfirmDialog
+          theme="warm"
           title="Delete this model?"
           message={`"${confirmDelete.name}" will be permanently deleted, along with its pipeline history. This can't be undone.`}
           onCancel={() => setConfirmDelete(null)}

@@ -114,7 +114,7 @@ export async function optimizeGlb(
   const doc = await io.readBinary(new Uint8Array(input));
 
   const sourcePolys = countTriangles(doc);
-  const ratio = Math.min(0.99, Math.max(0.0005, opts.ratio));
+  const ratio = Math.min(0.99, Math.max(0.001, opts.ratio));
 
   await doc.transform(weld());
 
@@ -142,10 +142,19 @@ export async function optimizeGlb(
         3,
         targetIndexCount,
         1, // unbounded relative error - target ratio drives the result, not an error cap
-        ["LockBorder"],
+        // No LockBorder: game meshes commonly have many open boundary edges (cut joints, one-sided
+        // surfaces, attachment holes). LockBorder locks every boundary vertex and can prevent the
+        // simplifier from collapsing anything at all on such meshes.
       );
 
-      indicesAccessor.setArray(Uint32Array.from(mapToOriginalIndexSpace(dstIndices, reverseRemap)));
+      // Fallback: if topology prevented the simplifier from reaching the target (result > 3× target),
+      // use simplifySloppy which ignores connectivity and hits the count via voxel remapping.
+      const finalIndices =
+        dstIndices.length > targetIndexCount * 3
+          ? MeshoptSimplifier.simplifySloppy(weldedIndices, compactPositions, 3, null, targetIndexCount, 1)[0]
+          : dstIndices;
+
+      indicesAccessor.setArray(Uint32Array.from(mapToOriginalIndexSpace(finalIndices, reverseRemap)));
     }
   }
 
@@ -301,7 +310,7 @@ export async function optimizeGlbAdaptive(
   const doc = await io.readBinary(new Uint8Array(input));
 
   const sourcePolys = countTriangles(doc);
-  const ratio = Math.min(0.99, Math.max(0.0005, opts.ratio));
+  const ratio = Math.min(0.99, Math.max(0.001, opts.ratio));
   const curvatureWeight = opts.curvatureWeight ?? 2.5;
   const lockFraction = opts.lockFraction ?? 0.02;
 
@@ -338,10 +347,16 @@ export async function optimizeGlbAdaptive(
         vertexLock,
         targetIndexCount,
         1, // unbounded relative error — curvature weight + lock mask drive the result, not an error cap
-        ["LockBorder"],
+        // No LockBorder: see note in optimizeGlb - open boundary edges on game assets prevent reduction.
       );
 
-      indicesAccessor.setArray(Uint32Array.from(mapToOriginalIndexSpace(dstIndices, reverseRemap)));
+      // Fallback to sloppy when topology blocked the adaptive path.
+      const finalIndices =
+        dstIndices.length > targetIndexCount * 3
+          ? MeshoptSimplifier.simplifySloppy(weldedIndices, compactPositions, 3, null, targetIndexCount, 1)[0]
+          : dstIndices;
+
+      indicesAccessor.setArray(Uint32Array.from(mapToOriginalIndexSpace(finalIndices, reverseRemap)));
     }
   }
 

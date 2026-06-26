@@ -85,7 +85,7 @@ export default function RetopologyClient() {
   if (!isLoaded || creatorStatus === "loading") {
     return (
       <main className="min-h-[calc(100vh-73px)] bg-[#1b1815] text-ink flex items-center justify-center">
-        <div className="text-[13px] text-dim">Loading Mesh Loom…</div>
+        <div className="text-[13px]" style={{ color: "#9b9082" }}>Loading Mesh Loom…</div>
       </main>
     );
   }
@@ -94,7 +94,7 @@ export default function RetopologyClient() {
       <main className="min-h-[calc(100vh-73px)] bg-[#1b1815] text-ink flex items-center justify-center px-6">
         <div className="max-w-[520px] w-full bg-panel border border-line rounded-[10px] p-6">
           <div className="text-[20px] font-extrabold tracking-[-0.02em] mb-2">Mesh Loom</div>
-          <p className="text-[13px] text-dim leading-relaxed">
+          <p className="text-[13px] leading-relaxed" style={{ color: "#c7bfb2" }}>
             Forge tools are available once your creator profile is approved.
           </p>
           <div className="flex gap-2 mt-5">
@@ -115,8 +115,8 @@ export default function RetopologyClient() {
       <div className="max-w-[1600px] mx-auto px-6 lg:px-10 pt-6 pb-16">
         {!openedAsset && (
           <div className="flex items-center gap-3 mb-5">
-            <Link href="/forge" className="text-[12px] text-dim no-underline hover:text-ink">← Forge</Link>
-            <span className="text-dim">/</span>
+            <Link href="/forge" className="text-[12px] no-underline" style={{ color: "#9b9082" }}>← Forge</Link>
+            <span style={{ color: "#9b9082" }}>/</span>
             <div className="text-[13px] font-bold">🔻 Mesh Loom</div>
           </div>
         )}
@@ -153,10 +153,10 @@ export default function RetopologyClient() {
             <div className="rounded-[12px] p-5">
               <div className="flex items-center mb-3">
                 <p className="text-[11px] font-bold tracking-[.12em] uppercase" style={{ color: "#e8e1d5" }}>Your asset library</p>
-                <button onClick={refreshLibrary} className="ml-auto text-[11.5px] text-dim hover:text-ink">Refresh</button>
+                <button onClick={refreshLibrary} className="ml-auto text-[11.5px]" style={{ color: "#9b9082" }}>Refresh</button>
               </div>
               {assets.length === 0 ? (
-                <div className="text-[12.5px] text-dim">No assets yet. Drop a GLB to get started — private by default.</div>
+                <div className="text-[12.5px]" style={{ color: "#9b9082" }}>No assets yet. Drop a GLB to get started — private by default.</div>
               ) : (
                 <div className="flex flex-col gap-2 max-h-[520px] overflow-y-auto">
                   {assets.map((a) => (

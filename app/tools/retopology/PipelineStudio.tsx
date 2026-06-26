@@ -32,7 +32,7 @@ import FinalizeStep from "./FinalizeStep";
 
 const ModelViewer = dynamic(() => import("@/components/tools/ModelViewer"), {
   ssr: false,
-  loading: () => <div className="w-full h-full flex items-center justify-center text-dim text-[12px]">Loading viewer…</div>,
+  loading: () => <div className="w-full h-full flex items-center justify-center text-[12px]" style={{ color: "#9b9082" }}>Loading viewer…</div>,
 });
 
 const ACCENT = "#e2562a";
@@ -549,7 +549,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
               </div>
               <div className="h-[clamp(260px,38vh,420px)]">
                 {!viewerBuf ? (
-                  <div className="w-full h-full flex items-center justify-center text-dim text-[13px]">Loading…</div>
+                  <div className="w-full h-full flex items-center justify-center text-[13px]" style={{ color: "#9b9082" }}>Loading…</div>
                 ) : (
                   <ModelViewer
                     key={compareToSource ? `source-${asset.id}` : `current-${currentAssetId}`}

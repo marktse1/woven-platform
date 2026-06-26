@@ -415,7 +415,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                   onClick={applySegment}
                   disabled={busy || !workingBuf}
                   className="w-full py-2.5 rounded-[9px] font-bold text-[13px] border disabled:opacity-50"
-                  style={{ background: "#2c2926", borderColor: "rgba(255,255,255,.10)", color: "#e8e1d5" }}
+                  style={{ background: "#2c2926", borderColor: "rgba(255,255,255,0.102)", color: "#e8e1d5" }}
                 >
                   Apply
                 </button>
@@ -494,7 +494,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
             )}
           </div>
 
-          <div className="rounded-[12px] overflow-hidden bg-[#131110]">
+          <div className="rounded-[12px] overflow-hidden bg-[#241f1b]">
               <div className="flex items-center gap-2 px-4 py-3 border-b border-[#2a2420] flex-wrap">
                 <button
                   onClick={() => setCompareToSource((v) => !v)}

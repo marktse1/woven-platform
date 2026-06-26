@@ -52,7 +52,7 @@ export default function DropZone({
       className={`rounded-[12px] border-2 border-dashed flex flex-col items-center justify-center text-center cursor-pointer transition-colors ${compact ? "px-3 py-5" : "px-6 py-12"}`}
       style={{
         borderColor: over ? accentColor : inactiveBorder,
-        background: over ? `${accentColor}14` : baseBg,
+        background: over ? `${accentColor}0d` : baseBg,
       }}
     >
       <div className={compact ? "text-[20px] mb-1" : "text-[34px] mb-2"}>🔻</div>

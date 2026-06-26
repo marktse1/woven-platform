@@ -131,7 +131,7 @@ export default function RetopologyClient() {
           {/* ---- left+center: pipeline studio, or an empty live viewer ---- */}
           <div>
             {openedAsset && user?.id ? (
-              <PipelineStudio asset={openedAsset} userId={user.id} onBack={() => setOpenedAsset(null)} />
+              <PipelineStudio asset={openedAsset} userId={user.id} onBack={() => setOpenedAsset(null)} onAssetCreated={refreshLibrary} />
             ) : (
               <div className="bg-panel border border-line rounded-[12px] overflow-hidden h-[clamp(260px,38vh,420px)]">
                 <ModelViewer data={null} wireframe={false} accent="#56a6e8" />

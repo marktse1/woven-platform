@@ -65,9 +65,10 @@ type Props = {
   asset: AssetRow;
   userId: string;
   onBack: () => void;
+  onAssetCreated?: () => void;
 };
 
-export default function PipelineStudio({ asset, userId, onBack }: Props) {
+export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }: Props) {
   const [session, setSession] = useState<PipelineSessionRow | null>(null);
   const [steps, setSteps] = useState<PipelineStepRow[]>([]);
   const [classification, setClassification] = useState<Classification>("auto");
@@ -179,6 +180,7 @@ export default function PipelineStudio({ asset, userId, onBack }: Props) {
             setSegmentation(null);
             setCompareToSource(false);
             setStatus(`${updatedStep.op === "finalize" ? "Finalize" : "Retopology"} complete.`);
+            onAssetCreated?.();
           } else if (job.status === "failed") {
             setError(job.error || `${entry.step.op} job failed.`);
           }
@@ -217,7 +219,10 @@ export default function PipelineStudio({ asset, userId, onBack }: Props) {
         decimateMode === "adaptive"
           ? await optimizeGlbAdaptive(workingBuf, { ratio })
           : await optimizeGlb(workingBuf, { ratio, adaptive: false });
-      const outBytes = res.output.slice().buffer;
+
+      // Keep two independent copies: fetch may transfer/neuter the upload buffer.
+      const uploadBytes = res.output.slice().buffer;
+      const viewerBytes = res.output.slice().buffer;
 
       const step = await appendTier1Step({
         sessionId: session.id,
@@ -225,7 +230,7 @@ export default function PipelineStudio({ asset, userId, onBack }: Props) {
         op: decimateMode === "adaptive" ? "adaptive_density" : "decimate",
         inputAssetId: currentAssetId,
         outputName: `${asset.name.replace(/\.(glb|gltf)$/i, "")}-step${steps.length + 1}.glb`,
-        outputBytes: outBytes,
+        outputBytes: uploadBytes,
         outputPolyCount: res.resultPolys,
         params: { targetPolys, mode: decimateMode },
         stats: { sourcePolys: res.sourcePolys, resultPolys: res.resultPolys, reduction: res.reduction },
@@ -233,11 +238,12 @@ export default function PipelineStudio({ asset, userId, onBack }: Props) {
 
       setSteps((prev) => [...prev, step]);
       setSession((prev) => (prev ? { ...prev, current_asset_id: step.output_asset_id, current_step_id: step.id } : prev));
-      setWorkingBuf(outBytes);
+      setWorkingBuf(viewerBytes);
       setWorkingPolys(res.resultPolys);
       setSegmentation(null);
       setCompareToSource(false);
       setStatus(`Reduced to ${res.resultPolys.toLocaleString()} tris (${Math.round(res.reduction * 100)}% lighter).`);
+      onAssetCreated?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Decimate failed.");
     } finally {
@@ -264,6 +270,7 @@ export default function PipelineStudio({ asset, userId, onBack }: Props) {
       });
       setSteps((prev) => [...prev, step]);
       setStatus(`Found ${result.segments.length} segment${result.segments.length === 1 ? "" : "s"}.`);
+      onAssetCreated?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Segmentation failed.");
     } finally {

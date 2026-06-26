@@ -341,9 +341,9 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
   return (
     <div className="flex flex-col gap-5">
       <div className="flex items-center gap-3">
-        <button onClick={onBack} className="text-[12px] text-dim hover:text-ink">← Library</button>
-        <span className="text-dim">/</span>
-        <div className="text-[13px] font-bold truncate max-w-[28ch]">{asset.name}</div>
+        <a href="/forge" className="text-[12px] no-underline hover:text-ink" style={{ color: "#c7bfb2" }}>← Weave Forge</a>
+        <span style={{ color: "#c7bfb2" }}>/</span>
+        <button onClick={onBack} className="text-[13px] font-bold hover:underline" style={{ color: "#e8e1d5" }}>Mesh Loom</button>
         <div className="flex-1" />
         {status && <div className="text-[12px] truncate max-w-[34ch]" style={{ color: "#c7bfb2" }}>{status}</div>}
       </div>
@@ -414,8 +414,8 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                 <button
                   onClick={applySegment}
                   disabled={busy || !workingBuf}
-                  className="w-full py-2.5 rounded-[9px] font-bold text-[13px] border disabled:opacity-50"
-                  style={{ background: "#2c2926", borderColor: "rgba(255,255,255,0.102)", color: "#e8e1d5" }}
+                  className="w-full py-2.5 font-bold text-[13px] disabled:opacity-50"
+                  style={{ color: "#f3946a" }}
                 >
                   Apply
                 </button>

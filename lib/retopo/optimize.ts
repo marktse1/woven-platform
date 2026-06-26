@@ -147,14 +147,7 @@ export async function optimizeGlb(
         // simplifier from collapsing anything at all on such meshes.
       );
 
-      // Fallback: if topology prevented the simplifier from reaching the target (result > 3× target),
-      // use simplifySloppy which ignores connectivity and hits the count via voxel remapping.
-      const finalIndices =
-        dstIndices.length > targetIndexCount * 3
-          ? MeshoptSimplifier.simplifySloppy(weldedIndices, compactPositions, 3, null, targetIndexCount, 1)[0]
-          : dstIndices;
-
-      indicesAccessor.setArray(Uint32Array.from(mapToOriginalIndexSpace(finalIndices, reverseRemap)));
+      indicesAccessor.setArray(Uint32Array.from(mapToOriginalIndexSpace(dstIndices, reverseRemap)));
     }
   }
 
@@ -350,13 +343,7 @@ export async function optimizeGlbAdaptive(
         // No LockBorder: see note in optimizeGlb - open boundary edges on game assets prevent reduction.
       );
 
-      // Fallback to sloppy when topology blocked the adaptive path.
-      const finalIndices =
-        dstIndices.length > targetIndexCount * 3
-          ? MeshoptSimplifier.simplifySloppy(weldedIndices, compactPositions, 3, null, targetIndexCount, 1)[0]
-          : dstIndices;
-
-      indicesAccessor.setArray(Uint32Array.from(mapToOriginalIndexSpace(finalIndices, reverseRemap)));
+      indicesAccessor.setArray(Uint32Array.from(mapToOriginalIndexSpace(dstIndices, reverseRemap)));
     }
   }
 

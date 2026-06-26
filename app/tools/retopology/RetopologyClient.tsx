@@ -124,11 +124,20 @@ export default function RetopologyClient() {
           </div>
         )}
 
-        <div className={openedAsset ? "grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6 items-start" : "max-w-[480px]"}>
-          {/* ---- left+center: pipeline studio (only when an asset is open) ---- */}
-          {openedAsset && user?.id && (
-            <PipelineStudio asset={openedAsset} userId={user.id} onBack={() => setOpenedAsset(null)} onAssetCreated={refreshLibrary} />
-          )}
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6 items-start">
+          {/* ---- left+center: pipeline studio, or empty placeholder ---- */}
+          <div>
+            {openedAsset && user?.id ? (
+              <PipelineStudio asset={openedAsset} userId={user.id} onBack={() => setOpenedAsset(null)} onAssetCreated={refreshLibrary} />
+            ) : (
+              <div
+                className="rounded-[12px] border border-dashed flex items-center justify-center h-[clamp(300px,42vh,520px)]"
+                style={{ borderColor: "rgba(255,255,255,0.08)" }}
+              >
+                <p className="text-[13px]" style={{ color: "#9b9082" }}>Select a model from your library or drop a GLB to begin</p>
+              </div>
+            )}
+          </div>
 
           {/* ---- right: upload + library, always visible ---- */}
           <div className="flex flex-col gap-5">

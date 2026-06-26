@@ -236,7 +236,7 @@ export type PipelineSessionRow = {
   updated_at: string;
 };
 
-export type PipelineStepOp = "decimate" | "retopo" | "segment" | "adaptive_density" | "finalize";
+export type PipelineStepOp = "decimate" | "retopo" | "segment" | "adaptive_density" | "uv_map" | "bake";
 export type PipelineStepTier = "tier1" | "tier2";
 export type PipelineStepStatus = "queued" | "processing" | "done" | "failed";
 
@@ -326,7 +326,7 @@ export async function listSteps(sessionId: string): Promise<PipelineStepRow[]> {
 export async function appendTier1Step(params: {
   sessionId: string;
   userId: string;
-  op: "decimate" | "segment" | "adaptive_density";
+  op: "decimate" | "segment" | "adaptive_density" | "uv_map";
   inputAssetId: string;
   /** True for steps that don't change the mesh bytes (e.g. segmentation is metadata-only) — skips re-upload. */
   reuseInputAsOutput?: boolean;

@@ -28,8 +28,9 @@ import {
 } from "@/lib/retopo/optimize";
 import { segmentByConnectivity } from "@/lib/retopo/segment";
 import type { SegmentationOverlay, TextureChannel } from "@/components/tools/ModelViewer";
+import { unwrapUVs } from "@/lib/retopo/uv";
+import { BAKE_OPTIONS } from "@/lib/retopo/optimize";
 import StepCard from "./StepCard";
-import FinalizeStep from "./FinalizeStep";
 
 const ModelViewer = dynamic(() => import("@/components/tools/ModelViewer"), {
   ssr: false,
@@ -81,8 +82,9 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
 
   const [targetPolys, setTargetPolys] = useState(20000);
   const [decimateMode, setDecimateMode] = useState<"uniform" | "adaptive">("adaptive");
-  const [bakeMaps, setBakeMaps] = useState<string[]>(["normal", "ao", "albedo"]);
+  const [bakeMaps, setBakeMaps] = useState<string[]>(["albedo", "normal", "ao"]);
   const [dilationPx, setDilationPx] = useState(16);
+  const [hasUVMap, setHasUVMap] = useState(false);
 
   const [segmentation, setSegmentation] = useState<SegmentationOverlay | null>(null);
   const [textureChannel, setTextureChannel] = useState<TextureChannel | null>(null);
@@ -193,7 +195,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
             setWorkingPolys(await countGlbTriangles(bytes));
             setSegmentation(null);
             setCompareToSource(false);
-            setStatus(`${updatedStep.op === "finalize" ? "Finalize" : "Retopology"} complete.`);
+            setStatus(`${updatedStep.op === "bake" ? "Texture bake" : "Retopology"} complete.`);
             onAssetCreated?.();
           } else if (job.status === "failed") {
             setError(job.error || `${entry.step.op} job failed.`);
@@ -303,7 +305,42 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
     }
   }, [session, userId, currentAssetId, classification, targetPolys, decimateMode]);
 
-  const applyFinalize = useCallback(async () => {
+  const applyUVMap = useCallback(async () => {
+    if (!session || !workingBuf) return;
+    setBusy(true);
+    setError("");
+    setStatus("Generating UV atlas…");
+    try {
+      const result = await unwrapUVs(workingBuf);
+
+      const step = await appendTier1Step({
+        sessionId: session.id,
+        userId,
+        op: "uv_map",
+        inputAssetId: currentAssetId,
+        outputName: `${(asset?.name ?? "model").replace(/\.(glb|gltf)$/i, "")}-uvmap${steps.length + 1}.glb`,
+        outputBytes: result.output.slice().buffer,
+        outputPolyCount: workingPolys,
+        params: { atlasWidth: result.atlasWidth, atlasHeight: result.atlasHeight },
+        stats: { chartCount: result.chartCount, inputVertexCount: result.inputVertexCount, outputVertexCount: result.outputVertexCount },
+      });
+
+      const viewerBytes = await fetchAssetBytes(step.output_asset_id!);
+      setSteps((prev) => [...prev, step]);
+      setSession((prev) => (prev ? { ...prev, current_asset_id: step.output_asset_id, current_step_id: step.id } : prev));
+      setWorkingBuf(viewerBytes);
+      setHasUVMap(true);
+      setCompareToSource(false);
+      setStatus(`UV atlas generated — ${result.chartCount} charts, ${result.atlasWidth}×${result.atlasHeight}px.`);
+      onAssetCreated?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "UV unwrap failed.");
+    } finally {
+      setBusy(false);
+    }
+  }, [session, workingBuf, userId, currentAssetId, asset?.name, steps.length, workingPolys]);
+
+  const applyBake = useCallback(async () => {
     if (!session) return;
     setBusy(true);
     setError("");
@@ -311,25 +348,25 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
       const { step, job } = await queueTier2Step({
         sessionId: session.id,
         userId,
-        op: "finalize",
+        op: "bake",
         inputAssetId: currentAssetId,
         classification,
         targetPolys: workingPolys || targetPolys,
         bakeMaps,
-        params: { dilationPx },
+        params: { dilationPx, hiResAssetId: session.source_asset_id },
       });
       setSteps((prev) => [...prev, step]);
       setPendingTier2((prev) => [...prev, { step, jobId: job.id }]);
-      setStatus("Finalizing — UV unwrap + texture bake queued on the Forge worker.");
+      setStatus("Texture bake queued on the Forge worker.");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not queue finalize.");
+      setError(e instanceof Error ? e.message : "Could not queue texture bake.");
     } finally {
       setBusy(false);
     }
   }, [session, userId, currentAssetId, classification, workingPolys, targetPolys, bakeMaps, dilationPx]);
 
   const pendingRetopo = pendingTier2.find((p) => p.step.op === "retopo")?.step.status ?? null;
-  const pendingFinalize = pendingTier2.find((p) => p.step.op === "finalize")?.step.status ?? null;
+  const pendingBake = pendingTier2.find((p) => p.step.op === "bake")?.step.status ?? null;
 
   const reduction = useMemo(
     () => (sourcePolys && workingPolys ? Math.round((1 - workingPolys / sourcePolys) * 100) : 0),
@@ -444,18 +481,67 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                 </StepCard>
               )}
 
-              <FinalizeStep
-                stepNumber={isCharacter ? 4 : 3}
-                bakeMaps={bakeMaps}
-                onToggleBakeMap={(m) => setBakeMaps((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]))}
-                dilationPx={dilationPx}
-                onDilationChange={setDilationPx}
-                onFinalize={applyFinalize}
-                busy={busy}
+              <StepCard
+                title={`${isCharacter ? 4 : 3} · UV Map`}
+                description="Auto-unwrap the lo-res mesh with xatlas — packs UV islands to minimise wasted atlas space, ready for baking."
                 disabled={!hasSteps}
-                pendingStatus={pendingFinalize}
-                error={null}
-              />
+              >
+                <button
+                  onClick={applyUVMap}
+                  disabled={busy || !workingBuf || !hasSteps}
+                  className="w-full py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
+                  style={{ background: "#e2562a", color: "#fff3ec" }}
+                >
+                  Apply
+                </button>
+                {hasUVMap && (
+                  <p className="text-[11.5px] mt-2" style={{ color: "#a6e06a" }}>UV atlas generated — ready to bake.</p>
+                )}
+              </StepCard>
+
+              <StepCard
+                title={`${isCharacter ? 5 : 4} · Bake Textures`}
+                description="Project the hi-res source texture onto the new UV layout on the Forge worker — albedo, normal, AO and more."
+                disabled={!hasUVMap}
+              >
+                <div className="flex flex-wrap gap-1.5 mb-3">
+                  {BAKE_OPTIONS.map((m) => {
+                    const on = bakeMaps.includes(m);
+                    return (
+                      <button
+                        key={m}
+                        onClick={() => setBakeMaps((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]))}
+                        className="text-[12px] px-2.5 py-1 rounded-full border capitalize"
+                        style={{ borderColor: on ? ACCENT : "rgba(255,255,255,0.08)", background: on ? "rgba(226,86,42,.14)" : "#2c2926", color: on ? "#fff3ec" : "#9b9082" }}
+                      >
+                        {m}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-[12.5px]" style={{ color: "#c7bfb2" }}>Seam dilation</span>
+                  <span className="font-bold text-[13px]" style={{ color: "#f3946a" }}>{dilationPx}px</span>
+                </div>
+                <input
+                  type="range"
+                  min={4}
+                  max={32}
+                  step={2}
+                  value={dilationPx}
+                  onChange={(e) => setDilationPx(Number(e.target.value))}
+                  className="w-full h-[4px] rounded-full cursor-pointer appearance-none mb-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-[14px] [&::-webkit-slider-thumb]:h-[14px] [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#f2ede3] [&::-webkit-slider-thumb]:mt-[-5px] [&::-webkit-slider-thumb]:cursor-pointer"
+                  style={{ background: `linear-gradient(to right, #e2562a ${Math.round(((dilationPx - 4) / 28) * 100)}%, #26231f ${Math.round(((dilationPx - 4) / 28) * 100)}%)` }}
+                />
+                <button
+                  onClick={applyBake}
+                  disabled={busy || !hasUVMap || pendingBake === "queued" || pendingBake === "processing"}
+                  className="w-full py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
+                  style={{ background: "#e2562a", color: "#fff3ec" }}
+                >
+                  {pendingBake === "queued" || pendingBake === "processing" ? "Baking on Forge worker…" : "Apply"}
+                </button>
+              </StepCard>
           </>
         </div>
 

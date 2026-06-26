@@ -77,22 +77,31 @@ type WeldedConnectivity = {
 function weldByPosition(indices: Uint32Array, positions: Float32Array): WeldedConnectivity {
   const positionRemap = MeshoptSimplifier.generatePositionRemap(positions, 3);
 
+  // Convert original vertex indices → canonical position indices.
   const weldedIndices = new Uint32Array(indices.length);
   for (let i = 0; i < indices.length; i++) weldedIndices[i] = positionRemap[indices[i]];
 
-  // compactMesh mutates weldedIndices in place into a dense [0, uniqueCount)
-  // range and returns the reverse remap (compact index -> original index).
-  const [reverseRemap, uniqueCount] = MeshoptSimplifier.compactMesh(weldedIndices);
+  // compactMesh remaps weldedIndices IN PLACE to a dense [0, uniqueCount) range and returns
+  // [forwardRemap, uniqueCount] where forwardRemap[canonical] = compact.
+  // This is a FORWARD map (old → new). We need the reverse (new → old) to rebuild positions
+  // and to map simplifier output back to the original vertex index space, so we invert it.
+  const [forwardRemap, uniqueCount] = MeshoptSimplifier.compactMesh(weldedIndices);
+
+  const reverseRemap = new Uint32Array(uniqueCount);
+  for (let canonical = 0; canonical < forwardRemap.length; canonical++) {
+    const compact = forwardRemap[canonical];
+    if (compact < uniqueCount) reverseRemap[compact] = canonical;
+  }
 
   const compactPositions = new Float32Array(uniqueCount * 3);
   for (let i = 0; i < uniqueCount; i++) {
-    const orig = reverseRemap[i];
-    compactPositions[i * 3] = positions[orig * 3];
-    compactPositions[i * 3 + 1] = positions[orig * 3 + 1];
-    compactPositions[i * 3 + 2] = positions[orig * 3 + 2];
+    const src = reverseRemap[i];
+    compactPositions[i * 3] = positions[src * 3];
+    compactPositions[i * 3 + 1] = positions[src * 3 + 1];
+    compactPositions[i * 3 + 2] = positions[src * 3 + 2];
   }
 
-  return { weldedIndices, compactPositions, reverseRemap: reverseRemap.slice(0, uniqueCount) };
+  return { weldedIndices, compactPositions, reverseRemap };
 }
 
 /** Maps simplifier output (compact vertex space) back to the original primitive's vertex index space. */
@@ -142,13 +151,21 @@ export async function optimizeGlb(
         compactPositions,
         3,
         targetIndexCount,
-        1, // unbounded relative error - target ratio drives the result, not an error cap
-        // No LockBorder: game meshes commonly have many open boundary edges (cut joints, one-sided
-        // surfaces, attachment holes). LockBorder locks every boundary vertex and can prevent the
-        // simplifier from collapsing anything at all on such meshes.
+        1,
       );
 
-      indicesAccessor.setArray(Uint32Array.from(mapToOriginalIndexSpace(dstIndices, reverseRemap)));
+      // simplifySloppy fallback: edge-collapse requires shared indices between adjacent triangles,
+      // but many game-mesh exports give every triangle its own 3 vertices (no sharing) so the
+      // simplifier finds no edges to collapse and returns the mesh unchanged. Detect that case
+      // (result > 90% of source) and use voxel-based sloppy decimation instead, which always
+      // achieves the target regardless of connectivity. target_error=1e-2 keeps voxels at 1% of
+      // the bbox so the grid is fine enough to represent thousands of triangles.
+      const finalIndices =
+        dstIndices.length > srcIndices.length * 0.9
+          ? MeshoptSimplifier.simplifySloppy(weldedIndices, compactPositions, 3, null, targetIndexCount, 1e-2)[0]
+          : dstIndices;
+
+      indicesAccessor.setArray(Uint32Array.from(mapToOriginalIndexSpace(finalIndices, reverseRemap)));
     }
   }
 
@@ -340,11 +357,17 @@ export async function optimizeGlbAdaptive(
         [curvatureWeight],
         vertexLock,
         targetIndexCount,
-        1, // unbounded relative error — curvature weight + lock mask drive the result, not an error cap
-        // No LockBorder: see note in optimizeGlb - open boundary edges on game assets prevent reduction.
+        1,
       );
 
-      indicesAccessor.setArray(Uint32Array.from(mapToOriginalIndexSpace(dstIndices, reverseRemap)));
+      // Same sloppy fallback as optimizeGlb: if the attribute-weighted simplifier
+      // couldn't reduce (no shared indices in the source mesh), fall back to voxel decimation.
+      const finalIndices =
+        dstIndices.length > srcIndices.length * 0.9
+          ? MeshoptSimplifier.simplifySloppy(weldedIndices, compactPositions, 3, null, targetIndexCount, 1e-2)[0]
+          : dstIndices;
+
+      indicesAccessor.setArray(Uint32Array.from(mapToOriginalIndexSpace(finalIndices, reverseRemap)));
     }
   }
 

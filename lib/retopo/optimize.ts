@@ -46,25 +46,72 @@ export async function countGlbTriangles(input: ArrayBuffer): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------
-// Core decimation helper: simplify indices that are already in the
-// gltf-transform-welded vertex space.
+// UV-safe triangle selection fallback for flat-shaded / disconnected meshes.
 //
-// Why we do NOT use position-only welding for the final output:
-//   Many glTF exports have UV seams where two vertices share the same
-//   geometric position but have different UV coordinates (one per side of the
-//   seam). Position-only welding collapses them to a single canonical vertex
-//   and picks ONE of the two UVs — which is wrong for the other side of every
-//   seam. The output texture looks scrambled.
+// simplifySloppy and every vertex-merging algorithm corrupt UV seams:
+// when two vertices share the same geometric position but have different UV
+// coordinates (the two sides of a UV seam), the algorithm picks one UV and
+// discards the other, producing scrambled textures.
 //
-// Strategy:
-//   1. Try edge-collapse simplify() on the gltf-welded index buffer.
-//      gltf-transform's weld() shares vertices that are identical across ALL
-//      attributes, so this gives proper connectivity for smooth-shaded meshes.
-//   2. If the result is ≥ 90% of the source (flat-shaded / no connectivity),
-//      fall back to simplifySloppy with target_error=1e-2.  Voxel-based,
-//      needs no connectivity, and the output indices still point into the
-//      original (N-welded) vertex buffer — UVs stay correct.
+// For flat-shaded / disconnected meshes where edge-collapse simplify() finds
+// nothing to do (no shared vertex indices = no collapsible edges), we fall
+// back to pure triangle selection: assign each triangle to a 3-D grid cell
+// based on its centroid, keep one representative per cell, and output those
+// triangles' ORIGINAL vertex indices completely untouched.  No vertex data is
+// ever merged or rewritten — textures are preserved exactly.
 // ---------------------------------------------------------------------------
+function selectTrianglesByGrid(
+  srcIndices: Uint32Array,
+  srcPositions: Float32Array,
+  targetTriCount: number,
+): Uint32Array {
+  const triCount = srcIndices.length / 3;
+  if (targetTriCount >= triCount) return srcIndices;
+
+  // Triangle centroids + bounding box
+  const cx = new Float32Array(triCount);
+  const cy = new Float32Array(triCount);
+  const cz = new Float32Array(triCount);
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let t = 0; t < triCount; t++) {
+    const i0 = srcIndices[t * 3], i1 = srcIndices[t * 3 + 1], i2 = srcIndices[t * 3 + 2];
+    const x = (srcPositions[i0 * 3] + srcPositions[i1 * 3] + srcPositions[i2 * 3]) / 3;
+    const y = (srcPositions[i0 * 3 + 1] + srcPositions[i1 * 3 + 1] + srcPositions[i2 * 3 + 1]) / 3;
+    const z = (srcPositions[i0 * 3 + 2] + srcPositions[i1 * 3 + 2] + srcPositions[i2 * 3 + 2]) / 3;
+    cx[t] = x; cy[t] = y; cz[t] = z;
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+  }
+  const dx = maxX - minX || 1;
+  const dy = maxY - minY || 1;
+  const dz = maxZ - minZ || 1;
+
+  // Resolution: aim for ~2× target cells so surface-only cells land near target
+  const res = Math.max(1, Math.ceil(Math.cbrt(targetTriCount * 2)));
+
+  // One representative triangle per occupied grid cell
+  const cellToTri = new Map<number, number>();
+  for (let t = 0; t < triCount; t++) {
+    const gx = Math.min(res - 1, Math.floor(((cx[t] - minX) / dx) * res));
+    const gy = Math.min(res - 1, Math.floor(((cy[t] - minY) / dy) * res));
+    const gz = Math.min(res - 1, Math.floor(((cz[t] - minZ) / dz) * res));
+    const key = gx + gy * res + gz * res * res;
+    if (!cellToTri.has(key)) cellToTri.set(key, t);
+  }
+
+  const selected = Array.from(cellToTri.values());
+  const out = new Uint32Array(selected.length * 3);
+  for (let i = 0; i < selected.length; i++) {
+    const t = selected[i];
+    out[i * 3] = srcIndices[t * 3];
+    out[i * 3 + 1] = srcIndices[t * 3 + 1];
+    out[i * 3 + 2] = srcIndices[t * 3 + 2];
+  }
+  return out;
+}
+
 function decimatePrimIndices(
   srcIndices: Uint32Array,
   srcPositions: Float32Array,
@@ -74,8 +121,8 @@ function decimatePrimIndices(
 
   if (dstIndices.length > srcIndices.length * 0.9) {
     // Edge-collapse found no collapsible edges (flat-shaded / fully disconnected mesh).
-    // Fall back to voxel-based decimation — no connectivity required.
-    return MeshoptSimplifier.simplifySloppy(srcIndices, srcPositions, 3, null, targetIndexCount, 1e-2)[0];
+    // Use UV-safe triangle selection — never merges any vertex data.
+    return selectTrianglesByGrid(srcIndices, srcPositions, Math.round(targetIndexCount / 3));
   }
   return dstIndices;
 }
@@ -344,11 +391,10 @@ export async function optimizeGlbAdaptive(
         1,
       );
 
-      // Fall back to sloppy with the curvature lock mask — voxel-based, no connectivity
-      // needed, and output indices are still in N-welded space so UVs stay correct.
+      // Fall back to UV-safe triangle selection for flat-shaded / disconnected meshes.
       const finalIndices =
         dstIndices.length > srcIndices.length * 0.9
-          ? MeshoptSimplifier.simplifySloppy(srcIndices, srcPositions, 3, nWeldedLock, targetIndexCount, 1e-2)[0]
+          ? selectTrianglesByGrid(srcIndices, srcPositions, Math.round(targetIndexCount / 3))
           : dstIndices;
 
       indicesAccessor.setArray(new Uint32Array(finalIndices));

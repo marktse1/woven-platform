@@ -12,8 +12,8 @@ import { weld, dedup, prune } from "@gltf-transform/functions";
 import { MeshoptSimplifier } from "meshoptimizer";
 
 export type OptimizeOptions = {
-  /** Fraction of triangles to keep (0–1). */
-  ratio: number;
+  /** Absolute triangle target — ratio is computed inside from the actual mesh count. */
+  targetPolys: number;
   /** Preserve high-curvature detail by allowing a tighter error bound. */
   adaptive: boolean;
 };
@@ -106,7 +106,7 @@ export async function optimizeGlb(
   input: ArrayBuffer,
   opts: OptimizeOptions,
 ): Promise<OptimizeResult> {
-  if (opts.adaptive) return optimizeGlbAdaptive(input, { ratio: opts.ratio });
+  if (opts.adaptive) return optimizeGlbAdaptive(input, { targetPolys: opts.targetPolys });
 
   await MeshoptSimplifier.ready;
 
@@ -114,7 +114,8 @@ export async function optimizeGlb(
   const doc = await io.readBinary(new Uint8Array(input));
 
   const sourcePolys = countTriangles(doc);
-  const ratio = Math.min(0.99, Math.max(0.001, opts.ratio));
+  // Compute ratio from the actual mesh — never trust caller-side poly count state.
+  const ratio = Math.min(0.99, Math.max(0.001, opts.targetPolys / Math.max(1, sourcePolys)));
 
   await doc.transform(weld());
 
@@ -250,8 +251,8 @@ function computeVertexCurvature(positions: Float32Array, indices: Uint32Array): 
 }
 
 export type AdaptiveOptimizeOptions = {
-  /** Fraction of triangles to keep (0–1). */
-  ratio: number;
+  /** Absolute triangle target — ratio is computed inside from the actual mesh count. */
+  targetPolys: number;
   /** How strongly curvature steers the simplifier away from sharp regions. */
   curvatureWeight?: number;
   /**
@@ -303,7 +304,7 @@ export async function optimizeGlbAdaptive(
   const doc = await io.readBinary(new Uint8Array(input));
 
   const sourcePolys = countTriangles(doc);
-  const ratio = Math.min(0.99, Math.max(0.001, opts.ratio));
+  const ratio = Math.min(0.99, Math.max(0.001, opts.targetPolys / Math.max(1, sourcePolys)));
   const curvatureWeight = opts.curvatureWeight ?? 2.5;
   const lockFraction = opts.lockFraction ?? 0.02;
 

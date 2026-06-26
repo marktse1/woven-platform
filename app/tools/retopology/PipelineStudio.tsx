@@ -214,12 +214,10 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
     setError("");
     setStatus("Optimizing geometry…");
     try {
-      const basePoly = workingPolys || sourcePolys || 1;
-      const ratio = Math.min(0.99, Math.max(0.001, targetPolys / basePoly));
       const res =
         decimateMode === "adaptive"
-          ? await optimizeGlbAdaptive(workingBuf, { ratio })
-          : await optimizeGlb(workingBuf, { ratio, adaptive: false });
+          ? await optimizeGlbAdaptive(workingBuf, { targetPolys })
+          : await optimizeGlb(workingBuf, { targetPolys, adaptive: false });
 
       const step = await appendTier1Step({
         sessionId: session.id,
@@ -250,7 +248,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
     } finally {
       setBusy(false);
     }
-  }, [session, workingBuf, targetPolys, workingPolys, sourcePolys, decimateMode, userId, asset?.name, steps.length, currentAssetId]);
+  }, [session, workingBuf, targetPolys, decimateMode, userId, asset?.name, steps.length, currentAssetId]);
 
   const applySegment = useCallback(async () => {
     if (!session || !workingBuf) return;

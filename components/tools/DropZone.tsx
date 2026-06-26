@@ -8,6 +8,9 @@ type Props = {
   hint?: string;
   /** Smaller padding/icon for use in tight spaces (e.g. a sidebar card) instead of a large centered landing zone. */
   compact?: boolean;
+  accentColor?: string;
+  baseBg?: string;
+  inactiveBorder?: string;
 };
 
 export default function DropZone({
@@ -15,6 +18,9 @@ export default function DropZone({
   accept = ".glb",
   hint = "Drag & drop a .glb model, or click to browse",
   compact = false,
+  accentColor = "#56a6e8",
+  baseBg = "#0a0e13",
+  inactiveBorder = "#324a61",
 }: Props) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [over, setOver] = useState(false);
@@ -45,8 +51,8 @@ export default function DropZone({
       }}
       className={`rounded-[12px] border-2 border-dashed flex flex-col items-center justify-center text-center cursor-pointer transition-colors ${compact ? "px-3 py-5" : "px-6 py-12"}`}
       style={{
-        borderColor: over ? "#56a6e8" : "#324a61",
-        background: over ? "rgba(86,166,232,.08)" : "#0a0e13",
+        borderColor: over ? accentColor : inactiveBorder,
+        background: over ? `${accentColor}14` : baseBg,
       }}
     >
       <div className={compact ? "text-[20px] mb-1" : "text-[34px] mb-2"}>🔻</div>

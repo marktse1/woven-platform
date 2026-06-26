@@ -345,7 +345,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
         <span className="text-dim">/</span>
         <div className="text-[13px] font-bold truncate max-w-[28ch]">{asset.name}</div>
         <div className="flex-1" />
-        {status && <div className="text-[12px] text-dim truncate max-w-[34ch]">{status}</div>}
+        {status && <div className="text-[12px] truncate max-w-[34ch]" style={{ color: "#c7bfb2" }}>{status}</div>}
       </div>
 
       {error && (
@@ -358,7 +358,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
         {/* ---- left: step rail ---- */}
         <div className="flex flex-col gap-5">
           {!session ? (
-            <div className="bg-panel border border-line rounded-[12px] p-5 text-[12.5px] text-dim">
+            <div className="rounded-[12px] p-5 text-[12.5px]" style={{ color: "#c7bfb2" }}>
               Pick a classification above and start the pipeline to begin editing.
             </div>
           ) : (
@@ -380,15 +380,15 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                   ))}
                 </div>
                 <div className="flex items-center justify-between gap-2 mb-2">
-                  <span className="text-[12.5px] text-muted">Target triangles</span>
+                  <span className="text-[12.5px]" style={{ color: "#c7bfb2" }}>Target triangles</span>
                   <input
                     type="number"
                     min={200}
                     step={100}
                     value={targetPolys}
                     onChange={(e) => setTargetPolys(Math.max(200, Math.round(Number(e.target.value) || 0)))}
-                    className="w-[110px] bg-[#0a0e13] border border-line rounded-md px-2 py-1 text-right text-[14px] font-bold outline-none focus:border-accent"
-                    style={{ color: ACCENT }}
+                    className="w-[110px] bg-[#26231f] border border-[#3d3530] rounded-md px-2 py-1 text-right text-[14px] font-bold outline-none"
+                    style={{ color: "#f3946a" }}
                   />
                 </div>
                 <input
@@ -414,13 +414,13 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                 <button
                   onClick={applySegment}
                   disabled={busy || !workingBuf}
-                  className="w-full py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
-                  style={{ background: "#e2562a", color: "#fff3ec" }}
+                  className="w-full py-2.5 rounded-[9px] font-bold text-[13px] border disabled:opacity-50"
+                  style={{ background: "#2c2926", borderColor: "rgba(255,255,255,.10)", color: "#e8e1d5" }}
                 >
                   Apply
                 </button>
                 {segmentation && (
-                  <p className="text-[11.5px] text-dim mt-2">Overlay is showing in the viewer — toggle off with the wireframe controls.</p>
+                  <p className="text-[11.5px] mt-2" style={{ color: "#c7bfb2" }}>Overlay is showing in the viewer — toggle off with the wireframe controls.</p>
                 )}
               </StepCard>
 
@@ -458,9 +458,9 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
 
         {/* ---- right: classification + viewer + history ---- */}
         <div className="flex flex-col gap-5">
-          <div className="bg-panel border border-line rounded-[12px] p-5">
-            <p className="text-[11px] font-bold tracking-[.12em] uppercase text-muted mb-3">What is it?</p>
-            <p className="text-[12px] text-dim mb-3">
+          <div className="rounded-[12px] p-5">
+            <p className="text-[11px] font-bold tracking-[.12em] uppercase mb-3" style={{ color: "#e8e1d5" }}>What is it?</p>
+            <p className="text-[12px] mb-3" style={{ color: "#c7bfb2" }}>
               This decides whether the pipeline runs true quad retopology with edge loops, or just decimates.
             </p>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4">
@@ -471,13 +471,13 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                     key={c.value}
                     onClick={() => setClassification(c.value)}
                     className="text-left rounded-[10px] border p-3"
-                    style={{ borderColor: on ? ACCENT : "#26384a", background: on ? "rgba(86,166,232,.10)" : "#0d141c" }}
+                    style={{ borderColor: on ? ACCENT : "rgba(255,255,255,.08)", background: on ? "rgba(226,86,42,.10)" : "#2c2926" }}
                   >
                     <div className="flex items-center gap-2">
                       <span>{c.icon}</span>
-                      <span className="font-bold text-[13px]">{c.label}</span>
+                      <span className="font-bold text-[13px]" style={{ color: on ? "#f7e9df" : "#e2dbcf" }}>{c.label}</span>
                     </div>
-                    <div className="text-[11.5px] text-dim mt-1">{c.blurb}</div>
+                    <div className="text-[11.5px] mt-1" style={{ color: "#c7bfb2" }}>{c.blurb}</div>
                   </button>
                 );
               })}
@@ -494,8 +494,8 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
             )}
           </div>
 
-          <div className="bg-panel border border-line rounded-[12px] overflow-hidden">
-              <div className="flex items-center gap-2 px-4 py-3 border-b border-line flex-wrap">
+          <div className="rounded-[12px] overflow-hidden bg-[#131110]">
+              <div className="flex items-center gap-2 px-4 py-3 border-b border-[#2a2420] flex-wrap">
                 <button
                   onClick={() => setCompareToSource((v) => !v)}
                   disabled={!sourceBuf}
@@ -543,7 +543,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                   </button>
                 ))}
                 <div className="flex-1" />
-                <div className="text-[12px] text-dim">
+                <div className="text-[12px]" style={{ color: "#c7bfb2" }}>
                   {compareToSource ? fmt(sourcePolys) : fmt(workingPolys)} tris{!compareToSource && reduction > 0 ? ` · ${reduction}% lighter` : ""}
                 </div>
               </div>
@@ -565,17 +565,17 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
               </div>
             </div>
 
-            <div className="bg-panel border border-line rounded-[12px] p-5">
-              <p className="text-[11px] font-bold tracking-[.12em] uppercase text-muted mb-3">Pipeline history</p>
+            <div className="rounded-[12px] p-5">
+              <p className="text-[11px] font-bold tracking-[.12em] uppercase mb-3" style={{ color: "#e8e1d5" }}>Pipeline history</p>
               {steps.length === 0 ? (
-                <div className="text-[12.5px] text-dim">Applied steps will appear here, in the order you run them.</div>
+                <div className="text-[12.5px]" style={{ color: "#c7bfb2" }}>Applied steps will appear here, in the order you run them.</div>
               ) : (
                 <div className="flex flex-col gap-2 max-h-[220px] overflow-y-auto">
                   {steps.map((s) => (
-                    <div key={s.id} className="flex items-center gap-2.5 p-2.5 rounded-[9px] border border-line bg-[#0a0e13]">
+                    <div key={s.id} className="flex items-center gap-2.5 p-2.5 rounded-[9px] border border-[#2a2420] bg-[#201d1a]">
                       <div className="min-w-0 flex-1">
-                        <div className="font-semibold text-[13px] capitalize">{s.seq} · {s.op.replace("_", " ")}</div>
-                        <div className="text-[11.5px] text-dim">{s.tier} {s.error ? `· ${s.error}` : ""}</div>
+                        <div className="font-semibold text-[13px] capitalize" style={{ color: "#e8e1d5" }}>{s.seq} · {s.op.replace("_", " ")}</div>
+                        <div className="text-[11.5px]" style={{ color: "#8e8579" }}>{s.tier} {s.error ? `· ${s.error}` : ""}</div>
                       </div>
                       <StepBadge status={s.status} />
                     </div>

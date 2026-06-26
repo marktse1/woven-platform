@@ -14,7 +14,7 @@ type Props = {
 /** Shared panel chrome for one Pipeline Studio step — reuses the existing card styling. */
 export default function StepCard({ title, description, badge, disabled, children, footer }: Props) {
   return (
-    <div className="bg-panel border border-line rounded-[12px] p-5" style={disabled ? { opacity: 0.5, pointerEvents: "none" } : undefined}>
+    <div className="rounded-[12px] p-5" style={disabled ? { opacity: 0.5, pointerEvents: "none" } : undefined}>
       <div className="flex items-center gap-2 mb-1">
         <p className="text-[11px] font-bold tracking-[.12em] uppercase text-muted">{title}</p>
         {badge && (

@@ -56,7 +56,7 @@ export default function FinalizeStep({
 
       <div className="flex items-center justify-between mb-2">
         <span className="text-[12.5px] text-muted">Seam dilation</span>
-        <span className="font-bold text-[13px]" style={{ color: ACCENT }}>{dilationPx}px</span>
+        <span className="font-bold text-[13px]" style={{ color: "#f3946a" }}>{dilationPx}px</span>
       </div>
       <input
         type="range"
@@ -67,7 +67,7 @@ export default function FinalizeStep({
         onChange={(e) => onDilationChange(Number(e.target.value))}
         className="w-full accent-[#e2562a] mb-1.5"
       />
-      <p className="text-[11px] text-dim mb-3">
+      <p className="text-[11px] mb-3" style={{ color: "#c7bfb2" }}>
         Pushes edge-texel color past each UV island&apos;s boundary so filtering never samples blank padding — the actual fix for bleeding at seams.
       </p>
 

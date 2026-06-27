@@ -52,6 +52,15 @@ export default function MeshSculptClient() {
   const [brushInnerRadius, setBrushInnerRadius] = useState(0.0);
   const [brushStrength, setBrushStrength] = useState(0.5);
 
+  const [clayMode, setClayMode] = useState(false);
+  const [clayColor, setClayColor] = useState("#c4a882");
+
+  const CLAY_PRESETS = [
+    { color: "#c4a882", label: "Clay" },
+    { color: "#e8e0d5", label: "Cream" },
+    { color: "#3a3735", label: "Dark" },
+  ];
+
   const viewerHandleRef = useRef<SculptViewerHandle | null>(null);
 
   // Load asset library
@@ -263,7 +272,7 @@ export default function MeshSculptClient() {
           </label>
 
           {/* Undo / Redo */}
-          <div className="flex gap-2">
+          <div className="flex gap-2 mb-4">
             <button
               onClick={() => viewerHandleRef.current?.undo()}
               className="flex-1 py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors"
@@ -278,6 +287,37 @@ export default function MeshSculptClient() {
             >
               Redo
             </button>
+          </div>
+
+          {/* Clay shader */}
+          <div className="border-t border-[#2a2320] pt-3">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[11px] font-medium text-dim uppercase tracking-wide">Clay View</p>
+              <button
+                onClick={() => setClayMode(m => !m)}
+                className={`relative w-9 h-5 rounded-full transition-colors ${clayMode ? "bg-[#c47be8]" : "bg-[#2a2320]"}`}
+              >
+                <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${clayMode ? "translate-x-4" : "translate-x-0.5"}`} />
+              </button>
+            </div>
+            {clayMode && (
+              <div className="flex gap-2 mt-2">
+                {CLAY_PRESETS.map(p => (
+                  <button
+                    key={p.color}
+                    title={p.label}
+                    onClick={() => setClayColor(p.color)}
+                    className="flex flex-col items-center gap-1"
+                  >
+                    <span
+                      className={`w-6 h-6 rounded-full border-2 transition-all ${clayColor === p.color ? "border-[#c47be8] scale-110" : "border-transparent"}`}
+                      style={{ background: p.color }}
+                    />
+                    <span className="text-[9px] text-dim">{p.label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
@@ -320,6 +360,8 @@ export default function MeshSculptClient() {
           brushRadius={brushRadius}
           brushInnerRadius={brushInnerRadius}
           brushStrength={brushStrength}
+          clayMode={clayMode}
+          clayColor={clayColor}
           onModelLoaded={setVertexCount}
           onLoadError={setLoadError}
           handleRef={viewerHandleRef}

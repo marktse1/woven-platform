@@ -25,12 +25,63 @@ export type SculptViewerHandle = {
   redo: () => void;
 };
 
+// ── Clay shader ──────────────────────────────────────────────────────────────
+// Half-lambert diffuse + broad specular + fresnel rim — mimics ZBrush clay.
+const CLAY_VERT = /* glsl */`
+  varying vec3 vNormal;
+  varying vec3 vViewDir;
+  void main() {
+    vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+    vNormal    = normalize(normalMatrix * normal);
+    vViewDir   = normalize(-mvPos.xyz);
+    gl_Position = projectionMatrix * mvPos;
+  }
+`;
+
+const CLAY_FRAG = /* glsl */`
+  varying vec3 vNormal;
+  varying vec3 vViewDir;
+  uniform vec3 uColor;
+
+  void main() {
+    vec3 n = normalize(vNormal);
+    vec3 v = normalize(vViewDir);
+
+    // Baked light directions: key (upper-left-front), fill (lower-right), back rim
+    vec3 L1 = normalize(vec3( 0.6,  1.0,  0.8));
+    vec3 L2 = normalize(vec3(-0.5, -0.3,  0.4));
+    vec3 L3 = normalize(vec3(-0.3,  0.5, -1.0));
+
+    // Half-lambert on key — wraps light softly around the form (ZBrush clay look)
+    float d1 = pow(dot(n, L1) * 0.5 + 0.5, 2.0);
+    // Subtle fill
+    float d2 = max(0.0, dot(n, L2)) * 0.22;
+    // Warm back rim
+    float d3 = max(0.0, dot(n, L3)) * 0.35;
+
+    // Broad matte specular — not shiny, just a soft sheen
+    vec3 H1   = normalize(L1 + v);
+    float spec = pow(max(0.0, dot(n, H1)), 6.0) * 0.10;
+
+    // Cool fresnel glow on silhouette edges
+    float fresnel = pow(1.0 - max(0.0, dot(n, v)), 3.5) * 0.14;
+
+    vec3 color = uColor * (d1 * 0.78 + d2 + d3);
+    color += vec3(spec);
+    color += fresnel * vec3(0.55, 0.65, 0.90);
+
+    gl_FragColor = vec4(color, 1.0);
+  }
+`;
+
 type Props = {
   glbData: ArrayBuffer | null;
   brushMode: BrushMode;
   brushRadius: number;
   brushInnerRadius: number;
   brushStrength: number;
+  clayMode?: boolean;
+  clayColor?: string;
   onModelLoaded?: (vertexCount: number) => void;
   onLoadError?: (msg: string) => void;
   handleRef?: React.RefObject<SculptViewerHandle | null>;
@@ -42,6 +93,8 @@ export default function SculptViewer({
   brushRadius,
   brushInnerRadius,
   brushStrength,
+  clayMode = false,
+  clayColor = "#c4a882",
   onModelLoaded,
   onLoadError,
   handleRef,
@@ -72,6 +125,56 @@ export default function SculptViewer({
   const onLoadErrorRef = useRef(onLoadError);
   useEffect(() => { onModelLoadedRef.current = onModelLoaded; }, [onModelLoaded]);
   useEffect(() => { onLoadErrorRef.current = onLoadError; }, [onLoadError]);
+
+  // Clay material refs
+  const clayMatRef = useRef<THREE.ShaderMaterial | null>(null);
+  const originalMaterialsRef = useRef<Map<string, THREE.Material | THREE.Material[]>>(new Map());
+  const clayModeRef = useRef(clayMode);
+  const clayColorRef = useRef(clayColor);
+  useEffect(() => { clayModeRef.current = clayMode; }, [clayMode]);
+  useEffect(() => { clayColorRef.current = clayColor; }, [clayColor]);
+
+  function getClayMat(color: string): THREE.ShaderMaterial {
+    if (!clayMatRef.current) {
+      clayMatRef.current = new THREE.ShaderMaterial({
+        vertexShader: CLAY_VERT,
+        fragmentShader: CLAY_FRAG,
+        uniforms: { uColor: { value: new THREE.Color(color).convertSRGBToLinear() } },
+      });
+    } else {
+      (clayMatRef.current.uniforms.uColor.value as THREE.Color).set(color).convertSRGBToLinear();
+    }
+    return clayMatRef.current;
+  }
+
+  // ── clay material toggle ─────────────────────────────────────────────────
+  useEffect(() => {
+    const group = modelRef.current;
+    const scene = sceneRef.current;
+    if (!group || !scene) return;
+
+    if (clayMode) {
+      scene.background = new THREE.Color("#1c1c1c");
+      const mat = getClayMat(clayColor);
+      group.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh) return;
+        if (!originalMaterialsRef.current.has(m.uuid)) {
+          originalMaterialsRef.current.set(m.uuid, m.material);
+        }
+        m.material = mat;
+      });
+    } else {
+      scene.background = new THREE.Color("#1a1614");
+      group.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh) return;
+        const orig = originalMaterialsRef.current.get(m.uuid);
+        if (orig !== undefined) m.material = orig;
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clayMode, clayColor]);
 
   // ── one-time scene setup ──────────────────────────────────────────────────
   useEffect(() => {
@@ -222,6 +325,19 @@ export default function SculptViewer({
 
       scene.add(group);
       modelRef.current = group;
+      originalMaterialsRef.current.clear();
+
+      // If clay mode was already active, apply immediately to new model
+      if (clayModeRef.current) {
+        const mat = getClayMat(clayColorRef.current);
+        group.traverse((o) => {
+          const m = o as THREE.Mesh;
+          if (!m.isMesh) return;
+          originalMaterialsRef.current.set(m.uuid, m.material);
+          m.material = mat;
+        });
+      }
+
       onModelLoadedRef.current?.(totalVerts);
     }, (err) => {
       console.error("[SculptViewer] GLB parse error", err);

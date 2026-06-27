@@ -82,6 +82,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
   const [targetPolys, setTargetPolys] = useState(20000);
   const [decimateMode, setDecimateMode] = useState<"uniform" | "adaptive">("adaptive");
   const [bakeMaps, setBakeMaps] = useState<string[]>(["albedo", "normal", "ao"]);
+  const [reAtlas, setReAtlas] = useState(false);
   const [dilationPx, setDilationPx] = useState(16);
   const [bakeProgress, setBakeProgress] = useState(0);
   const [bakeStage, setBakeStage] = useState("");
@@ -316,7 +317,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
       const res = await fetch("/api/tools/retopology/bake", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId, loResAssetId: currentAssetId, bakeMaps }),
+        body: JSON.stringify({ userId, loResAssetId: currentAssetId, bakeMaps, reAtlas, sourceAssetId: asset?.id }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -358,7 +359,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
         inputAssetId: currentAssetId,
         existingOutputAssetId: outputAssetId,
         outputPolyCount: workingPolys,
-        stats: { bakeMaps },
+        stats: { bakeMaps, reAtlas },
       });
 
       const viewerBytes = await fetchAssetBytes(outputAssetId);
@@ -376,7 +377,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
       setBakeProgress(0);
       setBakeStage("");
     }
-  }, [session, workingBuf, userId, currentAssetId, bakeMaps, asset?.name, steps.length, workingPolys]);
+  }, [session, workingBuf, userId, currentAssetId, bakeMaps, reAtlas, asset?.id, asset?.name, steps.length, workingPolys]);
 
   const pendingRetopo = pendingTier2.find((p) => p.step.op === "retopo")?.step.status ?? null;
 
@@ -495,7 +496,9 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
 
               <StepCard
                 title={`${isCharacter ? 4 : 3} · Bake Textures`}
-                description="Generates a new UV atlas with xatlas on the server, then bakes the original texture onto it — albedo, normal, and AO in one step."
+                description={reAtlas
+                  ? "Re-atlas UVs with xatlas then rasterise textures into the new atlas space. Needed after retopology."
+                  : "Embed the original textures with the existing UV layout preserved. Fast — correct for post-decimation models."}
               >
                 <div className="flex flex-wrap gap-1.5 mb-3">
                   {BAKE_OPTIONS.map((m) => {
@@ -512,38 +515,46 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                     );
                   })}
                 </div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-[12.5px]" style={{ color: "#c7bfb2" }}>Seam dilation</span>
-                  <span className="font-bold text-[13px]" style={{ color: "#f3946a" }}>{dilationPx}px</span>
-                </div>
-                <input
-                  type="range"
-                  min={4}
-                  max={32}
-                  step={2}
-                  value={dilationPx}
-                  onChange={(e) => setDilationPx(Number(e.target.value))}
-                  className="w-full h-[4px] rounded-full cursor-pointer appearance-none mb-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-[14px] [&::-webkit-slider-thumb]:h-[14px] [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#f2ede3] [&::-webkit-slider-thumb]:mt-[-5px] [&::-webkit-slider-thumb]:cursor-pointer"
-                  style={{ background: `linear-gradient(to right, #e2562a ${Math.round(((dilationPx - 4) / 28) * 100)}%, #26231f ${Math.round(((dilationPx - 4) / 28) * 100)}%)` }}
-                />
+
+                {/* Re-atlas toggle */}
+                <button
+                  onClick={() => setReAtlas((v) => !v)}
+                  className="flex items-center gap-2 w-full mb-3 text-left"
+                  role="switch"
+                  aria-checked={reAtlas}
+                >
+                  <span
+                    className="relative inline-flex shrink-0 h-4 w-7 rounded-full transition-colors duration-200"
+                    style={{ background: reAtlas ? "#e2562a" : "#3a3530" }}
+                  >
+                    <span
+                      className="inline-block h-3 w-3 rounded-full bg-[#f2ede3] transition-transform duration-200 mt-0.5"
+                      style={{ transform: reAtlas ? "translateX(14px)" : "translateX(2px)" }}
+                    />
+                  </span>
+                  <span className="text-[11.5px]" style={{ color: "#9b9082" }}>
+                    {reAtlas ? "Re-atlas UVs (xatlas) — for post-retopo" : "Preserve original UVs — fast, for post-decimate"}
+                  </span>
+                </button>
+
                 <button
                   onClick={applyBake}
                   disabled={busy || !workingBuf}
                   className="w-full py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
                   style={{ background: "#e2562a", color: "#fff3ec" }}
                 >
-                  {busy && bakeProgress > 0 ? "Baking…" : "Apply"}
+                  {busy ? "Baking…" : "Apply"}
                 </button>
-                {busy && bakeProgress > 0 && (
+                {busy && (
                   <div className="mt-3">
                     <div className="flex justify-between text-[11px] mb-1.5" style={{ color: "#9b9082" }}>
-                      <span className="capitalize">{bakeStage}</span>
+                      <span className="capitalize">{bakeStage || "starting…"}</span>
                       <span>{Math.round(bakeProgress * 100)}%</span>
                     </div>
                     <div className="h-[3px] rounded-full overflow-hidden" style={{ background: "#26231f" }}>
                       <div
                         className="h-full rounded-full transition-all duration-500 ease-out"
-                        style={{ width: `${bakeProgress * 100}%`, background: "#e2562a" }}
+                        style={{ width: `${Math.max(bakeProgress * 100, 2)}%`, background: "#e2562a" }}
                       />
                     </div>
                   </div>

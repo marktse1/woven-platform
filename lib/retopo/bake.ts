@@ -1,8 +1,13 @@
 // Server-side UV unwrap + texture bake.
-// Runs xatlas (via WASM, works in Node.js) to generate a packed UV atlas for
-// the lo-res mesh, then rasterises every triangle into the new atlas space,
-// sampling the original embedded textures at the original UV coordinates.
-// Output is the same GLB with new UV layout and freshly baked textures.
+//
+// Two modes:
+//   reAtlas=true  (default) — runs xatlas to generate a packed UV atlas, then
+//                             rasterises each triangle to transfer textures into
+//                             the new UV space.  Needed after retopology.
+//   reAtlas=false           — preserves the existing TEXCOORD_0 layout.  Embeds
+//                             textures from texSourceBuf (or from the lo-res
+//                             itself when already embedded).  Much faster and
+//                             correct for post-decimation use.
 
 import createXAtlas from "xatlas-wasm";
 import sharp from "sharp";
@@ -101,7 +106,9 @@ function rasteriseTri(
 // ---------------------------------------------------------------------------
 
 export type BakeOptions = {
-  bakeMaps?: string[]; // subset of ["albedo", "normal", "ao"]
+  bakeMaps?: string[];     // subset of ["albedo", "normal", "ao"]
+  reAtlas?: boolean;       // default true; false = preserve existing UVs
+  texSourceBuf?: ArrayBuffer; // optional second GLB to read textures from
   onProgress?: (stage: string, fraction: number) => void;
 };
 
@@ -110,17 +117,88 @@ export async function unwrapAndBake(
   opts: BakeOptions = {},
 ): Promise<Uint8Array> {
   const bakeMaps = opts.bakeMaps ?? ["albedo", "normal", "ao"];
+  const reAtlas = opts.reAtlas ?? true;
   const onProgress = opts.onProgress;
 
   const io = new WebIO();
   const doc = await io.readBinary(new Uint8Array(inputBuf));
+
+  // ---------------------------------------------------------------------------
+  // Preserve-UV mode — no xatlas, just ensure textures are embedded.
+  // ---------------------------------------------------------------------------
+  if (!reAtlas) {
+    onProgress?.("reading textures", 0.2);
+
+    if (opts.texSourceBuf) {
+      // Copy embedded textures from the source GLB into this doc's materials.
+      // The source is typically the original hi-res upload; the lo-res mesh
+      // already has the same UV layout (decimation preserves TEXCOORD_0).
+      const srcDoc = await new WebIO().readBinary(new Uint8Array(opts.texSourceBuf));
+      const srcMats = srcDoc.getRoot().listMaterials();
+      const docMats = doc.getRoot().listMaterials();
+
+      for (let mi = 0; mi < docMats.length; mi++) {
+        const mat = docMats[mi];
+        // Match by name first, fall back to positional index.
+        const srcMat =
+          srcMats.find((m) => m.getName() && m.getName() === mat.getName()) ??
+          srcMats[mi] ??
+          null;
+        if (!srcMat) continue;
+
+        const texSlots: Array<[GltfTexture | null, (t: GltfTexture | null) => void]> = [
+          [srcMat.getBaseColorTexture(), (t) => mat.setBaseColorTexture(t)],
+          [srcMat.getNormalTexture(),    (t) => mat.setNormalTexture(t)],
+          [srcMat.getOcclusionTexture(), (t) => mat.setOcclusionTexture(t)],
+        ];
+        for (const [srcTex, setter] of texSlots) {
+          const img = srcTex?.getImage();
+          if (!img) continue;
+          const copy = doc
+            .createTexture(srcTex!.getName())
+            .setImage(new Uint8Array(img))
+            .setMimeType(srcTex!.getMimeType())
+            .setURI("");
+          setter(copy);
+        }
+      }
+    } else {
+      // No external source: verify the lo-res already has embedded textures.
+      const hasAny = doc.getRoot().listMeshes()
+        .flatMap((m) => m.listPrimitives())
+        .some((p) => {
+          const mat = p.getMaterial();
+          return (
+            mat &&
+            (mat.getBaseColorTexture()?.getImage() ||
+             mat.getNormalTexture()?.getImage() ||
+             mat.getOcclusionTexture()?.getImage())
+          );
+        });
+      if (!hasAny) {
+        throw new Error(
+          "No embedded textures found in the mesh. " +
+          "The model may use external texture references or only baseColorFactor. " +
+          "Provide a source asset with embedded textures, or enable 'Re-atlas UVs'.",
+        );
+      }
+    }
+
+    onProgress?.("encoding", 0.9);
+    await doc.transform(dedup(), prune());
+    return io.writeBinary(doc);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Re-atlas mode — run xatlas + rasterise textures into new UV space.
+  // ---------------------------------------------------------------------------
   const xatlasModule = await createXAtlas();
 
   for (const mesh of doc.getRoot().listMeshes()) {
     for (const prim of mesh.listPrimitives()) {
       if (!prim.getIndices() || !prim.getAttribute("POSITION")) continue;
 
-      // Per-primitive material — each prim may reference different textures
+      // Per-primitive material — each prim may reference different textures.
       const mat = prim.getMaterial() ?? null;
 
       onProgress?.("decoding textures", 0.05);
@@ -130,8 +208,12 @@ export async function unwrapAndBake(
         bakeMaps.includes("ao")     ? decodeTex(mat?.getOcclusionTexture()) : Promise.resolve(null),
       ]);
 
-      // Skip prims with no embedded textures — avoid replacing valid UVs with a useless atlas
-      if (!albedoSrc && !normalSrc && !aoSrc) continue;
+      if (!albedoSrc && !normalSrc && !aoSrc) {
+        throw new Error(
+          "No embedded textures found in the mesh for re-atlasing. " +
+          "Switch to 'Preserve original UVs' mode, or provide a source asset with embedded textures.",
+        );
+      }
 
       const rawPos = prim.getAttribute("POSITION")!.getArray()!;
       const rawIdx = prim.getIndices()!.getArray()!;
@@ -141,21 +223,28 @@ export async function unwrapAndBake(
       const indices   = rawIdx instanceof Uint32Array  ? rawIdx  : Uint32Array.from(rawIdx as ArrayLike<number>);
       const origUVs   = rawUV instanceof Float32Array  ? rawUV   : (rawUV ? Float32Array.from(rawUV as ArrayLike<number>) : null);
 
-      // Run xatlas to generate a new packed UV atlas
       onProgress?.("running xatlas", 0.15);
       const atlas = xatlasModule.createAtlas();
       const addErr = atlas.addMesh({ positions, indices });
       if (addErr !== 0) {
         atlas.destroy();
-        throw new Error(`xatlas error: ${xatlasModule.addMeshErrorString(addErr)}`);
+        throw new Error(`xatlas addMesh error: ${xatlasModule.addMeshErrorString(addErr)}`);
       }
       atlas.generate(
         { maxCost: 2, normalSeamWeight: 4, maxIterations: 1 },
         { resolution: ATLAS_SIZE, padding: 4, bilinear: true },
       );
-      onProgress?.("uv atlas done", 0.25);
 
       const outMesh = atlas.getMesh(0);
+      if (outMesh.vertexCount === 0 || outMesh.indexCount === 0) {
+        atlas.destroy();
+        throw new Error(
+          `xatlas produced an empty mesh (${indices.length / 3} input triangles). ` +
+          "The mesh may contain degenerate triangles. Try 'Preserve original UVs' mode instead.",
+        );
+      }
+      onProgress?.("uv atlas done", 0.25);
+
       const outVC = outMesh.vertexCount;
 
       // New UV coordinates (normalised to [0, 1])
@@ -192,7 +281,7 @@ export async function unwrapAndBake(
           [newUVs[i2 * 2] * ATLAS_SIZE, newUVs[i2 * 2 + 1] * ATLAS_SIZE],
         ];
 
-        // Original UVs via xref — maps xatlas output vertex → input vertex index
+        // Original UVs via xref — maps xatlas output vertex → input vertex index.
         const getOrigUV = (outIdx: number): [number, number] => {
           if (!origUVs) return [0, 0];
           const src = outMesh.vertices[outIdx].xref;
@@ -207,7 +296,7 @@ export async function unwrapAndBake(
         }
       }
 
-      // Encode baked pixels to PNG and embed as new material textures
+      // Encode baked pixels to PNG and embed as new material textures.
       onProgress?.("encoding", 0.88);
       for (const { pixels, name } of bakedPixelSets) {
         // Buffer.from(pixels) respects byteOffset; Buffer.from(pixels.buffer) would not.
@@ -227,7 +316,7 @@ export async function unwrapAndBake(
         if (name === "ao"     && mat) mat.setOcclusionTexture(newTex);
       }
 
-      // Expand all vertex attributes to the xatlas output vertex count
+      // Expand all vertex attributes to the xatlas output vertex count.
       for (const semantic of prim.listSemantics()) {
         if (semantic === "TEXCOORD_0") continue;
         const acc = prim.getAttribute(semantic)!;
@@ -243,7 +332,7 @@ export async function unwrapAndBake(
         acc.setArray(expanded as unknown as Parameters<typeof acc.setArray>[0]);
       }
 
-      // Write new UV layout and expanded index buffer
+      // Write new UV layout and expanded index buffer.
       const existingUVAcc = prim.getAttribute("TEXCOORD_0");
       if (existingUVAcc) {
         existingUVAcc.setArray(newUVs);

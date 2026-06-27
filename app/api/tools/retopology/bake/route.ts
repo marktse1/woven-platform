@@ -13,9 +13,11 @@ export async function POST(req: NextRequest) {
       userId: string;
       loResAssetId: string;
       bakeMaps?: string[];
+      reAtlas?: boolean;
+      sourceAssetId?: string;
     };
 
-    const { userId, loResAssetId, bakeMaps } = body;
+    const { userId, loResAssetId, bakeMaps, reAtlas = false, sourceAssetId } = body;
     if (!userId || !loResAssetId) {
       return NextResponse.json({ error: "userId and loResAssetId required" }, { status: 400 });
     }
@@ -25,7 +27,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Storage not configured" }, { status: 503 });
     }
 
-    // Verify ownership and get the storage path
+    // Verify ownership and get the storage path.
     const { data: asset, error: assetErr } = await admin
       .from("creator_assets")
       .select("id, name, storage_path")
@@ -36,7 +38,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Asset not found or access denied" }, { status: 404 });
     }
 
-    // Download the lo-res GLB from storage
+    // Download the lo-res GLB from storage.
     const { data: fileBlob, error: dlErr } = await admin.storage
       .from(BUCKET)
       .download(asset.storage_path as string);
@@ -47,30 +49,53 @@ export async function POST(req: NextRequest) {
     const inputBuf = await fileBlob.arrayBuffer();
     const maps = bakeMaps ?? ["albedo", "normal", "ao"];
 
-    // Stream NDJSON progress events to the client
+    // Optionally download the source (hi-res) asset for texture data.
+    let texSourceBuf: ArrayBuffer | undefined;
+    if (sourceAssetId && sourceAssetId !== loResAssetId) {
+      const { data: srcAsset } = await admin
+        .from("creator_assets")
+        .select("storage_path")
+        .eq("id", sourceAssetId)
+        .eq("clerk_user_id", userId)
+        .single();
+      if (srcAsset) {
+        const { data: srcBlob } = await admin.storage
+          .from(BUCKET)
+          .download(srcAsset.storage_path as string);
+        if (srcBlob) texSourceBuf = await srcBlob.arrayBuffer();
+      }
+    }
+
+    // Stream NDJSON progress events to the client.
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
         const send = (obj: object) =>
           controller.enqueue(encoder.encode(JSON.stringify(obj) + "\n"));
 
+        // Fire immediately so the progress bar appears right away.
+        send({ stage: "starting", progress: 0.01 });
+
         try {
           const output = await unwrapAndBake(inputBuf, {
             bakeMaps: maps,
+            reAtlas,
+            texSourceBuf,
             onProgress: (stage, progress) => send({ stage, progress }),
           });
 
           send({ stage: "uploading", progress: 0.95 });
 
           const baseName = (asset.name as string).replace(/\.(glb|gltf)$/i, "");
-          const outputName = `${baseName}-baked.glb`;
+          const suffix = reAtlas ? "-baked" : "-textured";
+          const outputName = `${baseName}${suffix}.glb`;
           const safeName = outputName.replace(/[^a-zA-Z0-9._-]/g, "_");
           const outputId = crypto.randomUUID();
           const outputPath = `${userId}/${outputId}-${safeName}`;
 
           const { error: upErr } = await admin.storage
             .from(BUCKET)
-            .upload(outputPath, new Blob([output], { type: "model/gltf-binary" }), {
+            .upload(outputPath, new Blob([output.buffer as ArrayBuffer], { type: "model/gltf-binary" }), {
               contentType: "model/gltf-binary",
               upsert: false,
             });
@@ -88,7 +113,7 @@ export async function POST(req: NextRequest) {
               storage_path: outputPath,
               file_bytes: output.byteLength,
               poly_count: null,
-              meta: { pipelineOp: "bake", bakeMaps: maps },
+              meta: { pipelineOp: "bake", bakeMaps: maps, reAtlas },
             })
             .select("id")
             .single();

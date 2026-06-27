@@ -42,11 +42,16 @@ function GradArt({ a, b, className = "" }: { a: string; b: string; className?: s
   );
 }
 
+type StripeConnectStatus = "loading" | "not_started" | "pending" | "active";
+
 export default function DashboardPage() {
   const { user, isLoaded } = useUser();
   const [activeFilter, setActiveFilter] = useState("All");
   const [creatorStatus, setCreatorStatus] = useState<"loading" | "none" | "pending" | "approved" | "rejected">("loading");
   const [projects, setProjects] = useState<Project[]>([]);
+  const [stripeStatus, setStripeStatus] = useState<StripeConnectStatus>("loading");
+  const [stripePendingCents, setStripePendingCents] = useState(0);
+  const [stripeConnecting, setStripeConnecting] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -100,6 +105,50 @@ export default function DashboardPage() {
     load();
     return () => { active = false; };
   }, [isLoaded, user?.id]);
+
+  // Load Stripe Connect status
+  useEffect(() => {
+    if (!isLoaded || !user?.id) return;
+    fetch("/api/stripe/connect/status")
+      .then(r => r.json())
+      .then((data: { status: string; pending_cents?: number }) => {
+        setStripeStatus(data.status as StripeConnectStatus);
+        setStripePendingCents(data.pending_cents ?? 0);
+      })
+      .catch(() => setStripeStatus("not_started"));
+  }, [isLoaded, user?.id]);
+
+  // On return from Stripe onboarding, trigger pending payout then refresh status
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const connect = params.get("connect");
+    if (connect === "success" || connect === "refresh") {
+      if (connect === "success") {
+        fetch("/api/stripe/connect/payout-pending", { method: "POST" }).catch(() => null);
+      }
+      fetch("/api/stripe/connect/status")
+        .then(r => r.json())
+        .then((data: { status: string; pending_cents?: number }) => {
+          setStripeStatus(data.status as StripeConnectStatus);
+          setStripePendingCents(data.pending_cents ?? 0);
+        })
+        .catch(() => null);
+      // Clean URL without reload
+      window.history.replaceState({}, "", "/dashboard");
+    }
+  }, []);
+
+  async function handleConnectStripe() {
+    setStripeConnecting(true);
+    try {
+      const res = await fetch("/api/stripe/connect/onboard", { method: "POST" });
+      const data = await res.json() as { url?: string };
+      if (data.url) window.location.href = data.url;
+    } finally {
+      setStripeConnecting(false);
+    }
+  }
 
   const creatorBadge = useMemo(() => {
     if (creatorStatus === "approved") return { label: "Verified creator", color: "#a6e06a", bg: "rgba(123,194,74,.16)" };
@@ -233,16 +282,72 @@ export default function DashboardPage() {
 
           {/* Sidebar */}
           <aside className="sticky top-4 flex flex-col gap-4">
-            {/* Payout */}
-            <div className="bg-panel border border-line rounded-[10px] p-5">
-              <p className="text-[12.5px] font-bold tracking-[.12em] uppercase text-muted mb-2">Next payout</p>
-              <div className="text-[32px] font-extrabold tracking-[-0.02em] text-dim">—</div>
-              <div className="text-[12.5px] text-dim mt-0.5">Connect Stripe to see payouts</div>
-              <div className="flex items-center gap-2 text-[12.5px] text-muted mt-3.5 pt-3.5 border-t border-line">
-                <strong style={{ color: "#9aa8ff" }}>stripe</strong> not connected
-                <a className="text-accent font-semibold ml-auto cursor-pointer">Connect</a>
+            {/* Payout / Stripe Connect */}
+            {stripeStatus === "active" ? (
+              <div className="bg-panel border border-line rounded-[10px] p-5">
+                <p className="text-[12.5px] font-bold tracking-[.12em] uppercase text-muted mb-2">Payouts</p>
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="w-2 h-2 rounded-full bg-[#7bc24a]" />
+                  <span className="text-[13px] font-semibold text-[#a6e06a]">Stripe connected</span>
+                </div>
+                {stripePendingCents > 0 && (
+                  <div className="text-[12.5px] text-amber-300 mb-3">
+                    ${(stripePendingCents / 100).toFixed(2)} in pending earnings transferred to your account.
+                  </div>
+                )}
+                <a
+                  href="https://connect.stripe.com/express_login"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[12.5px] text-accent font-semibold no-underline hover:underline"
+                >
+                  Open Stripe dashboard →
+                </a>
               </div>
-            </div>
+            ) : stripeStatus === "pending" ? (
+              <div className="bg-panel border border-line rounded-[10px] p-5">
+                <p className="text-[12.5px] font-bold tracking-[.12em] uppercase text-muted mb-2">Stripe onboarding</p>
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                  <span className="text-[13px] font-semibold text-amber-300">In progress</span>
+                </div>
+                <div className="text-[12.5px] text-dim mb-3">Complete your Stripe onboarding to start receiving payouts.</div>
+                <button
+                  onClick={handleConnectStripe}
+                  disabled={stripeConnecting}
+                  className="text-[12.5px] text-accent font-semibold cursor-pointer disabled:opacity-50"
+                >
+                  {stripeConnecting ? "Loading…" : "Resume onboarding →"}
+                </button>
+              </div>
+            ) : (
+              <div className="bg-panel border border-line rounded-[10px] p-5">
+                <p className="text-[12.5px] font-bold tracking-[.12em] uppercase text-muted mb-2">Payouts</p>
+                {stripePendingCents > 0 ? (
+                  <>
+                    <div className="text-[28px] font-extrabold tracking-[-0.02em] text-amber-300">
+                      ${(stripePendingCents / 100).toFixed(2)}
+                    </div>
+                    <div className="text-[12.5px] text-amber-300/80 mt-0.5 mb-3">pending earnings waiting for you</div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-[32px] font-extrabold tracking-[-0.02em] text-dim">—</div>
+                    <div className="text-[12.5px] text-dim mt-0.5 mb-3">Connect Stripe to receive payouts</div>
+                  </>
+                )}
+                <div className="mt-3.5 pt-3.5 border-t border-line">
+                  <button
+                    onClick={handleConnectStripe}
+                    disabled={stripeConnecting}
+                    className="w-full py-2 rounded-[9px] text-[13px] font-bold text-white disabled:opacity-50 cursor-pointer transition-opacity"
+                    style={{ background: "linear-gradient(180deg, #635bff, #4b44d6)" }}
+                  >
+                    {stripeConnecting ? "Loading…" : stripePendingCents > 0 ? "Connect Stripe to claim earnings" : "Connect Stripe"}
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Apply card */}
             <div className="border border-line rounded-[10px] p-5"

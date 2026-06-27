@@ -33,6 +33,10 @@ export async function POST(request: Request) {
           game_id,
           source: "purchase",
           stripe_payment_intent_id: intent.id,
+          payment_intent_id: intent.id,
+          // If transfer_data is set, creator was paid immediately; otherwise held
+          creator_paid_out: !!intent.transfer_data?.destination,
+          creator_amount_cents: Math.round(intent.amount * 0.88),
         }, { onConflict: "clerk_user_id,game_id" });
       }
       break;
@@ -64,6 +68,19 @@ export async function POST(request: Request) {
           .from("pass_subscriptions")
           .update({ status: "canceled" })
           .eq("clerk_user_id", clerk_user_id);
+      }
+      break;
+    }
+
+    // Creator's Stripe Connect account updated — sync charges_enabled flag
+    case "account.updated": {
+      const account = event.data.object as Stripe.Account;
+      const clerk_user_id = (account.metadata as Record<string, string> | null)?.clerk_user_id;
+      if (clerk_user_id && supabase) {
+        await supabase
+          .from("creator_profiles")
+          .update({ stripe_charges_enabled: account.charges_enabled })
+          .eq("stripe_account_id", account.id);
       }
       break;
     }

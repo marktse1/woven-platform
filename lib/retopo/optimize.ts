@@ -112,12 +112,34 @@ function selectTrianglesByGrid(
   return out;
 }
 
+// UV weight used when including texture coordinates in the error metric.
+// A large UV jump (at a UV seam) has the same cost as a proportionally large
+// position jump, making the simplifier strongly prefer NOT to collapse edges
+// that cross UV seams.
+const UV_SEAM_WEIGHT = 2.0;
+
 function decimatePrimIndices(
   srcIndices: Uint32Array,
   srcPositions: Float32Array,
+  srcUVs: Float32Array | null,
   targetIndexCount: number,
 ): Uint32Array {
-  const [dstIndices] = MeshoptSimplifier.simplify(srcIndices, srcPositions, 3, targetIndexCount, 1);
+  let dstIndices: Uint32Array;
+
+  if (srcUVs && srcUVs.length === (srcPositions.length / 3) * 2) {
+    // Include UV coordinates in the simplification error metric so the
+    // simplifier avoids collapsing edges that cross UV seams. Without this,
+    // the simplifier picks up half of a seam and the surviving vertex ends up
+    // with the wrong UV for the triangles that referenced the removed vertex.
+    [dstIndices] = MeshoptSimplifier.simplifyWithAttributes(
+      srcIndices, srcPositions, 3,
+      srcUVs, 2, [UV_SEAM_WEIGHT, UV_SEAM_WEIGHT],
+      null,
+      targetIndexCount, 1,
+    );
+  } else {
+    [dstIndices] = MeshoptSimplifier.simplify(srcIndices, srcPositions, 3, targetIndexCount, 1);
+  }
 
   if (dstIndices.length > srcIndices.length * 0.9) {
     // Edge-collapse found no collapsible edges (flat-shaded / fully disconnected mesh).
@@ -207,10 +229,14 @@ export async function optimizeGlb(
       const srcIndices = rawIndices instanceof Uint32Array ? rawIndices : Uint32Array.from(rawIndices);
       const srcPositions = rawPositions instanceof Float32Array ? rawPositions : Float32Array.from(rawPositions);
 
+      // Extract UV coordinates for seam-aware simplification.
+      const rawUVs = prim.getAttribute("TEXCOORD_0")?.getArray() ?? null;
+      const srcUVs = rawUVs ? (rawUVs instanceof Float32Array ? rawUVs : Float32Array.from(rawUVs as ArrayLike<number>)) : null;
+
       const targetIndexCount = Math.max(12, Math.round((srcIndices.length / 3) * ratio) * 3);
       if (targetIndexCount >= srcIndices.length) continue;
 
-      const finalIndices = decimatePrimIndices(srcIndices, srcPositions, targetIndexCount);
+      const finalIndices = decimatePrimIndices(srcIndices, srcPositions, srcUVs, targetIndexCount);
 
       // Output indices reference the N-welded vertex space — UVs stay attached.
       indicesAccessor.setArray(new Uint32Array(finalIndices));
@@ -354,6 +380,10 @@ export async function optimizeGlbAdaptive(
       const srcIndices = rawIndices instanceof Uint32Array ? rawIndices : Uint32Array.from(rawIndices);
       const srcPositions = rawPositions instanceof Float32Array ? rawPositions : Float32Array.from(rawPositions);
 
+      // Extract UV coordinates for seam-aware simplification.
+      const rawUVs = prim.getAttribute("TEXCOORD_0")?.getArray() ?? null;
+      const srcUVs = rawUVs ? (rawUVs instanceof Float32Array ? rawUVs : Float32Array.from(rawUVs as ArrayLike<number>)) : null;
+
       const targetIndexCount = Math.max(12, Math.round((srcIndices.length / 3) * ratio) * 3);
       if (targetIndexCount >= srcIndices.length) continue;
 
@@ -377,15 +407,29 @@ export async function optimizeGlbAdaptive(
         }
       }
 
+      // Interleave curvature + UV into a single attribute array so the simplifier
+      // penalises both high-curvature collapses AND UV-seam crossings.
+      const hasUVs = srcUVs && srcUVs.length === nwv * 2;
+      const attribStride = hasUVs ? 3 : 1;
+      const nWeldedAttribs = new Float32Array(nwv * attribStride);
+      const attribWeights: number[] = hasUVs ? [curvatureWeight, UV_SEAM_WEIGHT, UV_SEAM_WEIGHT] : [curvatureWeight];
+      for (let v = 0; v < nwv; v++) {
+        nWeldedAttribs[v * attribStride] = nWeldedCurvature[v];
+        if (hasUVs) {
+          nWeldedAttribs[v * attribStride + 1] = srcUVs![v * 2];
+          nWeldedAttribs[v * attribStride + 2] = srcUVs![v * 2 + 1];
+        }
+      }
+
       // Attempt attribute-weighted simplification on the N-welded (original) mesh.
       // Works for smooth-shaded meshes; for flat-shaded (no connectivity) it no-ops.
       const [dstIndices] = MeshoptSimplifier.simplifyWithAttributes(
         srcIndices,
         srcPositions,
         3,
-        nWeldedCurvature,
-        1,
-        [curvatureWeight],
+        nWeldedAttribs,
+        attribStride,
+        attribWeights,
         nWeldedLock,
         targetIndexCount,
         1,

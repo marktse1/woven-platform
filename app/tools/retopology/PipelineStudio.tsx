@@ -454,10 +454,32 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                     />
                   );
                 })()}
+                {/* Preserve-UV toggle — affects both decimation seam weighting and bake mode */}
+                <button
+                  onClick={() => setReAtlas((v) => !v)}
+                  className="flex items-center gap-2 w-full mt-3 mb-2 text-left"
+                  role="switch"
+                  aria-checked={!reAtlas}
+                >
+                  <span
+                    className="relative inline-flex shrink-0 h-4 w-7 rounded-full transition-colors duration-200"
+                    style={{ background: !reAtlas ? "#e2562a" : "#3a3530" }}
+                  >
+                    <span
+                      className="inline-block h-3 w-3 rounded-full bg-[#f2ede3] transition-transform duration-200 mt-0.5"
+                      style={{ transform: !reAtlas ? "translateX(14px)" : "translateX(2px)" }}
+                    />
+                  </span>
+                  <span className="text-[11.5px]" style={{ color: "#9b9082" }}>
+                    {!reAtlas
+                      ? "Preserve original UV layout — bake copies textures from source"
+                      : "Allow UV remapping — bake will re-atlas UVs with xatlas"}
+                  </span>
+                </button>
                 <button
                   onClick={applyDecimate}
                   disabled={busy || !workingBuf}
-                  className="w-full mt-3 py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
+                  className="w-full py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
                   style={{ background: "#e2562a", color: "#fff3ec" }}
                 >
                   Apply
@@ -497,8 +519,8 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
               <StepCard
                 title={`${isCharacter ? 4 : 3} · Bake Textures`}
                 description={reAtlas
-                  ? "Re-atlas UVs with xatlas then rasterise textures into the new atlas space. Needed after retopology."
-                  : "Embed the original textures with the existing UV layout preserved. Fast — correct for post-decimation models."}
+                  ? "Re-atlas UVs with xatlas, then rasterise textures from the original source into the new UV space."
+                  : "Copy textures from the original source into the decimated mesh. Fast — UV layout is already preserved."}
               >
                 <div className="flex flex-wrap gap-1.5 mb-3">
                   {BAKE_OPTIONS.map((m) => {
@@ -515,27 +537,6 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                     );
                   })}
                 </div>
-
-                {/* Re-atlas toggle */}
-                <button
-                  onClick={() => setReAtlas((v) => !v)}
-                  className="flex items-center gap-2 w-full mb-3 text-left"
-                  role="switch"
-                  aria-checked={reAtlas}
-                >
-                  <span
-                    className="relative inline-flex shrink-0 h-4 w-7 rounded-full transition-colors duration-200"
-                    style={{ background: reAtlas ? "#e2562a" : "#3a3530" }}
-                  >
-                    <span
-                      className="inline-block h-3 w-3 rounded-full bg-[#f2ede3] transition-transform duration-200 mt-0.5"
-                      style={{ transform: reAtlas ? "translateX(14px)" : "translateX(2px)" }}
-                    />
-                  </span>
-                  <span className="text-[11.5px]" style={{ color: "#9b9082" }}>
-                    {reAtlas ? "Re-atlas UVs (xatlas) — for post-retopo" : "Preserve original UVs — fast, for post-decimate"}
-                  </span>
-                </button>
 
                 <button
                   onClick={applyBake}

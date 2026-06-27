@@ -95,7 +95,7 @@ export async function POST(req: NextRequest) {
 
           const { error: upErr } = await admin.storage
             .from(BUCKET)
-            .upload(outputPath, new Blob([output.buffer as ArrayBuffer], { type: "model/gltf-binary" }), {
+            .upload(outputPath, new Blob([Buffer.from(output)], { type: "model/gltf-binary" }), {
               contentType: "model/gltf-binary",
               upsert: false,
             });

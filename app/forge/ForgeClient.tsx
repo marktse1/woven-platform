@@ -49,11 +49,15 @@ const ENGINE_OPTIONS = [
 const DEV_TOOL_DOTS: Record<string, string> = {
   retopology: "#7bc24a",
   "substance-weaver": "#e8a056",
+  "mesh-sculptor": "#c47be8",
+  shaderade: "#e8875a",
 };
 
 const DEV_TOOL_LOGOS: Record<string, string> = {
   retopology: "/mesh_loom.png",
   "substance-weaver": "/substance_weaver.png",
+  "mesh-sculptor": "/mesh_sculptor.png",
+  shaderade: "/shaderade.png",
 };
 
 function joinUrl(base: string, entryFile: string) {

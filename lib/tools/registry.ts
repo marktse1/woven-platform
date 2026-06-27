@@ -30,6 +30,30 @@ export const NATIVE_TOOLS: ToolDef[] = [
     accent: "#56a6e8",
     badge: "New",
   },
+  {
+    slug: "shaderade",
+    name: "Shaderade",
+    summary: "Visual node graph shader editor. Wire together inputs, math, and textures — export ready-to-paste GLSL for Three.js, Babylon.js, or PlayCanvas.",
+    icon: "🌈",
+    category: "utility",
+    kind: "native",
+    access: "creators",
+    href: "/tools/shaderade",
+    accent: "#e8875a",
+    badge: "New",
+  },
+  {
+    slug: "mesh-sculptor",
+    name: "Mesh Sculptor",
+    summary: "Sculpt and refine mesh geometry with brush-based vertex displacement. Push, pull, smooth, and flatten directly on your 3D model.",
+    icon: "🫧",
+    category: "modeling",
+    kind: "native",
+    access: "creators",
+    href: "/tools/mesh-sculptor",
+    accent: "#c47be8",
+    badge: "New",
+  },
 ];
 
 // ---------------------------------------------------------------------------

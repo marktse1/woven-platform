@@ -163,9 +163,10 @@ export default function SculptViewer({
     channelMatsRef.current.forEach(m => m.dispose());
     channelMatsRef.current = [];
     group.traverse((o) => {
+      // Handle wire overlays first — LineSegments are not isMesh
+      if (o.name === "__wire") { o.visible = vm === "wireframe"; return; }
       const m = o as THREE.Mesh;
       if (!m.isMesh) return;
-      if (m.name === "__wire") { m.visible = vm === "wireframe"; return; }
       const orig = originalMaterialsRef.current.get(m.uuid);
       if (orig !== undefined) m.material = orig;
     });

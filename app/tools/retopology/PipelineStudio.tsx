@@ -26,7 +26,8 @@ import {
   needsRetopoWorker,
   type Classification,
 } from "@/lib/retopo/optimize";
-import { segmentByConnectivity } from "@/lib/retopo/segment";
+import { segmentByConnectivity, type Segment } from "@/lib/retopo/segment";
+import { stripSegments } from "@/lib/retopo/strip";
 import type { SegmentationOverlay, TextureChannel } from "@/components/tools/ModelViewer";
 import { BAKE_OPTIONS } from "@/lib/retopo/optimize";
 import StepCard from "./StepCard";
@@ -88,6 +89,8 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
   const [bakeStage, setBakeStage] = useState("");
 
   const [segmentation, setSegmentation] = useState<SegmentationOverlay | null>(null);
+  const [segments, setSegments] = useState<Segment[]>([]);
+  const [excludedSegIds, setExcludedSegIds] = useState<Set<number>>(new Set());
   const [textureChannel, setTextureChannel] = useState<TextureChannel | null>(null);
   const [wireframe, setWireframe] = useState(false);
   const [showGrid, setShowGrid] = useState(true);
@@ -266,6 +269,8 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
     try {
       const result = await segmentByConnectivity(workingBuf);
       setSegmentation({ trianglePerSegment: result.trianglePerSegment });
+      setSegments(result.segments);
+      setExcludedSegIds(new Set());
 
       const step = await appendTier1Step({
         sessionId: session.id,
@@ -284,6 +289,43 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
       setBusy(false);
     }
   }, [session, workingBuf, userId, currentAssetId]);
+
+  const applyMask = useCallback(async () => {
+    if (!session || !workingBuf || excludedSegIds.size === 0 || !segmentation) return;
+    setBusy(true);
+    setError("");
+    setStatus("Removing masked segments…");
+    try {
+      const stripped = await stripSegments(workingBuf, segmentation.trianglePerSegment, excludedSegIds);
+      const resultPolys = await countGlbTriangles(stripped);
+      const step = await appendTier1Step({
+        sessionId: session.id,
+        userId,
+        op: "mask",
+        inputAssetId: currentAssetId,
+        outputName: `${(asset?.name ?? "model").replace(/\.(glb|gltf)$/i, "")}-masked${steps.length + 1}.glb`,
+        outputBytes: stripped,
+        outputPolyCount: resultPolys,
+        params: { excludedSegments: Array.from(excludedSegIds) },
+        stats: { removedSegments: excludedSegIds.size, resultPolys },
+      });
+      const viewerBytes = await fetchAssetBytes(step.output_asset_id!);
+      setSteps((prev) => [...prev, step]);
+      setSession((prev) => (prev ? { ...prev, current_asset_id: step.output_asset_id, current_step_id: step.id } : prev));
+      setWorkingBuf(viewerBytes);
+      setWorkingPolys(resultPolys);
+      setSegmentation(null);
+      setSegments([]);
+      setExcludedSegIds(new Set());
+      setCompareToSource(false);
+      setStatus(`Removed ${excludedSegIds.size} segment${excludedSegIds.size === 1 ? "" : "s"} — ${resultPolys.toLocaleString()} tris remain.`);
+      onAssetCreated?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Mask failed.");
+    } finally {
+      setBusy(false);
+    }
+  }, [session, workingBuf, excludedSegIds, segmentation, userId, asset?.name, steps.length, currentAssetId]);
 
   const applyRetopo = useCallback(async () => {
     if (!session) return;
@@ -483,8 +525,65 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                 >
                   Apply
                 </button>
-                {segmentation && (
-                  <p className="text-[11.5px] mt-2" style={{ color: "#c7bfb2" }}>Overlay is showing in the viewer — toggle off with the wireframe controls.</p>
+                {segmentation && segments.length > 0 && (
+                  <div className="mt-3">
+                    <p className="text-[11px] font-medium mb-2" style={{ color: "#c7bfb2" }}>
+                      Uncheck segments to remove (accessories, inner geo, props):
+                    </p>
+                    <div className="space-y-1 max-h-52 overflow-y-auto pr-1">
+                      {segments.map((seg) => {
+                        const excluded = excludedSegIds.has(seg.id);
+                        return (
+                          <button
+                            key={seg.id}
+                            onClick={() =>
+                              setExcludedSegIds((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(seg.id)) next.delete(seg.id);
+                                else next.add(seg.id);
+                                return next;
+                              })
+                            }
+                            className="w-full text-left flex items-center gap-2 px-2 py-1.5 rounded-[7px] border transition-colors"
+                            style={{
+                              borderColor: excluded ? "rgba(227,92,92,.4)" : "rgba(255,255,255,.06)",
+                              background: excluded ? "rgba(227,92,92,.08)" : "#26231f",
+                            }}
+                          >
+                            <span
+                              className="w-3 h-3 rounded-sm border flex-shrink-0 flex items-center justify-center text-[8px]"
+                              style={{
+                                borderColor: excluded ? "#e85c5c" : "#4a4540",
+                                background: excluded ? "rgba(227,92,92,.3)" : "transparent",
+                                color: "#e88",
+                              }}
+                            >
+                              {excluded ? "✕" : ""}
+                            </span>
+                            <span
+                              className="text-[11.5px] truncate flex-1"
+                              style={{ color: excluded ? "#e88" : "#c7bfb2" }}
+                            >
+                              {seg.materialName ?? `Segment ${seg.id + 1}`}
+                            </span>
+                            <span className="text-[11px] flex-shrink-0" style={{ color: "#6b6460" }}>
+                              {seg.triangleCount.toLocaleString()} tris
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {excludedSegIds.size > 0 && (
+                      <button
+                        onClick={applyMask}
+                        disabled={busy}
+                        className="w-full mt-3 py-2 rounded-[9px] font-bold text-[13px] border disabled:opacity-50"
+                        style={{ borderColor: "rgba(227,92,92,.4)", background: "rgba(227,92,92,.1)", color: "#f0a6a6" }}
+                      >
+                        Remove {excludedSegIds.size} segment{excludedSegIds.size === 1 ? "" : "s"}
+                      </button>
+                    )}
+                  </div>
                 )}
               </StepCard>
 

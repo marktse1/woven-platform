@@ -38,7 +38,24 @@ export async function GET(request: Request) {
     .update({ status: "processing", started_at: new Date().toISOString() })
     .eq("id", job.id);
 
-  return Response.json({ job });
+  // Provide a short-lived signed URL so the worker can download the input GLB
+  // without needing direct Supabase credentials.
+  let inputSignedUrl: string | null = null;
+  if (job.source_asset_id) {
+    const { data: assetRow } = await admin
+      .from("creator_assets")
+      .select("storage_path")
+      .eq("id", job.source_asset_id)
+      .maybeSingle();
+    if (assetRow?.storage_path) {
+      const { data: urlData } = await admin.storage
+        .from("creator-assets")
+        .createSignedUrl(assetRow.storage_path, 3600);
+      inputSignedUrl = urlData?.signedUrl ?? null;
+    }
+  }
+
+  return Response.json({ job: { ...job, input_signed_url: inputSignedUrl } });
 }
 
 // PATCH: worker reports completion or failure for a job.

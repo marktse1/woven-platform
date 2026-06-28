@@ -81,6 +81,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
   const [workingPolys, setWorkingPolys] = useState(0);
 
   const [targetPolys, setTargetPolys] = useState(20000);
+  const [retopoTargetPolys, setRetopoTargetPolys] = useState(8000);
   const [decimateMode, setDecimateMode] = useState<"uniform" | "adaptive">("adaptive");
   const [bakeMaps, setBakeMaps] = useState<string[]>(["albedo", "normal", "ao"]);
   const [reAtlas] = useState(true);
@@ -338,7 +339,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
         op: "retopo",
         inputAssetId: currentAssetId,
         classification,
-        targetPolys,
+        targetPolys: retopoTargetPolys,
         mode: "retopo",
         adaptive: decimateMode === "adaptive",
       });
@@ -350,7 +351,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
     } finally {
       setBusy(false);
     }
-  }, [session, userId, currentAssetId, classification, targetPolys, decimateMode]);
+  }, [session, userId, currentAssetId, classification, retopoTargetPolys, decimateMode]);
 
   const applyBake = useCallback(async () => {
     if (!session || !workingBuf) return;
@@ -431,7 +432,12 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
     }
   }, [session, workingBuf, userId, currentAssetId, bakeMaps, reAtlas, asset?.id, asset?.name, steps.length, workingPolys]);
 
-  const pendingRetopo = pendingTier2.find((p) => p.step.op === "retopo")?.step.status ?? null;
+  const pendingRetopo = useMemo(() => {
+    const retopoSteps = steps.filter((s) => s.op === "retopo");
+    const last = retopoSteps[retopoSteps.length - 1];
+    if (!last || last.status === "done" || last.status === "failed") return null;
+    return last.status as "queued" | "processing";
+  }, [steps]);
 
   const reduction = useMemo(
     () => (sourcePolys && workingPolys ? Math.round((1 - workingPolys / sourcePolys) * 100) : 0),
@@ -587,24 +593,58 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                 )}
               </StepCard>
 
-              {isCharacter && (
-                <StepCard
-                  title="3 · Retopology + edge loops"
-                  description={`Quad-dominant remesh with proper edge loops for ${classification} animation, on the Forge worker.`}
+              <StepCard title="3 · Retopology" description="Quad-dominant remesh with proper edge loops on the Forge worker — best for characters and creatures." badge="Optional">
+                <div className="grid grid-cols-2 gap-1.5 mb-3">
+                  {CLASSIFICATIONS.map((c) => {
+                    const on = classification === c.value;
+                    return (
+                      <button
+                        key={c.value}
+                        onClick={() => setClassification(c.value)}
+                        className="text-left rounded-[8px] border px-2.5 py-2"
+                        style={{ borderColor: on ? ACCENT : "rgba(255,255,255,.08)", background: on ? "rgba(226,86,42,.10)" : "#26231f" }}
+                      >
+                        <span className="font-bold text-[12px] block mb-0.5" style={{ color: on ? "#f7e9df" : "#e2dbcf" }}>{c.label}</span>
+                        <div className="text-[10.5px] leading-snug" style={{ color: "#9b9082" }}>{c.blurb}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex items-center justify-between gap-2 mb-3">
+                  <span className="text-[12.5px]" style={{ color: "#c7bfb2" }}>Target triangles</span>
+                  <input
+                    type="number"
+                    min={200}
+                    step={100}
+                    value={retopoTargetPolys}
+                    onChange={(e) => { const n = Math.round(Number(e.target.value)); if (n > 0) setRetopoTargetPolys(n); }}
+                    onBlur={() => setRetopoTargetPolys((v) => Math.max(200, v))}
+                    className="w-[110px] bg-[#26231f] border border-[#3d3530] rounded-md px-2 py-1 text-right text-[14px] font-bold outline-none"
+                    style={{ color: "#f3946a" }}
+                  />
+                </div>
+                <button
+                  onClick={applyRetopo}
+                  disabled={busy || !!pendingRetopo}
+                  className="w-full py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
+                  style={{ background: "#e2562a", color: "#fff3ec" }}
                 >
-                  <button
-                    onClick={applyRetopo}
-                    disabled={busy || pendingRetopo === "queued" || pendingRetopo === "processing"}
-                    className="w-full py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
-                    style={{ background: "#e2562a", color: "#fff3ec" }}
-                  >
-                    {pendingRetopo === "queued" || pendingRetopo === "processing" ? "Queued on Forge worker…" : "Apply"}
-                  </button>
-                </StepCard>
-              )}
+                  {pendingRetopo ? "Queued on Forge worker…" : "Apply"}
+                </button>
+                {pendingRetopo && (
+                  <div className="mt-3">
+                    <div className="flex justify-between text-[11px] mb-1.5" style={{ color: "#9b9082" }}>
+                      <span>{pendingRetopo === "queued" ? "Waiting for Forge worker…" : "Processing on Forge worker…"}</span>
+                    </div>
+                    <div className="h-[3px] rounded-full overflow-hidden" style={{ background: "#26231f" }}>
+                      <div className="h-full rounded-full animate-pulse" style={{ width: "60%", background: "#e2562a" }} />
+                    </div>
+                  </div>
+                )}
+              </StepCard>
 
               <StepCard
-                title={`${isCharacter ? 4 : 3} · Bake Textures`}
+                title="4 · Bake Textures"
                 description={`Generates a new UV atlas with xatlas and transfers textures from the original source onto the decimated mesh — works regardless of UV changes.${asset ? ` Source: ${asset.name}` : ""}`}
               >
                 <div className="flex flex-wrap gap-1.5 mb-3">
@@ -649,31 +689,8 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
           </>
         </div>
 
-        {/* ---- right: classification + viewer + history ---- */}
+        {/* ---- right: viewer + history ---- */}
         <div className="flex flex-col gap-5">
-          <div className="rounded-[12px] p-5">
-            <p className="text-[11px] font-bold tracking-[.12em] uppercase mb-3" style={{ color: "#e8e1d5" }}>Retopology</p>
-            <p className="text-[12px] mb-3" style={{ color: "#c7bfb2" }}>
-              Choose the target topology rules. Biped and Creature modes preserve more geometry around the face, joints, and articulation points during decimation. Full quad retopology with animation-ready edgeloops (Forge worker) is queued for Biped and Creature — currently in preview.
-            </p>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
-              {CLASSIFICATIONS.map((c) => {
-                const on = classification === c.value;
-                return (
-                  <button
-                    key={c.value}
-                    onClick={() => setClassification(c.value)}
-                    className="text-left rounded-[10px] border p-3"
-                    style={{ borderColor: on ? ACCENT : "rgba(255,255,255,.08)", background: on ? "rgba(226,86,42,.10)" : "#2c2926" }}
-                  >
-                    <span className="font-bold text-[13px] block mb-1" style={{ color: on ? "#f7e9df" : "#e2dbcf" }}>{c.label}</span>
-                    <div className="text-[11px] leading-snug" style={{ color: "#c7bfb2" }}>{c.blurb}</div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
           <div className="rounded-[12px] overflow-hidden bg-[#241f1b]">
               <div className="flex items-center gap-2 px-4 py-3 border-b border-[#2a2420] flex-wrap">
                 <button

@@ -139,30 +139,31 @@ export default function RetopologyClient() {
               {assets.length === 0 ? (
                 <div className="text-[12.5px]" style={{ color: "#9b9082" }}>No assets yet. Drop a GLB to get started — private by default.</div>
               ) : (
-                <div className="flex flex-col gap-2 max-h-[520px] overflow-y-auto">
+                <div className="flex flex-col gap-1.5">
                   {assets.map((a) => (
                     <div
                       key={a.id}
-                      className="flex items-center gap-2.5 p-2.5 rounded-[9px] border"
+                      className="flex items-center gap-2 p-2.5 rounded-[9px] border transition-colors"
                       style={{
-                        background: openedAsset?.id === a.id ? "rgba(226,86,42,.08)" : "#2c2926",
-                        borderColor: openedAsset?.id === a.id ? "rgba(226,86,42,.45)" : "rgba(255,255,255,.08)",
+                        background: openedAsset?.id === a.id ? "rgba(226,86,42,.08)" : "transparent",
+                        borderColor: openedAsset?.id === a.id ? "rgba(226,86,42,.40)" : "rgba(255,255,255,.06)",
                       }}
                     >
                       <button onClick={() => setOpenedAsset(a)} className="min-w-0 flex-1 text-left">
                         <div className="font-semibold text-[13px] truncate" style={{ color: openedAsset?.id === a.id ? "#f7e9df" : "#e2dbcf" }}>{a.name}</div>
-                        <div className="text-[11.5px]" style={{ color: openedAsset?.id === a.id ? "#a89c8c" : "#8e8579" }}>{fmt(a.poly_count)} tris · {bytes(a.file_bytes)}{a.clerk_user_id !== user?.id ? " · shared" : ""}</div>
+                        <div className="text-[11px] mt-0.5" style={{ color: "#6b6460" }}>{fmt(a.poly_count)} tris · {bytes(a.file_bytes)}{a.clerk_user_id !== user?.id ? " · shared" : ""}</div>
                       </button>
                       {a.clerk_user_id === user?.id ? (
                         <>
                           <select
                             value={a.visibility}
                             onChange={(e) => setAssetVisibility(a.id, e.target.value as Visibility, a.shared_with).then(refreshLibrary)}
-                            className="rounded-md px-1.5 py-1 text-[11.5px]"
+                            className="appearance-none rounded-md px-1.5 py-1 text-[11.5px]"
                             style={{
                               background: "#2c2926",
-                              border: `1px solid ${openedAsset?.id === a.id ? "rgba(226,86,42,.45)" : "rgba(255,255,255,0.08)"}`,
-                              color: openedAsset?.id === a.id ? "#f3946a" : "#9b9082",
+                              border: `1px solid ${openedAsset?.id === a.id ? "rgba(226,86,42,.45)" : "rgba(255,255,255,0.12)"}`,
+                              color: "#f3946a",
+                              WebkitAppearance: "none",
                             }}
                           >
                             <option value="private">Private</option>

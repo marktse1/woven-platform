@@ -31,7 +31,7 @@ const PaintViewer = dynamic(() => import("@/components/tools/PaintViewer"), {
 const DEFAULT_TEXTURE_SIZE = 1024;
 
 type Props = {
-  asset: AssetRow;
+  asset: AssetRow | null;
   userId: string;
   onBack: () => void;
   onAssetCreated?: () => void;
@@ -70,6 +70,17 @@ export default function PaintStudio({ asset, userId, onBack, onAssetCreated }: P
   const [error, setError] = useState("");
 
   useEffect(() => {
+    if (!asset) {
+      setSourceBuf(null);
+      setSeedAlbedo(null);
+      setSeedBaseNormal(null);
+      setSeedAO(null);
+      setSeedMetallicRoughness(null);
+      setBusy(false);
+      setError("");
+      setStatus("");
+      return;
+    }
     let active = true;
     (async () => {
       setBusy(true);
@@ -124,10 +135,10 @@ export default function PaintStudio({ asset, userId, onBack, onAssetCreated }: P
     return () => {
       active = false;
     };
-  }, [asset.id, asset.storage_path]);
+  }, [asset?.id, asset?.storage_path]);
 
   const handleSave = useCallback(async () => {
-    if (!sourceBuf) return;
+    if (!asset || !sourceBuf) return;
     setBusy(true);
     setError("");
     setStatus("Saving…");
@@ -165,17 +176,19 @@ export default function PaintStudio({ asset, userId, onBack, onAssetCreated }: P
     } finally {
       setBusy(false);
     }
-  }, [sourceBuf, userId, asset.id, asset.name, asset.poly_count]);
+  }, [sourceBuf, userId, asset?.id, asset?.name, asset?.poly_count]);
 
   return (
     <div className="flex flex-col gap-5">
-      <div className="flex items-center gap-3">
-        <button onClick={onBack} className="text-[12px] text-dim hover:text-ink">
-          ← Library
-        </button>
-        <span className="text-dim">/</span>
-        <div className="text-[13px] font-bold truncate max-w-[28ch]">{asset.name}</div>
-      </div>
+      {asset && (
+        <div className="flex items-center gap-3">
+          <button onClick={onBack} className="text-[12px] text-dim hover:text-ink">
+            ← Library
+          </button>
+          <span className="text-dim">/</span>
+          <div className="text-[13px] font-bold truncate max-w-[28ch]">{asset.name}</div>
+        </div>
+      )}
 
       {error && (
         <div
@@ -244,7 +257,7 @@ export default function PaintStudio({ asset, userId, onBack, onAssetCreated }: P
             {status && <span className="text-[12px] text-dim truncate max-w-[28ch]">{status}</span>}
             <button
               onClick={handleSave}
-              disabled={busy || !sourceBuf}
+              disabled={busy || !asset || !sourceBuf}
               className="px-3 py-1.5 rounded-lg text-[12.5px] font-semibold disabled:opacity-40"
               style={{ background: "linear-gradient(180deg,#56a6e8,#2c6aa0)", color: "#06121d" }}
             >
@@ -255,7 +268,15 @@ export default function PaintStudio({ asset, userId, onBack, onAssetCreated }: P
           {/* viewer */}
           <div className="bg-panel border border-line rounded-[12px] overflow-hidden h-[clamp(500px,65vh,800px)]">
             {!sourceBuf ? (
-              <div className="w-full h-full flex items-center justify-center text-dim text-[13px]">Loading…</div>
+              <div className="w-full h-full flex flex-col items-center justify-center gap-2">
+                {busy
+                  ? <span className="text-[13px] text-dim">Loading…</span>
+                  : <>
+                      <p className="text-[14px] font-semibold" style={{ color: "#3a5a7a" }}>No model loaded</p>
+                      <p className="text-[12px]" style={{ color: "#2a4258" }}>Select one from your library or drop a GLB</p>
+                    </>
+                }
+              </div>
             ) : (
               <PaintViewer
                 ref={viewerRef}

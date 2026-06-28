@@ -109,14 +109,6 @@ export default function SubstanceWeaverClient() {
   return (
     <main className="min-h-[calc(100vh-73px)] bg-[#070b11] text-ink">
       <div className="max-w-[1600px] mx-auto px-6 lg:px-10 pt-6 pb-16">
-        {!openedAsset && (
-          <div className="flex items-center gap-3 mb-5">
-            <Link href="/forge" className="text-[12px] text-dim no-underline hover:text-ink">← Forge</Link>
-            <span className="text-dim">/</span>
-            <div className="text-[13px] font-bold">🎨 Mesh Painter</div>
-          </div>
-        )}
-
         {error && (
           <div className="mb-4 p-3 rounded-[9px] border text-[13px]" style={{ borderColor: "rgba(227,92,92,.4)", background: "rgba(227,92,92,.08)", color: "#f0a6a6" }}>
             {error}
@@ -124,19 +116,9 @@ export default function SubstanceWeaverClient() {
         )}
 
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6 items-start">
-          {/* ---- left+center: paint studio, or an empty live viewer ---- */}
+          {/* ---- left+center: paint studio, always mounted ---- */}
           <div>
-            {openedAsset && user?.id ? (
-              <PaintStudio asset={openedAsset} userId={user.id} onBack={() => setOpenedAsset(null)} onAssetCreated={refreshLibrary} />
-            ) : (
-              <div
-                className="bg-panel border border-line rounded-[12px] h-[clamp(320px,52vh,700px)] flex flex-col items-center justify-center gap-2"
-                style={{ borderStyle: "dashed" }}
-              >
-                <p className="text-[15px] font-bold" style={{ color: "#3a5a7a" }}>No model loaded</p>
-                <p className="text-[12.5px]" style={{ color: "#2a4258" }}>Drop a GLB or pick one from your library</p>
-              </div>
-            )}
+            <PaintStudio asset={openedAsset} userId={user?.id ?? ""} onBack={() => setOpenedAsset(null)} onAssetCreated={refreshLibrary} />
           </div>
 
           {/* ---- right: upload + library, always visible ---- */}

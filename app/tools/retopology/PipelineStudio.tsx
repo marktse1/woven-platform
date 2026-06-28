@@ -44,6 +44,11 @@ function fmt(n: number | null | undefined) {
   return n.toLocaleString();
 }
 
+/** Matches the golden-angle hue palette used in ModelViewer. */
+function segmentColor(id: number) {
+  return `hsl(${(id * 137.508) % 360}deg, 65%, 55%)`;
+}
+
 async function fetchAssetBytes(assetId: string): Promise<ArrayBuffer> {
   const row = await getAsset(assetId);
   if (!row) throw new Error("Asset not found.");
@@ -92,6 +97,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
   const [segmentation, setSegmentation] = useState<SegmentationOverlay | null>(null);
   const [segments, setSegments] = useState<Segment[]>([]);
   const [excludedSegIds, setExcludedSegIds] = useState<Set<number>>(new Set());
+  const [hoveredSegId, setHoveredSegId] = useState<number | null>(null);
   const [textureChannel, setTextureChannel] = useState<TextureChannel | null>(null);
   const [wireframe, setWireframe] = useState(false);
   const [showGrid, setShowGrid] = useState(true);
@@ -318,6 +324,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
       setSegmentation(null);
       setSegments([]);
       setExcludedSegIds(new Set());
+      setHoveredSegId(null);
       setCompareToSource(false);
       setStatus(`Removed ${excludedSegIds.size} segment${excludedSegIds.size === 1 ? "" : "s"} — ${resultPolys.toLocaleString()} tris remain.`);
       onAssetCreated?.();
@@ -539,6 +546,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                     <div className="space-y-1 max-h-52 overflow-y-auto pr-1">
                       {segments.map((seg) => {
                         const excluded = excludedSegIds.has(seg.id);
+                        const hovered = hoveredSegId === seg.id;
                         return (
                           <button
                             key={seg.id}
@@ -550,22 +558,18 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                                 return next;
                               })
                             }
+                            onMouseEnter={() => setHoveredSegId(seg.id)}
+                            onMouseLeave={() => setHoveredSegId(null)}
                             className="w-full text-left flex items-center gap-2 px-2 py-1.5 rounded-[7px] border transition-colors"
                             style={{
-                              borderColor: excluded ? "rgba(227,92,92,.4)" : "rgba(255,255,255,.06)",
-                              background: excluded ? "rgba(227,92,92,.08)" : "#26231f",
+                              borderColor: excluded ? "rgba(227,92,92,.4)" : hovered ? "rgba(255,255,255,.18)" : "rgba(255,255,255,.06)",
+                              background: excluded ? "rgba(227,92,92,.08)" : hovered ? "rgba(255,255,255,.04)" : "#26231f",
                             }}
                           >
                             <span
-                              className="w-3 h-3 rounded-sm border flex-shrink-0 flex items-center justify-center text-[8px]"
-                              style={{
-                                borderColor: excluded ? "#e85c5c" : "#4a4540",
-                                background: excluded ? "rgba(227,92,92,.3)" : "transparent",
-                                color: "#e88",
-                              }}
-                            >
-                              {excluded ? "✕" : ""}
-                            </span>
+                              className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                              style={{ background: excluded ? "rgba(227,92,92,.5)" : segmentColor(seg.id) }}
+                            />
                             <span
                               className="text-[11.5px] truncate flex-1"
                               style={{ color: excluded ? "#e88" : "#c7bfb2" }}
@@ -575,6 +579,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                             <span className="text-[11px] flex-shrink-0" style={{ color: "#6b6460" }}>
                               {seg.triangleCount.toLocaleString()} tris
                             </span>
+                            {excluded && <span className="text-[10px] flex-shrink-0" style={{ color: "#e85c5c" }}>✕</span>}
                           </button>
                         );
                       })}
@@ -764,6 +769,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                     segmentation={compareToSource ? null : segmentation}
                     textureChannel={clayMode ? null : (compareToSource ? null : textureChannel)}
                     clayMode={clayMode}
+                    focusedSegId={compareToSource ? null : hoveredSegId}
                     onLoadError={setError}
                   />
                 )}

@@ -76,6 +76,8 @@ type Props = {
   /** Replace all materials with a ZBrush-style clay shader to evaluate form. */
   clayMode?: boolean;
   clayColor?: string;
+  /** Highlight one segment and dim all others — set from hovering a row in the segment list. */
+  focusedSegId?: number | null;
   /** Called if the GLB fails to parse - without this, a failure left the previous model torn down with nothing shown and no visible signal why. */
   onLoadError?: (message: string) => void;
 };
@@ -88,16 +90,20 @@ function paletteColor(index: number): THREE.Color {
 
 /**
  * Paints per-vertex colors from a triangle->segment map and flips
- * `vertexColors` on each mesh's material(s). Assumes `group`'s meshes are
- * traversed in the same mesh/primitive order segmentByConnectivity used to
- * build `trianglePerSegment` (true for the GLTFLoader scene graphs this app
- * produces); revisit with an explicit index if that ever drifts.
+ * `vertexColors` on each mesh's material(s). When `focusedSegId` is set,
+ * all other segments are dimmed to a dark neutral so the focused one pops.
  */
-function applySegmentationToGroup(group: THREE.Group, segmentation: SegmentationOverlay | null | undefined): void {
+function applySegmentationToGroup(
+  group: THREE.Group,
+  segmentation: SegmentationOverlay | null | undefined,
+  focusedSegId: number | null = null,
+): void {
   if (!segmentation || !segmentation.trianglePerSegment.length) return;
   let triCursor = 0;
   const colorCache = new Map<number, THREE.Color>();
+  const DIM = new THREE.Color(0.12, 0.11, 0.10);
   const colorFor = (segId: number): THREE.Color => {
+    if (focusedSegId !== null && segId !== focusedSegId) return DIM;
     const explicit = segmentation.segmentColors?.[segId];
     if (explicit) return new THREE.Color(explicit);
     let c = colorCache.get(segId);
@@ -180,7 +186,7 @@ function applyTextureChannelToGroup(
   });
 }
 
-export default function ModelViewer({ data, wireframe, showGrid = true, accent = "#56a6e8", segmentation = null, textureChannel = null, clayMode = false, clayColor = "#ebe7e1", onLoadError }: Props) {
+export default function ModelViewer({ data, wireframe, showGrid = true, accent = "#56a6e8", segmentation = null, textureChannel = null, clayMode = false, clayColor = "#ebe7e1", focusedSegId = null, onLoadError }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -195,9 +201,13 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
   const lastClayColorRef = useRef<string>("");
   const clayOriginalMatsRef = useRef<Map<string, THREE.Material | THREE.Material[]>>(new Map());
   const onLoadErrorRef = useRef(onLoadError);
+  const segmentationRef = useRef(segmentation);
   useEffect(() => {
     onLoadErrorRef.current = onLoadError;
   }, [onLoadError]);
+  useEffect(() => {
+    segmentationRef.current = segmentation;
+  }, [segmentation]);
 
   // ---- one-time scene setup -------------------------------------------------
   useEffect(() => {
@@ -313,7 +323,7 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
           mesh.add(wire);
         });
 
-        applySegmentationToGroup(group, segmentation);
+        applySegmentationToGroup(group, segmentation, focusedSegId);
         applyTextureChannelToGroup(group, textureChannel, originalMaterialsRef.current);
 
         // frame the model
@@ -396,6 +406,21 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clayMode, clayColor]);
+
+  // ---- live segment highlight — no model reload needed ----------------------
+  useEffect(() => {
+    const group = modelRef.current;
+    const seg = segmentationRef.current;
+    if (!group || !seg) return;
+    applySegmentationToGroup(group, seg, focusedSegId);
+    group.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh && m.geometry) {
+        const mats = Array.isArray(m.material) ? m.material : [m.material];
+        for (const mat of mats) mat.needsUpdate = true;
+      }
+    });
+  }, [focusedSegId]);
 
   return <div ref={mountRef} className="w-full h-full min-h-[260px]" />;
 }

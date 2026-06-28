@@ -11,7 +11,7 @@ import {
   signedAssetUrl,
   type AssetRow,
 } from "@/lib/assets";
-import type { SculptViewerHandle } from "@/components/tools/SculptViewer";
+import type { SculptViewerHandle, ViewMode } from "@/components/tools/SculptViewer";
 import type { BrushMode } from "@/lib/sculpt/brushes";
 
 // Load SculptViewer client-side only — Three.js requires a DOM
@@ -31,8 +31,21 @@ const BRUSH_MODES: { mode: BrushMode; label: string; desc: string }[] = [
   { mode: "flatten", label: "Flatten", desc: "Project to local tangent plane" },
   { mode: "move",    label: "Move",    desc: "Drag a cluster of vertices freely" },
 ];
-
 const MODE_KEY: Record<string, BrushMode> = { q: "push", w: "pull", e: "smooth", r: "flatten", t: "move" };
+
+const VIEW_MODES: { mode: ViewMode; label: string }[] = [
+  { mode: "combined",  label: "Combined" },
+  { mode: "wireframe", label: "Wireframe" },
+  { mode: "clay",      label: "Clay" },
+  { mode: "albedo",    label: "Albedo" },
+  { mode: "ao",        label: "AO" },
+];
+
+const CLAY_PRESETS = [
+  { color: "#ebe7e1", label: "Clay" },
+  { color: "#c4a882", label: "Warm" },
+  { color: "#3a3735", label: "Dark" },
+];
 
 export default function MeshSculptClient() {
   const { user, isLoaded } = useUser();
@@ -52,14 +65,8 @@ export default function MeshSculptClient() {
   const [brushInnerRadius, setBrushInnerRadius] = useState(0.0);
   const [brushStrength, setBrushStrength] = useState(0.5);
 
-  const [clayMode, setClayMode] = useState(false);
+  const [viewMode, setViewMode] = useState<ViewMode>("combined");
   const [clayColor, setClayColor] = useState("#ebe7e1");
-
-  const CLAY_PRESETS = [
-    { color: "#ebe7e1", label: "Clay" },
-    { color: "#c4a882", label: "Warm" },
-    { color: "#3a3735", label: "Dark" },
-  ];
 
   const viewerHandleRef = useRef<SculptViewerHandle | null>(null);
 
@@ -289,36 +296,6 @@ export default function MeshSculptClient() {
             </button>
           </div>
 
-          {/* Clay shader */}
-          <div className="border-t border-[#2a2320] pt-3">
-            <div className="flex items-center justify-between mb-2">
-              <p className="text-[11px] font-medium text-dim uppercase tracking-wide">Clay View</p>
-              <button
-                onClick={() => setClayMode(m => !m)}
-                className={`relative w-9 h-5 rounded-full transition-colors ${clayMode ? "bg-[#c47be8]" : "bg-[#2a2320]"}`}
-              >
-                <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${clayMode ? "translate-x-4" : "translate-x-0.5"}`} />
-              </button>
-            </div>
-            {clayMode && (
-              <div className="flex gap-2 mt-2">
-                {CLAY_PRESETS.map(p => (
-                  <button
-                    key={p.color}
-                    title={p.label}
-                    onClick={() => setClayColor(p.color)}
-                    className="flex flex-col items-center gap-1"
-                  >
-                    <span
-                      className={`w-6 h-6 rounded-full border-2 transition-all ${clayColor === p.color ? "border-[#c47be8] scale-110" : "border-transparent"}`}
-                      style={{ background: p.color }}
-                    />
-                    <span className="text-[9px] text-dim">{p.label}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
         </div>
 
         {/* Vertex info + save */}
@@ -344,28 +321,67 @@ export default function MeshSculptClient() {
         </div>
       </aside>
 
-      {/* ── 3D CANVAS ── */}
-      <section className="flex-1 relative">
-        {!selectedAsset && !loadingAsset && (
-          <div className="absolute inset-0 flex items-center justify-center text-center pointer-events-none">
-            <div>
-              <p className="text-ink text-sm mb-1">Select a GLB from the sidebar to begin sculpting</p>
-              <p className="text-dim text-[12px]">Works best with meshes under 200K vertices</p>
+      {/* ── 3D CANVAS + TOP TOOLBAR ── */}
+      <section className="flex-1 flex flex-col overflow-hidden">
+        {/* View mode toolbar */}
+        <div className="flex items-center gap-1 px-3 py-2 border-b border-[#2a2320] bg-[#100e0c] flex-shrink-0">
+          {VIEW_MODES.map(({ mode, label }) => (
+            <button
+              key={mode}
+              onClick={() => setViewMode(mode)}
+              className={`px-3 py-1 rounded text-[11px] font-medium transition-colors ${
+                viewMode === mode
+                  ? "bg-[#c47be8] text-white"
+                  : "bg-[#1e1a17] text-dim hover:text-ink"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+          {viewMode === "clay" && (
+            <div className="flex items-center gap-2 ml-3 pl-3 border-l border-[#2a2320]">
+              {CLAY_PRESETS.map((p) => (
+                <button
+                  key={p.color}
+                  title={p.label}
+                  onClick={() => setClayColor(p.color)}
+                  className="flex flex-col items-center gap-0.5"
+                >
+                  <span
+                    className={`w-5 h-5 rounded-full border-2 transition-all ${
+                      clayColor === p.color ? "border-[#c47be8] scale-110" : "border-[#3a3530]"
+                    }`}
+                    style={{ background: p.color }}
+                  />
+                </button>
+              ))}
             </div>
-          </div>
-        )}
-        <SculptViewer
-          glbData={glbData}
-          brushMode={brushMode}
-          brushRadius={brushRadius}
-          brushInnerRadius={brushInnerRadius}
-          brushStrength={brushStrength}
-          clayMode={clayMode}
-          clayColor={clayColor}
-          onModelLoaded={setVertexCount}
-          onLoadError={setLoadError}
-          handleRef={viewerHandleRef}
-        />
+          )}
+        </div>
+
+        {/* Canvas */}
+        <div className="flex-1 relative">
+          {!selectedAsset && !loadingAsset && (
+            <div className="absolute inset-0 flex items-center justify-center text-center pointer-events-none">
+              <div>
+                <p className="text-ink text-sm mb-1">Select a GLB from the sidebar to begin sculpting</p>
+                <p className="text-dim text-[12px]">Works best with meshes under 200K vertices</p>
+              </div>
+            </div>
+          )}
+          <SculptViewer
+            glbData={glbData}
+            brushMode={brushMode}
+            brushRadius={brushRadius}
+            brushInnerRadius={brushInnerRadius}
+            brushStrength={brushStrength}
+            viewMode={viewMode}
+            clayColor={clayColor}
+            onModelLoaded={setVertexCount}
+            onLoadError={setLoadError}
+            handleRef={viewerHandleRef}
+          />
+        </div>
       </section>
     </main>
   );

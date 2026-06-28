@@ -14,34 +14,52 @@ export type SegmentationOverlay = {
 
 export type TextureChannel = "albedo" | "normal" | "ao" | "roughness" | "metallic";
 
-// ZBrush-style clay shader — half-lambert diffuse, broad matte specular, fresnel rim
-const CLAY_VERT = /* glsl */`
-  varying vec3 vNormal; varying vec3 vViewDir;
-  void main() {
-    vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
-    vNormal = normalize(normalMatrix * normal);
-    vViewDir = normalize(-mvPos.xyz);
-    gl_Position = projectionMatrix * mvPos;
+// Generates a MatCap sphere texture on a CPU canvas — avoids render-target color space issues.
+function generateClayMatcap(color: THREE.Color, size = 256): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = size; canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+
+  const l1 = new THREE.Vector3(0.2, 0.7, 0.6).normalize();
+  const l2 = new THREE.Vector3(-0.35, 0.15, 0.8).normalize();
+  const l3 = new THREE.Vector3(0.0, -0.5, 0.6).normalize();
+  const v  = new THREE.Vector3(0, 0, 1);
+  const h1 = new THREE.Vector3().addVectors(l1, v).normalize();
+  const cr = color.r, cg = color.g, cb = color.b;
+  const n = new THREE.Vector3();
+
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const nx = (x + 0.5) / size * 2.0 - 1.0;
+      const ny = 1.0 - (y + 0.5) / size * 2.0;
+      const r2 = nx * nx + ny * ny;
+      const i = (y * size + x) * 4;
+      if (r2 >= 1.0) { d[i] = d[i+1] = d[i+2] = d[i+3] = 0; continue; }
+      n.set(nx, ny, Math.sqrt(1.0 - r2)).normalize();
+
+      const d1 = (n.dot(l1) * 0.5 + 0.5) ** 2 * 0.75;
+      const d2 = Math.max(0, n.dot(l2)) * 0.25;
+      const d3 = Math.max(0, n.dot(l3)) * 0.18;
+      const spec = Math.max(0, n.dot(h1)) ** 12 * 0.12;
+      const fres = (1.0 - n.z) ** 3.5 * 0.18;
+
+      let r = cr * (d1 + d2) + cr * d3 * 1.05 + spec + fres * 0.50;
+      let g = cg * (d1 + d2) + cg * d3 * 0.95 + spec + fres * 0.62;
+      let b = cb * (d1 + d2) + cb * d3 * 0.85 + spec + fres * 0.90;
+
+      d[i]   = Math.round(Math.min(1, r) ** (1 / 2.2) * 255);
+      d[i+1] = Math.round(Math.min(1, g) ** (1 / 2.2) * 255);
+      d[i+2] = Math.round(Math.min(1, b) ** (1 / 2.2) * 255);
+      d[i+3] = 255;
+    }
   }
-`;
-const CLAY_FRAG = /* glsl */`
-  varying vec3 vNormal; varying vec3 vViewDir;
-  uniform vec3 uColor;
-  void main() {
-    vec3 n = normalize(vNormal); vec3 v = normalize(vViewDir);
-    vec3 L1 = normalize(vec3(0.6, 1.0, 0.8));
-    vec3 L2 = normalize(vec3(-0.5, -0.3, 0.4));
-    vec3 L3 = normalize(vec3(-0.3, 0.5, -1.0));
-    float d1 = pow(dot(n, L1) * 0.5 + 0.5, 2.0);
-    float d2 = max(0.0, dot(n, L2)) * 0.22;
-    float d3 = max(0.0, dot(n, L3)) * 0.35;
-    vec3 H1 = normalize(L1 + v);
-    float spec = pow(max(0.0, dot(n, H1)), 6.0) * 0.10;
-    float fresnel = pow(1.0 - max(0.0, dot(n, v)), 3.5) * 0.14;
-    vec3 color = uColor * (d1 * 0.78 + d2 + d3) + vec3(spec) + fresnel * vec3(0.55, 0.65, 0.90);
-    gl_FragColor = vec4(color, 1.0);
-  }
-`;
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
 
 type Props = {
   /** Raw GLB bytes to display, or null for an empty stage. */
@@ -164,6 +182,7 @@ function applyTextureChannelToGroup(
 
 export default function ModelViewer({ data, wireframe, showGrid = true, accent = "#56a6e8", segmentation = null, textureChannel = null, clayMode = false, clayColor = "#ebe7e1", onLoadError }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null);
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
@@ -171,7 +190,9 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
   const gridRef = useRef<THREE.GridHelper | null>(null);
   const wireMatRef = useRef<THREE.LineBasicMaterial | null>(null);
   const originalMaterialsRef = useRef<WeakMap<THREE.Mesh, THREE.Material | THREE.Material[]>>(new WeakMap());
-  const clayMatRef = useRef<THREE.ShaderMaterial | null>(null);
+  const clayMatRef = useRef<THREE.MeshMatcapMaterial | null>(null);
+  const clayMatcapTexRef = useRef<THREE.Texture | null>(null);
+  const lastClayColorRef = useRef<string>("");
   const clayOriginalMatsRef = useRef<Map<string, THREE.Material | THREE.Material[]>>(new Map());
   const onLoadErrorRef = useRef(onLoadError);
   useEffect(() => {
@@ -194,6 +215,7 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
+    rendererRef.current = renderer;
     mount.appendChild(renderer.domElement);
 
     const controls = new OrbitControls(camera, renderer.domElement);
@@ -245,6 +267,8 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
       cancelAnimationFrame(raf);
       ro.disconnect();
       controls.dispose();
+      clayMatcapTexRef.current?.dispose();
+      clayMatRef.current?.dispose();
       renderer.dispose();
       if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement);
     };
@@ -338,14 +362,17 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
     if (!group || !scene) return;
 
     if (clayMode) {
-      if (!clayMatRef.current) {
-        clayMatRef.current = new THREE.ShaderMaterial({
-          vertexShader: CLAY_VERT,
-          fragmentShader: CLAY_FRAG,
-          uniforms: { uColor: { value: new THREE.Color(clayColor).convertSRGBToLinear() } },
-        });
-      } else {
-        (clayMatRef.current.uniforms.uColor.value as THREE.Color).set(clayColor).convertSRGBToLinear();
+      if (!clayMatRef.current || lastClayColorRef.current !== clayColor) {
+        clayMatcapTexRef.current?.dispose();
+        const tex = generateClayMatcap(new THREE.Color(clayColor).convertSRGBToLinear());
+        clayMatcapTexRef.current = tex;
+        if (!clayMatRef.current) {
+          clayMatRef.current = new THREE.MeshMatcapMaterial({ matcap: tex });
+        } else {
+          clayMatRef.current.matcap = tex;
+          clayMatRef.current.needsUpdate = true;
+        }
+        lastClayColorRef.current = clayColor;
       }
       scene.background = new THREE.Color("#1c1c1c");
       const mat = clayMatRef.current;

@@ -593,7 +593,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                 <button
                   onClick={() => setClayMode((v) => !v)}
                   className="px-3 py-1.5 rounded-lg border text-[12.5px] font-semibold"
-                  style={{ borderColor: clayMode ? "#c47be8" : "rgba(255,255,255,0.08)", background: clayMode ? "rgba(196,123,232,.14)" : "transparent", color: clayMode ? "#e8c6ff" : "#9b9082" }}
+                  style={{ borderColor: clayMode ? ACCENT : "rgba(255,255,255,0.08)", background: clayMode ? "rgba(226,86,42,.14)" : "transparent", color: clayMode ? "#fff3ec" : "#9b9082" }}
                 >
                   Clay {clayMode ? "on" : "off"}
                 </button>

@@ -25,54 +25,58 @@ export type SculptViewerHandle = {
   redo: () => void;
 };
 
-// ── Clay shader ──────────────────────────────────────────────────────────────
-// Half-lambert diffuse + broad specular + fresnel rim — mimics ZBrush clay.
-const CLAY_VERT = /* glsl */`
-  varying vec3 vNormal;
-  varying vec3 vViewDir;
-  void main() {
-    vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
-    vNormal    = normalize(normalMatrix * normal);
-    vViewDir   = normalize(-mvPos.xyz);
-    gl_Position = projectionMatrix * mvPos;
+export type ViewMode = "combined" | "clay" | "wireframe" | "albedo" | "ao";
+
+// ── MatCap clay texture generator (CPU / canvas) ──────────────────────────────
+// Generates a 256×256 sphere image on a canvas using view-space lighting.
+// Canvas approach avoids WebGL render-target color-space issues entirely.
+function generateClayMatcap(color: THREE.Color, size = 256): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = size; canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+
+  // View-space light directions (normalized)
+  const l1 = new THREE.Vector3(0.2, 0.7, 0.6).normalize();
+  const l2 = new THREE.Vector3(-0.35, 0.15, 0.8).normalize();
+  const l3 = new THREE.Vector3(0.0, -0.5, 0.6).normalize();
+  const v  = new THREE.Vector3(0, 0, 1);
+  const h1 = new THREE.Vector3().addVectors(l1, v).normalize();
+  const cr = color.r, cg = color.g, cb = color.b;
+
+  const n = new THREE.Vector3();
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const nx = (x + 0.5) / size * 2.0 - 1.0;
+      const ny = 1.0 - (y + 0.5) / size * 2.0; // canvas Y flipped vs sphere up
+      const r2 = nx * nx + ny * ny;
+      const i = (y * size + x) * 4;
+      if (r2 >= 1.0) { d[i] = d[i+1] = d[i+2] = d[i+3] = 0; continue; }
+      n.set(nx, ny, Math.sqrt(1.0 - r2)).normalize();
+
+      const d1 = (n.dot(l1) * 0.5 + 0.5) ** 2 * 0.75;
+      const d2 = Math.max(0, n.dot(l2)) * 0.25;
+      const d3 = Math.max(0, n.dot(l3)) * 0.18;
+      const spec = Math.max(0, n.dot(h1)) ** 12 * 0.12;
+      const fres = (1.0 - n.z) ** 3.5 * 0.18;
+
+      let r = cr * (d1 + d2) + cr * d3 * 1.05 + spec + fres * 0.50;
+      let g = cg * (d1 + d2) + cg * d3 * 0.95 + spec + fres * 0.62;
+      let b = cb * (d1 + d2) + cb * d3 * 0.85 + spec + fres * 0.90;
+
+      // linear → sRGB gamma encode for canvas storage
+      d[i]   = Math.round(Math.min(1, r) ** (1 / 2.2) * 255);
+      d[i+1] = Math.round(Math.min(1, g) ** (1 / 2.2) * 255);
+      d[i+2] = Math.round(Math.min(1, b) ** (1 / 2.2) * 255);
+      d[i+3] = 255;
+    }
   }
-`;
-
-const CLAY_FRAG = /* glsl */`
-  varying vec3 vNormal;
-  varying vec3 vViewDir;
-  uniform vec3 uColor;
-
-  void main() {
-    vec3 n = normalize(vNormal);
-    vec3 v = normalize(vViewDir);
-
-    // Baked light directions: key (upper-left-front), fill (lower-right), back rim
-    vec3 L1 = normalize(vec3( 0.6,  1.0,  0.8));
-    vec3 L2 = normalize(vec3(-0.5, -0.3,  0.4));
-    vec3 L3 = normalize(vec3(-0.3,  0.5, -1.0));
-
-    // Half-lambert on key — wraps light softly around the form (ZBrush clay look)
-    float d1 = pow(dot(n, L1) * 0.5 + 0.5, 2.0);
-    // Subtle fill
-    float d2 = max(0.0, dot(n, L2)) * 0.22;
-    // Warm back rim
-    float d3 = max(0.0, dot(n, L3)) * 0.35;
-
-    // Broad matte specular — not shiny, just a soft sheen
-    vec3 H1   = normalize(L1 + v);
-    float spec = pow(max(0.0, dot(n, H1)), 6.0) * 0.10;
-
-    // Cool fresnel glow on silhouette edges
-    float fresnel = pow(1.0 - max(0.0, dot(n, v)), 3.5) * 0.14;
-
-    vec3 color = uColor * (d1 * 0.78 + d2 + d3);
-    color += vec3(spec);
-    color += fresnel * vec3(0.55, 0.65, 0.90);
-
-    gl_FragColor = vec4(color, 1.0);
-  }
-`;
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
 
 type Props = {
   glbData: ArrayBuffer | null;
@@ -80,7 +84,7 @@ type Props = {
   brushRadius: number;
   brushInnerRadius: number;
   brushStrength: number;
-  clayMode?: boolean;
+  viewMode?: ViewMode;
   clayColor?: string;
   onModelLoaded?: (vertexCount: number) => void;
   onLoadError?: (msg: string) => void;
@@ -93,7 +97,7 @@ export default function SculptViewer({
   brushRadius,
   brushInnerRadius,
   brushStrength,
-  clayMode = false,
+  viewMode = "combined",
   clayColor = "#ebe7e1",
   onModelLoaded,
   onLoadError,
@@ -127,55 +131,80 @@ export default function SculptViewer({
   useEffect(() => { onModelLoadedRef.current = onModelLoaded; }, [onModelLoaded]);
   useEffect(() => { onLoadErrorRef.current = onLoadError; }, [onLoadError]);
 
-  // Clay material refs
-  const clayMatRef = useRef<THREE.ShaderMaterial | null>(null);
+  // Material / view-mode refs
+  const clayMatRef = useRef<THREE.MeshMatcapMaterial | null>(null);
+  const clayMatcapTexRef = useRef<THREE.CanvasTexture | null>(null);
+  const lastClayColorRef = useRef<string>("");
+  const channelMatsRef = useRef<THREE.MeshBasicMaterial[]>([]);
+  const wireMatRef = useRef<THREE.LineBasicMaterial | null>(null);
   const originalMaterialsRef = useRef<Map<string, THREE.Material | THREE.Material[]>>(new Map());
-  const clayModeRef = useRef(clayMode);
+  const viewModeRef = useRef<ViewMode>(viewMode);
   const clayColorRef = useRef(clayColor);
-  useEffect(() => { clayModeRef.current = clayMode; }, [clayMode]);
+  useEffect(() => { viewModeRef.current = viewMode; }, [viewMode]);
   useEffect(() => { clayColorRef.current = clayColor; }, [clayColor]);
 
-  function getClayMat(color: string): THREE.ShaderMaterial {
-    if (!clayMatRef.current) {
-      clayMatRef.current = new THREE.ShaderMaterial({
-        vertexShader: CLAY_VERT,
-        fragmentShader: CLAY_FRAG,
-        uniforms: { uColor: { value: new THREE.Color(color).convertSRGBToLinear() } },
-      });
-    } else {
-      (clayMatRef.current.uniforms.uColor.value as THREE.Color).set(color).convertSRGBToLinear();
+  function getClayMat(color: string): THREE.MeshMatcapMaterial {
+    if (!clayMatRef.current || lastClayColorRef.current !== color) {
+      clayMatcapTexRef.current?.dispose();
+      const tex = generateClayMatcap(new THREE.Color(color).convertSRGBToLinear());
+      clayMatcapTexRef.current = tex;
+      if (!clayMatRef.current) {
+        clayMatRef.current = new THREE.MeshMatcapMaterial({ matcap: tex });
+      } else {
+        clayMatRef.current.matcap = tex;
+        clayMatRef.current.needsUpdate = true;
+      }
+      lastClayColorRef.current = color;
     }
-    return clayMatRef.current;
+    return clayMatRef.current!;
   }
 
-  // ── clay material toggle ─────────────────────────────────────────────────
-  useEffect(() => {
-    const group = modelRef.current;
-    const scene = sceneRef.current;
-    if (!group || !scene) return;
-
-    if (clayMode) {
+  function applyViewToGroup(group: THREE.Group, scene: THREE.Scene, vm: ViewMode, cc: string) {
+    channelMatsRef.current.forEach(m => m.dispose());
+    channelMatsRef.current = [];
+    group.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      if (m.name === "__wire") { m.visible = vm === "wireframe"; return; }
+      const orig = originalMaterialsRef.current.get(m.uuid);
+      if (orig !== undefined) m.material = orig;
+    });
+    if (vm === "clay") {
       scene.background = new THREE.Color("#1c1c1c");
-      const mat = getClayMat(clayColor);
+      const mat = getClayMat(cc);
       group.traverse((o) => {
         const m = o as THREE.Mesh;
-        if (!m.isMesh) return;
-        if (!originalMaterialsRef.current.has(m.uuid)) {
-          originalMaterialsRef.current.set(m.uuid, m.material);
-        }
+        if (!m.isMesh || m.name === "__wire") return;
         m.material = mat;
       });
-    } else {
+    } else if (vm === "albedo" || vm === "ao") {
       scene.background = new THREE.Color("#1a1614");
       group.traverse((o) => {
         const m = o as THREE.Mesh;
-        if (!m.isMesh) return;
+        if (!m.isMesh || m.name === "__wire") return;
         const orig = originalMaterialsRef.current.get(m.uuid);
-        if (orig !== undefined) m.material = orig;
+        const src = (Array.isArray(orig) ? orig[0] : orig) as THREE.MeshStandardMaterial | undefined;
+        if (!src) return;
+        const tex = vm === "albedo" ? (src.map ?? null) : (src.aoMap ?? null);
+        if (tex) tex.colorSpace = vm === "albedo" ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+        const cm = new THREE.MeshBasicMaterial({ map: tex, color: tex ? 0xffffff : 0x888888 });
+        channelMatsRef.current.push(cm);
+        m.material = cm;
       });
+    } else {
+      scene.background = new THREE.Color("#1a1614");
     }
+  }
+
+  // ── view mode / clay color change ─────────────────────────────────────────
+  useEffect(() => {
+    viewModeRef.current = viewMode;
+    const group = modelRef.current;
+    const scene = sceneRef.current;
+    if (!group || !scene) return;
+    applyViewToGroup(group, scene, viewMode, clayColor);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clayMode, clayColor]);
+  }, [viewMode, clayColor]);
 
   // ── one-time scene setup ──────────────────────────────────────────────────
   useEffect(() => {
@@ -254,6 +283,10 @@ export default function SculptViewer({
       cancelAnimationFrame(raf);
       ro.disconnect();
       controls.dispose();
+      clayMatcapTexRef.current?.dispose();
+      clayMatRef.current?.dispose();
+      channelMatsRef.current.forEach(m => m.dispose());
+      wireMatRef.current?.dispose();
       renderer.dispose();
       if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement);
     };
@@ -283,6 +316,12 @@ export default function SculptViewer({
     loader.parse(glbData.slice(0), "", (gltf) => {
       const group = gltf.scene;
       let totalVerts = 0;
+
+      if (!wireMatRef.current) {
+        wireMatRef.current = new THREE.LineBasicMaterial({
+          color: 0xffffff, transparent: true, opacity: 0.3, depthTest: false,
+        });
+      }
 
       group.traverse((o) => {
         const mesh = o as THREE.Mesh;
@@ -315,6 +354,16 @@ export default function SculptViewer({
         const seams = buildSeamData(posArr);
         meshEntriesRef.current.push({ mesh, seams });
         totalVerts += mesh.geometry.attributes.position.count;
+
+        // Wireframe overlay — excluded from GLB export, hidden by default
+        const wire = new THREE.LineSegments(
+          new THREE.WireframeGeometry(mesh.geometry),
+          wireMatRef.current!,
+        );
+        wire.name = "__wire";
+        wire.visible = false;
+        wire.renderOrder = 999;
+        mesh.add(wire);
       });
 
       // Frame model
@@ -335,17 +384,19 @@ export default function SculptViewer({
       scene.add(group);
       modelRef.current = group;
       originalMaterialsRef.current.clear();
+      channelMatsRef.current.forEach(m => m.dispose());
+      channelMatsRef.current = [];
 
-      // If clay mode was already active, apply immediately to new model
-      if (clayModeRef.current) {
-        const mat = getClayMat(clayColorRef.current);
-        group.traverse((o) => {
-          const m = o as THREE.Mesh;
-          if (!m.isMesh) return;
+      // Store all original GLTF materials before any view override
+      group.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.isMesh && m.name !== "__wire") {
           originalMaterialsRef.current.set(m.uuid, m.material);
-          m.material = mat;
-        });
-      }
+        }
+      });
+
+      // Apply whichever view mode is currently active
+      applyViewToGroup(group, scene, viewModeRef.current, clayColorRef.current);
 
       onModelLoadedRef.current?.(totalVerts);
     }, (err) => {
@@ -514,12 +565,28 @@ export default function SculptViewer({
   // ── expose handle for parent (export, undo buttons) ───────────────────────
   const exportGlb = useCallback(async (): Promise<Uint8Array> => {
     if (!modelRef.current) throw new Error("No model loaded.");
+
+    // Temporarily detach wire overlays so they aren't baked into the exported GLB
+    const detached: Array<{ parent: THREE.Object3D; obj: THREE.Object3D }> = [];
+    modelRef.current.traverse((o) => {
+      if (o.name === "__wire" && o.parent) {
+        detached.push({ parent: o.parent, obj: o });
+      }
+    });
+    detached.forEach(({ parent, obj }) => parent.remove(obj));
+
     const exporter = new GLTFExporter();
     return new Promise((resolve, reject) => {
       exporter.parse(
         modelRef.current!,
-        (result) => resolve(new Uint8Array(result as ArrayBuffer)),
-        reject,
+        (result) => {
+          detached.forEach(({ parent, obj }) => parent.add(obj));
+          resolve(new Uint8Array(result as ArrayBuffer));
+        },
+        (err) => {
+          detached.forEach(({ parent, obj }) => parent.add(obj));
+          reject(err);
+        },
         { binary: true },
       );
     });

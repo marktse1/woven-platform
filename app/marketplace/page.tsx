@@ -16,7 +16,7 @@ const UPCOMING = [
   {
     icon: "🎨",
     title: "Texture Packs",
-    desc: "Albedo, normal, and roughness maps painted in Substance Weaver.",
+    desc: "Albedo, normal, and roughness maps painted in Mesh Painter.",
   },
   {
     icon: "🔻",

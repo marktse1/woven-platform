@@ -8,7 +8,7 @@ export default function SubstanceWeaverPage() {
     <Suspense
       fallback={
         <main className="min-h-[calc(100vh-73px)] bg-[#070b11] text-ink flex items-center justify-center">
-          <div className="text-[13px] text-dim">Loading Substance Weaver…</div>
+          <div className="text-[13px] text-dim">Loading Mesh Painter…</div>
         </main>
       }
     >

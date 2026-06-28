@@ -91,6 +91,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
   const [textureChannel, setTextureChannel] = useState<TextureChannel | null>(null);
   const [wireframe, setWireframe] = useState(false);
   const [showGrid, setShowGrid] = useState(true);
+  const [clayMode, setClayMode] = useState(false);
   // Defaults to the original upload (matching the poly count shown on the library
   // card) rather than silently resuming a previously-decimated "current" version.
   const [compareToSource, setCompareToSource] = useState(true);
@@ -613,6 +614,13 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                 >
                   Grid {showGrid ? "on" : "off"}
                 </button>
+                <button
+                  onClick={() => setClayMode((v) => !v)}
+                  className="px-3 py-1.5 rounded-lg border text-[12.5px] font-semibold"
+                  style={{ borderColor: clayMode ? "#c47be8" : "rgba(255,255,255,0.08)", background: clayMode ? "rgba(196,123,232,.14)" : "transparent", color: clayMode ? "#e8c6ff" : "#9b9082" }}
+                >
+                  Clay {clayMode ? "on" : "off"}
+                </button>
                 {segmentation && (
                   <button
                     onClick={() => setSegmentation(null)}
@@ -653,7 +661,8 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                     showGrid={showGrid}
                     accent={ACCENT}
                     segmentation={compareToSource ? null : segmentation}
-                    textureChannel={compareToSource ? null : textureChannel}
+                    textureChannel={clayMode ? null : (compareToSource ? null : textureChannel)}
+                    clayMode={clayMode}
                     onLoadError={setError}
                   />
                 )}

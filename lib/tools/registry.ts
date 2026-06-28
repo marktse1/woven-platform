@@ -20,7 +20,7 @@ export const NATIVE_TOOLS: ToolDef[] = [
   },
   {
     slug: "substance-weaver",
-    name: "Substance Weaver",
+    name: "Mesh Painter",
     summary: "Paint albedo and relief detail directly onto a model's UVs, in real time, on the actual 3D mesh.",
     icon: "🎨",
     category: "texturing",

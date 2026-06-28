@@ -14,6 +14,35 @@ export type SegmentationOverlay = {
 
 export type TextureChannel = "albedo" | "normal" | "ao" | "roughness" | "metallic";
 
+// ZBrush-style clay shader — half-lambert diffuse, broad matte specular, fresnel rim
+const CLAY_VERT = /* glsl */`
+  varying vec3 vNormal; varying vec3 vViewDir;
+  void main() {
+    vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+    vNormal = normalize(normalMatrix * normal);
+    vViewDir = normalize(-mvPos.xyz);
+    gl_Position = projectionMatrix * mvPos;
+  }
+`;
+const CLAY_FRAG = /* glsl */`
+  varying vec3 vNormal; varying vec3 vViewDir;
+  uniform vec3 uColor;
+  void main() {
+    vec3 n = normalize(vNormal); vec3 v = normalize(vViewDir);
+    vec3 L1 = normalize(vec3(0.6, 1.0, 0.8));
+    vec3 L2 = normalize(vec3(-0.5, -0.3, 0.4));
+    vec3 L3 = normalize(vec3(-0.3, 0.5, -1.0));
+    float d1 = pow(dot(n, L1) * 0.5 + 0.5, 2.0);
+    float d2 = max(0.0, dot(n, L2)) * 0.22;
+    float d3 = max(0.0, dot(n, L3)) * 0.35;
+    vec3 H1 = normalize(L1 + v);
+    float spec = pow(max(0.0, dot(n, H1)), 6.0) * 0.10;
+    float fresnel = pow(1.0 - max(0.0, dot(n, v)), 3.5) * 0.14;
+    vec3 color = uColor * (d1 * 0.78 + d2 + d3) + vec3(spec) + fresnel * vec3(0.55, 0.65, 0.90);
+    gl_FragColor = vec4(color, 1.0);
+  }
+`;
+
 type Props = {
   /** Raw GLB bytes to display, or null for an empty stage. */
   data: ArrayBuffer | null;
@@ -26,6 +55,9 @@ type Props = {
   segmentation?: SegmentationOverlay | null;
   /** Preview a single baked PBR channel directly instead of standard shading. */
   textureChannel?: TextureChannel | null;
+  /** Replace all materials with a ZBrush-style clay shader to evaluate form. */
+  clayMode?: boolean;
+  clayColor?: string;
   /** Called if the GLB fails to parse - without this, a failure left the previous model torn down with nothing shown and no visible signal why. */
   onLoadError?: (message: string) => void;
 };
@@ -130,7 +162,7 @@ function applyTextureChannelToGroup(
   });
 }
 
-export default function ModelViewer({ data, wireframe, showGrid = true, accent = "#56a6e8", segmentation = null, textureChannel = null, onLoadError }: Props) {
+export default function ModelViewer({ data, wireframe, showGrid = true, accent = "#56a6e8", segmentation = null, textureChannel = null, clayMode = false, clayColor = "#c4a882", onLoadError }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
@@ -139,6 +171,8 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
   const gridRef = useRef<THREE.GridHelper | null>(null);
   const wireMatRef = useRef<THREE.LineBasicMaterial | null>(null);
   const originalMaterialsRef = useRef<WeakMap<THREE.Mesh, THREE.Material | THREE.Material[]>>(new WeakMap());
+  const clayMatRef = useRef<THREE.ShaderMaterial | null>(null);
+  const clayOriginalMatsRef = useRef<Map<string, THREE.Material | THREE.Material[]>>(new Map());
   const onLoadErrorRef = useRef(onLoadError);
   useEffect(() => {
     onLoadErrorRef.current = onLoadError;
@@ -233,6 +267,7 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
       modelRef.current = null;
     }
     originalMaterialsRef.current = new WeakMap();
+    clayOriginalMatsRef.current.clear();
     if (!data) return;
 
     const loader = new GLTFLoader();
@@ -295,6 +330,45 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
   useEffect(() => {
     if (gridRef.current) gridRef.current.visible = showGrid;
   }, [showGrid]);
+
+  // ---- clay material toggle ---------------------------------------------------
+  useEffect(() => {
+    const group = modelRef.current;
+    const scene = sceneRef.current;
+    if (!group || !scene) return;
+
+    if (clayMode) {
+      if (!clayMatRef.current) {
+        clayMatRef.current = new THREE.ShaderMaterial({
+          vertexShader: CLAY_VERT,
+          fragmentShader: CLAY_FRAG,
+          uniforms: { uColor: { value: new THREE.Color(clayColor).convertSRGBToLinear() } },
+        });
+      } else {
+        (clayMatRef.current.uniforms.uColor.value as THREE.Color).set(clayColor).convertSRGBToLinear();
+      }
+      scene.background = new THREE.Color("#1c1c1c");
+      const mat = clayMatRef.current;
+      group.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh || m.name === "__wire") return;
+        if (!clayOriginalMatsRef.current.has(m.uuid)) {
+          clayOriginalMatsRef.current.set(m.uuid, m.material);
+        }
+        m.material = mat;
+      });
+    } else {
+      scene.background = new THREE.Color("#241f1b");
+      group.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh || m.name === "__wire") return;
+        const orig = clayOriginalMatsRef.current.get(m.uuid);
+        if (orig !== undefined) m.material = orig;
+      });
+      clayOriginalMatsRef.current.clear();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clayMode, clayColor]);
 
   return <div ref={mountRef} className="w-full h-full min-h-[260px]" />;
 }

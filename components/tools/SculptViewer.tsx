@@ -108,6 +108,7 @@ export default function SculptViewer({
   const meshEntriesRef = useRef<SculptMeshEntry[]>([]);
   const undoRef = useRef(new SculptUndoStack());
   const brushIndicatorRef = useRef<THREE.Mesh | null>(null);
+  const brushInnerIndicatorRef = useRef<THREE.Mesh | null>(null);
   const strokeActiveRef = useRef(false);
   const lastHitRef = useRef<BrushHit | null>(null);
 
@@ -213,7 +214,7 @@ export default function SculptViewer({
     (grid.material as THREE.Material).opacity = 0.4;
     scene.add(grid);
 
-    // Brush indicator ring
+    // Brush indicator rings: outer = full radius, inner = focal zone
     const ringGeo = new THREE.TorusGeometry(1, 0.008, 6, 48);
     const ringMat = new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true, opacity: 0.7 });
     const ring = new THREE.Mesh(ringGeo, ringMat);
@@ -221,6 +222,14 @@ export default function SculptViewer({
     ring.renderOrder = 999;
     scene.add(ring);
     brushIndicatorRef.current = ring;
+
+    const innerRingGeo = new THREE.TorusGeometry(1, 0.006, 6, 48);
+    const innerRingMat = new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true, opacity: 0.35 });
+    const innerRing = new THREE.Mesh(innerRingGeo, innerRingMat);
+    innerRing.visible = false;
+    innerRing.renderOrder = 999;
+    scene.add(innerRing);
+    brushInnerIndicatorRef.current = innerRing;
 
     const resize = () => {
       const w = mount.clientWidth || 1;
@@ -380,12 +389,31 @@ export default function SculptViewer({
 
     function updateIndicator(hit: BrushHit | null) {
       const ring = brushIndicatorRef.current;
+      const innerRing = brushInnerIndicatorRef.current;
       if (!ring) return;
-      if (!hit) { ring.visible = false; return; }
+      if (!hit) {
+        ring.visible = false;
+        if (innerRing) innerRing.visible = false;
+        return;
+      }
+      const r = brushRadiusRef.current;
+      const ir = brushInnerRadiusRef.current;
+      const normal = hit.normal;
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
+
       ring.visible = true;
-      ring.scale.setScalar(brushRadiusRef.current);
+      ring.scale.setScalar(r);
       ring.position.copy(hit.point);
-      ring.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), hit.normal);
+      ring.quaternion.copy(q);
+
+      if (innerRing) {
+        innerRing.visible = ir > 0.01;
+        if (ir > 0.01) {
+          innerRing.scale.setScalar(r * ir);
+          innerRing.position.copy(hit.point);
+          innerRing.quaternion.copy(q);
+        }
+      }
     }
 
     function onPointerDown(e: PointerEvent) {

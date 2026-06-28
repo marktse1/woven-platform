@@ -432,10 +432,10 @@ export const CLASSIFICATIONS: {
   icon: string;
   blurb: string;
 }[] = [
-  { value: "auto", label: "Auto-detect", icon: "✨", blurb: "Inspect the mesh and pick the best strategy." },
-  { value: "object", label: "Object / Prop", icon: "📦", blurb: "Optimize for silhouette & surface detail. No edgeloops." },
-  { value: "biped", label: "Biped", icon: "🧍", blurb: "Edgeloops for eyes, mouth, and limb articulation." },
-  { value: "creature", label: "Creature", icon: "🐉", blurb: "Adaptive loops for non-standard anatomy." },
+  { value: "auto", label: "Auto-detect", icon: "✨", blurb: "Inspect the mesh and choose the best strategy automatically." },
+  { value: "object", label: "Object / Prop", icon: "📦", blurb: "Optimise for silhouette and surface detail. No character-specific edgeloops." },
+  { value: "biped", label: "Biped", icon: "🧍", blurb: "Stronger curvature preservation around joints and face. Queues quad retopology with biped edgeloops on the Forge worker." },
+  { value: "creature", label: "Creature", icon: "🐉", blurb: "Adaptive curvature for non-standard anatomy. Queues quad retopology on the Forge worker." },
 ];
 
 export function needsRetopoWorker(cls: Classification): boolean {

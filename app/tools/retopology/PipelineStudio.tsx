@@ -221,7 +221,11 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
     try {
       const res =
         decimateMode === "adaptive"
-          ? await optimizeGlbAdaptive(workingBuf, { targetPolys })
+          ? await optimizeGlbAdaptive(workingBuf, {
+              targetPolys,
+              curvatureWeight: isCharacter ? 4.5 : 2.5,
+              lockFraction:    isCharacter ? 0.05 : 0.02,
+            })
           : await optimizeGlb(workingBuf, { targetPolys, adaptive: false });
 
       const step = await appendTier1Step({
@@ -253,7 +257,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
     } finally {
       setBusy(false);
     }
-  }, [session, workingBuf, targetPolys, decimateMode, userId, asset?.name, steps.length, currentAssetId]);
+  }, [session, workingBuf, targetPolys, decimateMode, isCharacter, userId, asset?.name, steps.length, currentAssetId]);
 
   const applySegment = useCallback(async () => {
     if (!session || !workingBuf) return;
@@ -550,9 +554,9 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
         {/* ---- right: classification + viewer + history ---- */}
         <div className="flex flex-col gap-5">
           <div className="rounded-[12px] p-5">
-            <p className="text-[11px] font-bold tracking-[.12em] uppercase mb-3" style={{ color: "#e8e1d5" }}>What is it?</p>
+            <p className="text-[11px] font-bold tracking-[.12em] uppercase mb-3" style={{ color: "#e8e1d5" }}>Retopology</p>
             <p className="text-[12px] mb-3" style={{ color: "#c7bfb2" }}>
-              This decides whether the pipeline runs true quad retopology with edge loops, or just decimates.
+              Choose the target topology rules. Biped and Creature modes preserve more geometry around the face, joints, and articulation points during decimation. Full quad retopology with animation-ready edgeloops (Forge worker) is queued for Biped and Creature — currently in preview.
             </p>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
               {CLASSIFICATIONS.map((c) => {

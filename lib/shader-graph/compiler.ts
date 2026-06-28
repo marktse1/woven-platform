@@ -15,7 +15,7 @@ export type CompileResult =
 
 export type UniformSpec = {
   type: "float" | "vec2" | "vec3" | "vec4" | "sampler2D";
-  value: number | number[] | null;
+  value: number | number[] | string | null;
 };
 
 // Widen float → vec to satisfy a connection
@@ -164,7 +164,7 @@ export function compile(graph: ShaderGraph): CompileResult {
 
       case "Texture2D": {
         const uName = (data.uniformName as string) || `u_tex_${node.id.replace(/[^a-zA-Z0-9]/g, "_")}`;
-        uniforms[uName] = { type: "sampler2D", value: null };
+        uniforms[uName] = { type: "sampler2D", value: (data.imageUrl as string) ?? null };
         const uvExpr = inputExpr("uv", "vec2");
         const vn = varName(node.id, "color");
         lines.push(`vec4 ${vn} = texture2D(${uName}, ${uvExpr});`);

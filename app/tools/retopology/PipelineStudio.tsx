@@ -88,6 +88,8 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
   const [targetPolys, setTargetPolys] = useState(20000);
   const [retopoTargetPolys, setRetopoTargetPolys] = useState(8000);
   const [decimateMode, setDecimateMode] = useState<"uniform" | "adaptive">("adaptive");
+  const [curvatureWeight, setCurvatureWeight] = useState(5.0);
+  const [lockFraction, setLockFraction] = useState(0.05);
   const [bakeMaps, setBakeMaps] = useState<string[]>(["albedo", "normal", "ao"]);
   const [reAtlas] = useState(true);
   const [dilationPx, setDilationPx] = useState(16);
@@ -233,7 +235,8 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
         decimateMode === "adaptive"
           ? await optimizeGlbAdaptive(workingBuf, {
               targetPolys,
-              lockFraction: isCharacter ? 0.05 : 0.02,
+              curvatureWeight,
+              lockFraction: isCharacter ? Math.max(lockFraction, 0.05) : lockFraction,
             })
           : await optimizeGlb(workingBuf, { targetPolys, adaptive: false });
 
@@ -245,7 +248,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
         outputName: `${(asset?.name ?? "model").replace(/\.(glb|gltf)$/i, "")}-step${steps.length + 1}.glb`,
         outputBytes: res.output.slice().buffer,
         outputPolyCount: res.resultPolys,
-        params: { targetPolys, mode: decimateMode },
+        params: { targetPolys, mode: decimateMode, curvatureWeight, lockFraction },
         stats: { sourcePolys: res.sourcePolys, resultPolys: res.resultPolys, reduction: res.reduction },
       });
 
@@ -266,7 +269,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
     } finally {
       setBusy(false);
     }
-  }, [session, workingBuf, targetPolys, decimateMode, isCharacter, userId, asset?.name, steps.length, currentAssetId]);
+  }, [session, workingBuf, targetPolys, decimateMode, curvatureWeight, lockFraction, isCharacter, userId, asset?.name, steps.length, currentAssetId]);
 
   const applySegment = useCallback(async () => {
     if (!session || !workingBuf) return;
@@ -446,6 +449,14 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
     return last.status as "queued" | "processing";
   }, [steps]);
 
+  // Show a "worker offline" hint if the job hasn't moved in 45 s.
+  const [workerOfflineHint, setWorkerOfflineHint] = useState(false);
+  useEffect(() => {
+    if (!pendingRetopo) { setWorkerOfflineHint(false); return; }
+    const t = setTimeout(() => setWorkerOfflineHint(true), 45_000);
+    return () => clearTimeout(t);
+  }, [pendingRetopo]);
+
   const reduction = useMemo(
     () => (sourcePolys && workingPolys ? Math.round((1 - workingPolys / sourcePolys) * 100) : 0),
     [sourcePolys, workingPolys],
@@ -519,6 +530,38 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                     />
                   );
                 })()}
+                {decimateMode === "adaptive" && (
+                  <div className="mt-3 flex flex-col gap-3 pb-1">
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-[12px]" style={{ color: "#c7bfb2" }}>Detail weight</span>
+                        <span className="text-[12px] font-bold" style={{ color: "#f3946a" }}>{curvatureWeight.toFixed(1)}</span>
+                      </div>
+                      <input
+                        type="range" min={1} max={10} step={0.5}
+                        value={curvatureWeight}
+                        onChange={(e) => setCurvatureWeight(Number(e.target.value))}
+                        className="w-full h-[4px] rounded-full cursor-pointer appearance-none [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-[14px] [&::-webkit-slider-thumb]:h-[14px] [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#f2ede3] [&::-webkit-slider-thumb]:mt-[-5px] [&::-webkit-slider-thumb]:cursor-pointer"
+                        style={{ background: `linear-gradient(to right, #d65b36 ${((curvatureWeight - 1) / 9) * 100}%, #26231f ${((curvatureWeight - 1) / 9) * 100}%)` }}
+                      />
+                      <p className="text-[10px] mt-0.5" style={{ color: "#6b6460" }}>Higher = more triangles kept on curved / detailed areas</p>
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-[12px]" style={{ color: "#c7bfb2" }}>Feature lock</span>
+                        <span className="text-[12px] font-bold" style={{ color: "#f3946a" }}>{Math.round(lockFraction * 100)}%</span>
+                      </div>
+                      <input
+                        type="range" min={0} max={0.25} step={0.01}
+                        value={lockFraction}
+                        onChange={(e) => setLockFraction(Number(e.target.value))}
+                        className="w-full h-[4px] rounded-full cursor-pointer appearance-none [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-[14px] [&::-webkit-slider-thumb]:h-[14px] [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#f2ede3] [&::-webkit-slider-thumb]:mt-[-5px] [&::-webkit-slider-thumb]:cursor-pointer"
+                        style={{ background: `linear-gradient(to right, #d65b36 ${(lockFraction / 0.25) * 100}%, #26231f ${(lockFraction / 0.25) * 100}%)` }}
+                      />
+                      <p className="text-[10px] mt-0.5" style={{ color: "#6b6460" }}>Top N% of high-curvature vertices are never collapsed</p>
+                    </div>
+                  </div>
+                )}
                 <button
                   onClick={applyDecimate}
                   disabled={busy || !workingBuf}
@@ -724,7 +767,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                       color: textureChannel === c ? "#fff3ec" : "#9b9082",
                     }}
                   >
-                    {c ?? "Shaded"}
+                    {c ?? "Combined"}
                   </button>
                 ))}
                 <div className="flex-1" />
@@ -773,6 +816,13 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                     <div className="h-full rounded-full animate-pulse" style={{ width: "55%", background: "#d65b36" }} />
                   )}
                 </div>
+                {workerOfflineHint && (
+                  <p className="mt-2 text-[11px] leading-relaxed" style={{ color: "#f0a6a6" }}>
+                    Still waiting — the Forge worker may not be running.
+                    Deploy it: <code className="text-[10px]" style={{ color: "#fbbf99" }}>modal deploy worker/modal_app.py</code>
+                    {" "}(requires Modal secret <code className="text-[10px]" style={{ color: "#fbbf99" }}>woven-worker-env</code> with <code className="text-[10px]" style={{ color: "#fbbf99" }}>WOVEN_BASE_URL</code> set to your Vercel deployment URL).
+                  </p>
+                )}
               </div>
             )}
 

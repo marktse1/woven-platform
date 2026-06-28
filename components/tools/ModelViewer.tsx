@@ -152,11 +152,17 @@ function applySegmentationToGroup(
  * texture slot, or restores the original material when `channel` is null.
  * Non-color channels (normal/AO/roughness/metallic) are flagged NoColorSpace
  * so they don't get double gamma-corrected the way albedo should be.
+ *
+ * `channelCache` is a caller-owned Map that persists across calls. Debug
+ * materials are created once per (mesh, channel) pair and reused — this
+ * prevents a WebGL shader recompile (which causes the mesh to go invisible
+ * for a frame) on every mode switch.
  */
 function applyTextureChannelToGroup(
   group: THREE.Group,
   channel: TextureChannel | null | undefined,
   originalMaterials: WeakMap<THREE.Mesh, THREE.Material | THREE.Material[]>,
+  channelCache: Map<string, THREE.MeshBasicMaterial>,
 ): void {
   group.traverse((o) => {
     const mesh = o as THREE.Mesh;
@@ -173,16 +179,22 @@ function applyTextureChannelToGroup(
     const sourceMat = (Array.isArray(original) ? original[0] : original) as THREE.MeshStandardMaterial | undefined;
     if (!sourceMat) return;
 
-    const slot: Record<TextureChannel, THREE.Texture | null> = {
-      albedo: sourceMat.map ?? null,
-      normal: sourceMat.normalMap ?? null,
-      ao: sourceMat.aoMap ?? null,
-      roughness: sourceMat.roughnessMap ?? null,
-      metallic: sourceMat.metalnessMap ?? null,
-    };
-    const tex = slot[channel];
-    if (tex) tex.colorSpace = channel === "albedo" ? THREE.SRGBColorSpace : THREE.NoColorSpace;
-    mesh.material = new THREE.MeshBasicMaterial({ map: tex, color: tex ? 0xffffff : 0x333333 });
+    const cacheKey = `${mesh.uuid}-${channel}`;
+    let debugMat = channelCache.get(cacheKey);
+    if (!debugMat) {
+      const slot: Record<TextureChannel, THREE.Texture | null> = {
+        albedo: sourceMat.map ?? null,
+        normal: sourceMat.normalMap ?? null,
+        ao: sourceMat.aoMap ?? null,
+        roughness: sourceMat.roughnessMap ?? null,
+        metallic: sourceMat.metalnessMap ?? null,
+      };
+      const tex = slot[channel];
+      if (tex) tex.colorSpace = channel === "albedo" ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+      debugMat = new THREE.MeshBasicMaterial({ map: tex, color: tex ? 0xffffff : 0x333333 });
+      channelCache.set(cacheKey, debugMat);
+    }
+    mesh.material = debugMat;
   });
 }
 
@@ -200,14 +212,15 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
   const clayMatcapTexRef = useRef<THREE.Texture | null>(null);
   const lastClayColorRef = useRef<string>("");
   const clayOriginalMatsRef = useRef<Map<string, THREE.Material | THREE.Material[]>>(new Map());
+  const channelMaterialCacheRef = useRef<Map<string, THREE.MeshBasicMaterial>>(new Map());
   const onLoadErrorRef = useRef(onLoadError);
   const segmentationRef = useRef(segmentation);
-  useEffect(() => {
-    onLoadErrorRef.current = onLoadError;
-  }, [onLoadError]);
-  useEffect(() => {
-    segmentationRef.current = segmentation;
-  }, [segmentation]);
+  const textureChannelRef = useRef(textureChannel);
+  const focusedSegIdRef = useRef(focusedSegId);
+  useEffect(() => { onLoadErrorRef.current = onLoadError; }, [onLoadError]);
+  useEffect(() => { segmentationRef.current = segmentation; }, [segmentation]);
+  useEffect(() => { textureChannelRef.current = textureChannel; }, [textureChannel]);
+  useEffect(() => { focusedSegIdRef.current = focusedSegId; }, [focusedSegId]);
 
   // ---- one-time scene setup -------------------------------------------------
   useEffect(() => {
@@ -302,6 +315,8 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
     }
     originalMaterialsRef.current = new WeakMap();
     clayOriginalMatsRef.current.clear();
+    for (const mat of channelMaterialCacheRef.current.values()) mat.dispose();
+    channelMaterialCacheRef.current.clear();
     if (!data) return;
 
     const loader = new GLTFLoader();
@@ -323,8 +338,8 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
           mesh.add(wire);
         });
 
-        applySegmentationToGroup(group, segmentation, focusedSegId);
-        applyTextureChannelToGroup(group, textureChannel, originalMaterialsRef.current);
+        applySegmentationToGroup(group, segmentationRef.current, focusedSegIdRef.current);
+        applyTextureChannelToGroup(group, textureChannelRef.current, originalMaterialsRef.current, channelMaterialCacheRef.current);
 
         // frame the model
         const box = new THREE.Box3().setFromObject(group);
@@ -349,7 +364,8 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
         onLoadErrorRef.current?.(err instanceof Error ? err.message : "Could not render this model.");
       },
     );
-  }, [data, wireframe, segmentation, textureChannel]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
 
   // ---- toggle wireframe overlay ---------------------------------------------
   useEffect(() => {
@@ -359,6 +375,30 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
       if (o.name === "__wire") o.visible = wireframe;
     });
   }, [wireframe]);
+
+  // ---- live texture channel switch — no model reload -----------------------
+  useEffect(() => {
+    const group = modelRef.current;
+    if (!group) return;
+    // Pass the material cache so debug materials are reused across switches,
+    // avoiding the WebGL shader recompile that makes the mesh flicker invisible.
+    applyTextureChannelToGroup(group, textureChannel, originalMaterialsRef.current, channelMaterialCacheRef.current);
+    // No needsUpdate needed: mesh.material reassignment is detected automatically.
+  }, [textureChannel]);
+
+  // ---- live segmentation update — no model reload --------------------------
+  useEffect(() => {
+    const group = modelRef.current;
+    if (!group) return;
+    applySegmentationToGroup(group, segmentation, focusedSegId);
+    group.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh && m.geometry) {
+        const mats = Array.isArray(m.material) ? m.material : [m.material];
+        for (const mat of mats) mat.needsUpdate = true;
+      }
+    });
+  }, [segmentation, focusedSegId]);
 
   // ---- toggle grid visibility -------------------------------------------------
   useEffect(() => {
@@ -407,20 +447,6 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clayMode, clayColor]);
 
-  // ---- live segment highlight — no model reload needed ----------------------
-  useEffect(() => {
-    const group = modelRef.current;
-    const seg = segmentationRef.current;
-    if (!group || !seg) return;
-    applySegmentationToGroup(group, seg, focusedSegId);
-    group.traverse((o) => {
-      const m = o as THREE.Mesh;
-      if (m.isMesh && m.geometry) {
-        const mats = Array.isArray(m.material) ? m.material : [m.material];
-        for (const mat of mats) mat.needsUpdate = true;
-      }
-    });
-  }, [focusedSegId]);
 
   return <div ref={mountRef} className="w-full h-full min-h-[260px]" />;
 }

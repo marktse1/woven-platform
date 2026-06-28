@@ -9,6 +9,7 @@ import {
   addEdge,
   useNodesState,
   useEdgesState,
+  useReactFlow,
   type Connection,
   type Node,
   type Edge,
@@ -37,8 +38,9 @@ const TYPE_COLORS: Record<string, string> = {
   sampler2D: "#c47be8",
 };
 
-function ShaderNode({ data, type }: NodeProps & { type: string }) {
+function ShaderNode({ id, data, type }: NodeProps & { type: string }) {
   const def: NodeTypeDef | undefined = getNodeDef(type);
+  const { updateNodeData } = useReactFlow();
   if (!def) return null;
   const accent = CATEGORY_COLORS[def.category] ?? "#888";
 
@@ -98,6 +100,65 @@ function ShaderNode({ data, type }: NodeProps & { type: string }) {
         {/* Color swatch */}
         {type === "Color" && (
           <div style={{ margin: "4px 10px", height: 16, borderRadius: 4, background: `rgba(${Math.round((data.r as number ?? 1) * 255)},${Math.round((data.g as number ?? 1) * 255)},${Math.round((data.b as number ?? 1) * 255)},${data.a as number ?? 1})` }} />
+        )}
+
+        {/* Texture2D image picker */}
+        {type === "Texture2D" && (
+          <div style={{ padding: "4px 10px 6px" }}>
+            {(data.imageUrl as string) ? (
+              <div style={{ position: "relative" }}>
+                <img
+                  src={data.imageUrl as string}
+                  style={{ width: "100%", height: 56, objectFit: "cover", borderRadius: 4, display: "block" }}
+                  alt="texture"
+                />
+                <label
+                  title="Replace image"
+                  style={{ position: "absolute", inset: 0, cursor: "pointer", borderRadius: 4 }}
+                >
+                  <input
+                    type="file"
+                    accept="image/*"
+                    style={{ display: "none" }}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      const reader = new FileReader();
+                      reader.onload = () => updateNodeData(id, { imageUrl: reader.result as string });
+                      reader.readAsDataURL(file);
+                    }}
+                  />
+                </label>
+              </div>
+            ) : (
+              <label
+                style={{
+                  display: "block",
+                  cursor: "pointer",
+                  border: "1px dashed #5a4455",
+                  borderRadius: 4,
+                  padding: "6px",
+                  textAlign: "center",
+                  color: "#9980aa",
+                  fontSize: 10,
+                }}
+              >
+                Upload image
+                <input
+                  type="file"
+                  accept="image/*"
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = () => updateNodeData(id, { imageUrl: reader.result as string });
+                    reader.readAsDataURL(file);
+                  }}
+                />
+              </label>
+            )}
+          </div>
         )}
       </div>
     </div>

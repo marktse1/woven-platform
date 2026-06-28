@@ -45,73 +45,6 @@ export async function countGlbTriangles(input: ArrayBuffer): Promise<number> {
   return countTriangles(doc);
 }
 
-// ---------------------------------------------------------------------------
-// UV-safe triangle selection fallback for flat-shaded / disconnected meshes.
-//
-// simplifySloppy and every vertex-merging algorithm corrupt UV seams:
-// when two vertices share the same geometric position but have different UV
-// coordinates (the two sides of a UV seam), the algorithm picks one UV and
-// discards the other, producing scrambled textures.
-//
-// For flat-shaded / disconnected meshes where edge-collapse simplify() finds
-// nothing to do (no shared vertex indices = no collapsible edges), we fall
-// back to pure triangle selection: assign each triangle to a 3-D grid cell
-// based on its centroid, keep one representative per cell, and output those
-// triangles' ORIGINAL vertex indices completely untouched.  No vertex data is
-// ever merged or rewritten — textures are preserved exactly.
-// ---------------------------------------------------------------------------
-function selectTrianglesByGrid(
-  srcIndices: Uint32Array,
-  srcPositions: Float32Array,
-  targetTriCount: number,
-): Uint32Array {
-  const triCount = srcIndices.length / 3;
-  if (targetTriCount >= triCount) return srcIndices;
-
-  // Triangle centroids + bounding box
-  const cx = new Float32Array(triCount);
-  const cy = new Float32Array(triCount);
-  const cz = new Float32Array(triCount);
-  let minX = Infinity, minY = Infinity, minZ = Infinity;
-  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-  for (let t = 0; t < triCount; t++) {
-    const i0 = srcIndices[t * 3], i1 = srcIndices[t * 3 + 1], i2 = srcIndices[t * 3 + 2];
-    const x = (srcPositions[i0 * 3] + srcPositions[i1 * 3] + srcPositions[i2 * 3]) / 3;
-    const y = (srcPositions[i0 * 3 + 1] + srcPositions[i1 * 3 + 1] + srcPositions[i2 * 3 + 1]) / 3;
-    const z = (srcPositions[i0 * 3 + 2] + srcPositions[i1 * 3 + 2] + srcPositions[i2 * 3 + 2]) / 3;
-    cx[t] = x; cy[t] = y; cz[t] = z;
-    if (x < minX) minX = x; if (x > maxX) maxX = x;
-    if (y < minY) minY = y; if (y > maxY) maxY = y;
-    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
-  }
-  const dx = maxX - minX || 1;
-  const dy = maxY - minY || 1;
-  const dz = maxZ - minZ || 1;
-
-  // Resolution: aim for ~2× target cells so surface-only cells land near target
-  const res = Math.max(1, Math.ceil(Math.cbrt(targetTriCount * 2)));
-
-  // One representative triangle per occupied grid cell
-  const cellToTri = new Map<number, number>();
-  for (let t = 0; t < triCount; t++) {
-    const gx = Math.min(res - 1, Math.floor(((cx[t] - minX) / dx) * res));
-    const gy = Math.min(res - 1, Math.floor(((cy[t] - minY) / dy) * res));
-    const gz = Math.min(res - 1, Math.floor(((cz[t] - minZ) / dz) * res));
-    const key = gx + gy * res + gz * res * res;
-    if (!cellToTri.has(key)) cellToTri.set(key, t);
-  }
-
-  const selected = Array.from(cellToTri.values());
-  const out = new Uint32Array(selected.length * 3);
-  for (let i = 0; i < selected.length; i++) {
-    const t = selected[i];
-    out[i * 3] = srcIndices[t * 3];
-    out[i * 3 + 1] = srcIndices[t * 3 + 1];
-    out[i * 3 + 2] = srcIndices[t * 3 + 2];
-  }
-  return out;
-}
-
 function decimatePrimIndices(
   srcIndices: Uint32Array,
   srcPositions: Float32Array,
@@ -122,12 +55,16 @@ function decimatePrimIndices(
   // simply don't exist in the index buffer.  No need to include UV coordinates
   // in the error metric; doing so blocks simplification when tiling UVs have
   // values >> 1 (error contribution = weight * UV_delta >> target_error = 1).
-  const [dstIndices] = MeshoptSimplifier.simplify(srcIndices, srcPositions, 3, targetIndexCount, 1);
+  // LockBorder: keep open boundary edges in place so hems, mesh cuts, and
+  // flat-shaded seams don't collapse inward.
+  const [dstIndices] = MeshoptSimplifier.simplify(srcIndices, srcPositions, 3, targetIndexCount, 1, ["LockBorder"]);
 
   if (dstIndices.length > srcIndices.length * 0.9) {
     // Edge-collapse found no collapsible edges (flat-shaded / fully disconnected mesh).
-    // Use UV-safe triangle selection — never merges any vertex data.
-    return selectTrianglesByGrid(srcIndices, srcPositions, Math.round(targetIndexCount / 3));
+    // simplifySloppy welds by position and is guaranteed to hit the target count.
+    // Flat-shaded meshes have per-face UVs with no cross-triangle continuity to protect.
+    const [sloppy] = MeshoptSimplifier.simplifySloppy(srcIndices, srcPositions, 3, null, targetIndexCount, 1);
+    return sloppy;
   }
   return dstIndices;
 }
@@ -341,8 +278,8 @@ export async function optimizeGlbAdaptive(
 
   const sourcePolys = countTriangles(doc);
   const ratio = Math.min(0.99, Math.max(0.001, opts.targetPolys / Math.max(1, sourcePolys)));
-  const curvatureWeight = opts.curvatureWeight ?? 2.5;
-  const lockFraction = opts.lockFraction ?? 0.02;
+  const curvatureWeight = opts.curvatureWeight ?? 5.0;
+  const lockFraction = opts.lockFraction ?? 0.05;
 
   await doc.transform(weld());
 
@@ -396,12 +333,15 @@ export async function optimizeGlbAdaptive(
         nWeldedLock,
         targetIndexCount,
         1,
+        ["LockBorder"], // preserve open boundary edges
       );
 
-      // Fall back to UV-safe triangle selection for flat-shaded / disconnected meshes.
+      // Fall back to simplifySloppy for flat-shaded / disconnected meshes where
+      // edge-collapse found nothing to do. simplifySloppy welds by position and
+      // always hits the target; flat-shaded meshes have per-face UVs anyway.
       const finalIndices =
         dstIndices.length > srcIndices.length * 0.9
-          ? selectTrianglesByGrid(srcIndices, srcPositions, Math.round(targetIndexCount / 3))
+          ? MeshoptSimplifier.simplifySloppy(srcIndices, srcPositions, 3, null, targetIndexCount, 1)[0]
           : dstIndices;
 
       indicesAccessor.setArray(new Uint32Array(finalIndices));

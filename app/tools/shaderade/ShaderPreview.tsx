@@ -13,6 +13,7 @@ export default function ShaderPreview({ compiled }: Props) {
   const materialRef = useRef<THREE.ShaderMaterial | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const clockRef = useRef(new THREE.Clock());
+  const prevTexturesRef = useRef<THREE.Texture[]>([]);
 
   // One-time scene setup
   useEffect(() => {
@@ -105,6 +106,10 @@ export default function ShaderPreview({ compiled }: Props) {
     mat.vertexShader = compiled.vertexShader;
     mat.fragmentShader = compiled.fragmentShader;
 
+    // Dispose textures from the previous compile to avoid GPU leaks
+    for (const tex of prevTexturesRef.current) tex.dispose();
+    prevTexturesRef.current = [];
+
     // Rebuild uniforms
     const next: Record<string, THREE.IUniform> = {};
     for (const [name, spec] of Object.entries(compiled.uniforms)) {
@@ -120,7 +125,14 @@ export default function ShaderPreview({ compiled }: Props) {
         const v = spec.value as number[] ?? [0, 0, 0, 1];
         next[name] = { value: new THREE.Vector4(v[0], v[1], v[2], v[3]) };
       } else if (spec.type === "sampler2D") {
-        next[name] = { value: null };
+        if (spec.value && typeof spec.value === "string") {
+          const tex = new THREE.TextureLoader().load(spec.value);
+          tex.flipY = false;
+          prevTexturesRef.current.push(tex);
+          next[name] = { value: tex };
+        } else {
+          next[name] = { value: null };
+        }
       }
     }
     mat.uniforms = next;

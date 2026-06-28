@@ -594,18 +594,18 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
               </StepCard>
 
               <StepCard title="3 · Retopology" description="Quad-dominant remesh with proper edge loops on the Forge worker — best for characters and creatures." badge="Optional">
-                <div className="grid grid-cols-2 gap-1.5 mb-3">
+                <div className="flex gap-1.5 flex-wrap mb-3">
                   {CLASSIFICATIONS.map((c) => {
                     const on = classification === c.value;
                     return (
                       <button
                         key={c.value}
+                        title={c.blurb}
                         onClick={() => setClassification(c.value)}
-                        className="text-left rounded-[8px] border px-2.5 py-2"
-                        style={{ borderColor: on ? ACCENT : "rgba(255,255,255,.08)", background: on ? "rgba(226,86,42,.10)" : "#26231f" }}
+                        className="px-2.5 py-1 rounded-full border text-[12px] font-semibold"
+                        style={{ borderColor: on ? ACCENT : "rgba(255,255,255,.08)", background: on ? "rgba(226,86,42,.14)" : "#26231f", color: on ? "#fff3ec" : "#9b9082" }}
                       >
-                        <span className="font-bold text-[12px] block mb-0.5" style={{ color: on ? "#f7e9df" : "#e2dbcf" }}>{c.label}</span>
-                        <div className="text-[10.5px] leading-snug" style={{ color: "#9b9082" }}>{c.blurb}</div>
+                        {c.label}
                       </button>
                     );
                   })}
@@ -751,7 +751,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                   {compareToSource ? fmt(sourcePolys) : fmt(workingPolys)} tris{!compareToSource && reduction > 0 ? ` · ${reduction}% lighter` : ""}
                 </div>
               </div>
-              <div className="h-[clamp(260px,38vh,420px)]">
+              <div className="h-[clamp(320px,52vh,700px)]">
                 {!viewerBuf ? (
                   <div className="w-full h-full flex items-center justify-center text-[13px]" style={{ color: "#9b9082" }}>Loading…</div>
                 ) : (

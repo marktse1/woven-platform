@@ -36,6 +36,7 @@ export default function RetopologyClient() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<AssetRow | null>(null);
+  const [libraryOpen, setLibraryOpen] = useState(true);
 
   const refreshLibrary = useCallback(async () => {
     if (!user?.id) return;
@@ -109,25 +110,34 @@ export default function RetopologyClient() {
 
   return (
     <main className="min-h-[calc(100vh-73px)] bg-[#1b1815] text-ink">
-      <div className="max-w-[1600px] mx-auto px-6 lg:px-10 pt-6 pb-16">
+      <div className="max-w-[1920px] mx-auto px-6 lg:px-10 pt-6 pb-16">
         {error && (
           <div className="mb-4 p-3 rounded-[9px] border text-[13px]" style={{ borderColor: "rgba(227,92,92,.4)", background: "rgba(227,92,92,.08)", color: "#f0a6a6" }}>
             {error}
           </div>
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6 items-start">
+        <div className={`grid grid-cols-1 gap-6 items-start ${libraryOpen ? "lg:grid-cols-[1fr_300px]" : "lg:grid-cols-1"}`}>
           {/* ---- left+center: pipeline studio, always visible ---- */}
           <PipelineStudio asset={openedAsset} userId={user?.id ?? ""} onBack={() => setOpenedAsset(null)} onAssetCreated={refreshLibrary} />
 
-          {/* ---- right: upload + library, always visible ---- */}
+          {/* ---- right: upload + library, collapsible ---- */}
+          {libraryOpen ? (
           <div className="flex flex-col gap-5">
             <div className="rounded-[12px] p-4">
-              <p className="text-[11px] font-bold tracking-[.12em] uppercase mb-2.5" style={{ color: "#e8e1d5" }}>Upload</p>
+              <div className="flex items-center justify-between mb-2.5">
+                <p className="text-[11px] font-bold tracking-[.12em] uppercase" style={{ color: "#e8e1d5" }}>Upload</p>
+                <button
+                  onClick={() => setLibraryOpen(false)}
+                  className="text-[11px] px-2 py-0.5 rounded border"
+                  style={{ borderColor: "rgba(255,255,255,0.08)", color: "#6b6460" }}
+                  title="Collapse library"
+                >✕</button>
+              </div>
               <DropZone onFile={onFile} hint="Drop a GLB" compact accentColor="#e2562a" inactiveBorder="rgba(226,86,42,.30)" baseBg="rgba(226,86,42,0.05)" />
               {busy && <p className="text-[11.5px] mt-2 text-center" style={{ color: "#c7bfb2" }}>Uploading…</p>}
               <p className="text-[11px] mt-2.5 leading-relaxed" style={{ color: "#c7bfb2" }}>
-                Select an asset below, or drop a new one — decimate, retopologize with edge loops, segment, and finalize in any order.
+                Select an asset below, or drop a new one.
               </p>
             </div>
 
@@ -187,6 +197,18 @@ export default function RetopologyClient() {
               )}
             </div>
           </div>
+          ) : (
+            <div className="hidden lg:flex flex-col items-center pt-2">
+              <button
+                onClick={() => setLibraryOpen(true)}
+                className="text-[11px] px-2.5 py-1.5 rounded-lg border"
+                style={{ borderColor: "rgba(255,255,255,0.08)", background: "#2c2926", color: "#9b9082" }}
+                title="Open library"
+              >
+                Library ▸
+              </button>
+            </div>
+          )}
         </div>
       </div>
 

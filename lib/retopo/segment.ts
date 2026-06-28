@@ -4,6 +4,15 @@
 // segmentation works identically regardless of whether it runs before or
 // after decimation/retopology: it's always recomputed fresh from whatever
 // the mesh's current primitive/material/connectivity structure is.
+//
+// Smart grouping (Option A): if a mesh node has a meaningful name (not a
+// Blender/Three.js default like "Mesh.001"), all its primitives and islands
+// are merged into one segment with that name as the label. This collapses
+// e.g. 50 disconnected hair islands into a single "hair" entry.
+//
+// Size merge (Option B): after segmentation, any segment below 1% of total
+// triangles is collapsed into a "Small parts" catch-all so minor geometry
+// (buttons, buckles, stray polys) doesn't flood the list.
 
 import { WebIO } from "@gltf-transform/core";
 
@@ -81,6 +90,14 @@ function connectedComponents(indices: Uint32Array): Int32Array {
   return islandPerTriangle;
 }
 
+// Names that 3D tools assign by default — not meaningful for grouping.
+const DEFAULT_NAME_RE = /^(Mesh|Object|Cube|Sphere|Cylinder|Plane|Torus|Cone|Group|mesh|object|node|primitive)([._]\d+)?$/i;
+
+function isMeaningfulName(name: string): boolean {
+  if (!name || !name.trim()) return false;
+  return !DEFAULT_NAME_RE.test(name.trim());
+}
+
 export async function segmentByConnectivity(input: ArrayBuffer): Promise<SegmentationResult> {
   const io = new WebIO();
   const doc = await io.readBinary(new Uint8Array(input));
@@ -88,49 +105,112 @@ export async function segmentByConnectivity(input: ArrayBuffer): Promise<Segment
   const segments: Segment[] = [];
   const perPrimitiveSegmentIds: Int32Array[] = [];
   let nextSegmentId = 0;
+  let totalTriangles = 0;
 
   doc.getRoot().listMeshes().forEach((mesh, meshIndex) => {
-    mesh.listPrimitives().forEach((prim, primitiveIndex) => {
-      const indicesAccessor = prim.getIndices();
-      const positionAccessor = prim.getAttribute("POSITION");
-      if (!indicesAccessor || !positionAccessor) return;
+    const meshName = mesh.getName();
 
-      const rawIndices = indicesAccessor.getArray();
-      if (!rawIndices) return;
-      const indices = rawIndices instanceof Uint32Array ? rawIndices : Uint32Array.from(rawIndices);
-      const triCount = indices.length / 3;
-      if (triCount === 0) return;
+    if (isMeaningfulName(meshName)) {
+      // Option A: named mesh — merge all primitives + islands into one segment.
+      const segId = nextSegmentId;
+      let meshTriCount = 0;
 
-      const islandPerTriangle = connectedComponents(indices);
-      const materialName = prim.getMaterial()?.getName() ?? null;
+      mesh.listPrimitives().forEach((prim) => {
+        const indicesAccessor = prim.getIndices();
+        if (!indicesAccessor) return;
+        const rawIndices = indicesAccessor.getArray();
+        if (!rawIndices) return;
+        const triCount = rawIndices.length / 3;
+        if (triCount === 0) return;
+        meshTriCount += triCount;
+        totalTriangles += triCount;
+        perPrimitiveSegmentIds.push(new Int32Array(triCount).fill(segId));
+      });
 
-      const islandTriCounts = new Map<number, number>();
-      for (let t = 0; t < triCount; t++) {
-        const island = islandPerTriangle[t];
-        islandTriCounts.set(island, (islandTriCounts.get(island) ?? 0) + 1);
-      }
-
-      const islandToSegmentId = new Map<number, number>();
-      for (const [island, triangleCount] of islandTriCounts) {
-        islandToSegmentId.set(island, nextSegmentId);
-        segments.push({ id: nextSegmentId, meshIndex, primitiveIndex, materialName, triangleCount, islandIndex: island });
+      if (meshTriCount > 0) {
+        segments.push({
+          id: segId,
+          meshIndex,
+          primitiveIndex: 0,
+          materialName: meshName,
+          triangleCount: meshTriCount,
+          islandIndex: 0,
+        });
         nextSegmentId++;
       }
+    } else {
+      // Connectivity-per-island (original behavior for unnamed meshes).
+      mesh.listPrimitives().forEach((prim, primitiveIndex) => {
+        const indicesAccessor = prim.getIndices();
+        const positionAccessor = prim.getAttribute("POSITION");
+        if (!indicesAccessor || !positionAccessor) return;
 
-      const segmentIds = new Int32Array(triCount);
-      for (let t = 0; t < triCount; t++) {
-        segmentIds[t] = islandToSegmentId.get(islandPerTriangle[t])!;
-      }
-      perPrimitiveSegmentIds.push(segmentIds);
-    });
+        const rawIndices = indicesAccessor.getArray();
+        if (!rawIndices) return;
+        const indices = rawIndices instanceof Uint32Array ? rawIndices : Uint32Array.from(rawIndices);
+        const triCount = indices.length / 3;
+        if (triCount === 0) return;
+
+        const islandPerTriangle = connectedComponents(indices);
+        const materialName = prim.getMaterial()?.getName() ?? null;
+
+        const islandTriCounts = new Map<number, number>();
+        for (let t = 0; t < triCount; t++) {
+          const island = islandPerTriangle[t];
+          islandTriCounts.set(island, (islandTriCounts.get(island) ?? 0) + 1);
+        }
+
+        const islandToSegmentId = new Map<number, number>();
+        for (const [island, triangleCount] of islandTriCounts) {
+          islandToSegmentId.set(island, nextSegmentId);
+          segments.push({ id: nextSegmentId, meshIndex, primitiveIndex, materialName, triangleCount, islandIndex: island });
+          nextSegmentId++;
+        }
+
+        totalTriangles += triCount;
+        const segmentIds = new Int32Array(triCount);
+        for (let t = 0; t < triCount; t++) {
+          segmentIds[t] = islandToSegmentId.get(islandPerTriangle[t])!;
+        }
+        perPrimitiveSegmentIds.push(segmentIds);
+      });
+    }
   });
 
-  const totalTriangles = perPrimitiveSegmentIds.reduce((sum, arr) => sum + arr.length, 0);
-  const trianglePerSegment = new Int32Array(totalTriangles);
+  // Build flat trianglePerSegment array.
+  const flatTotal = perPrimitiveSegmentIds.reduce((s, a) => s + a.length, 0);
+  const trianglePerSegment = new Int32Array(flatTotal);
   let offset = 0;
   for (const arr of perPrimitiveSegmentIds) {
     trianglePerSegment.set(arr, offset);
     offset += arr.length;
+  }
+
+  // Option B: merge segments smaller than 1% of total triangles into "Small parts".
+  const smallThreshold = Math.max(50, totalTriangles * 0.01);
+  const smallSegIds = new Set(
+    segments.filter((s) => s.triangleCount < smallThreshold).map((s) => s.id),
+  );
+
+  if (smallSegIds.size >= 2) {
+    const smallPartsId = nextSegmentId;
+    let smallTotal = 0;
+    for (let i = 0; i < trianglePerSegment.length; i++) {
+      if (smallSegIds.has(trianglePerSegment[i])) {
+        trianglePerSegment[i] = smallPartsId;
+        smallTotal++;
+      }
+    }
+    const merged = segments.filter((s) => !smallSegIds.has(s.id));
+    merged.push({
+      id: smallPartsId,
+      meshIndex: -1,
+      primitiveIndex: -1,
+      materialName: `Small parts (${smallSegIds.size})`,
+      triangleCount: smallTotal,
+      islandIndex: 0,
+    });
+    return { segments: merged, trianglePerSegment };
   }
 
   return { segments, trianglePerSegment };

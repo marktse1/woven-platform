@@ -315,10 +315,16 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
     setBakeStage("");
     setStatus("Baking textures — UV unwrap + texture transfer running on the server…");
     try {
+      // Always bake from the last geometry step (decimate/retopo), never from a
+      // previously-baked output — baked meshes have xatlas UVs that don't correspond
+      // to the source texture's UV layout, which scrambles the texture transfer.
+      const lastGeomStep = [...steps].reverse().find((s) => s.op !== "bake" && s.output_asset_id);
+      const loResAssetId = lastGeomStep?.output_asset_id ?? asset?.id ?? currentAssetId;
+
       const res = await fetch("/api/tools/retopology/bake", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId, loResAssetId: currentAssetId, bakeMaps, reAtlas, sourceAssetId: asset?.id }),
+        body: JSON.stringify({ userId, loResAssetId, bakeMaps, reAtlas, sourceAssetId: asset?.id }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));

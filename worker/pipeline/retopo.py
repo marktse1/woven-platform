@@ -15,6 +15,24 @@ import bpy
 from . import io_glb
 
 
+def _fix_for_quadriflow(obj) -> None:
+    """Fix normals and minor non-manifold issues before QuadriFlow.
+
+    After GLB import + weld-by-distance, every vertex has a single geometric
+    position but normals that were baked per-loop by the exporter. QuadriFlow
+    requires consistent outward-facing normals and a manifold surface — without
+    this fix it prints the 'needs to be manifold' warning and outputs the mesh
+    unchanged (no remeshing at all).
+    """
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_all(action="SELECT")
+    bpy.ops.mesh.normals_make_consistent(inside=False)
+    # Close tiny holes (≤4 edges) that arise at UV boundaries after welding.
+    bpy.ops.mesh.fill_holes(sides=4)
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+
 def _mark_sharp_edges(obj, angle_deg: float = 45.0) -> None:
     bpy.context.view_layer.objects.active = obj
     bpy.ops.object.mode_set(mode="EDIT")
@@ -66,9 +84,12 @@ def run(input_path: str, output_path: str, classification: str, target_polys: in
     for obj, obj_faces in zip(objs, obj_face_counts):
         frac = obj_faces / total_faces
         target_for_obj = max(4, int(target_faces_total * frac))
+        print(f"retopo: obj={obj.name} source_faces={obj_faces} target_faces={target_for_obj}")
+        _fix_for_quadriflow(obj)
         _mark_sharp_edges(obj)
         _quadriflow(obj, target_for_obj)
         _cleanup(obj)
+        print(f"retopo: obj={obj.name} result_faces={_face_count(obj)}")
 
     result_tris = io_glb.triangle_count()
     io_glb.export_glb(output_path)

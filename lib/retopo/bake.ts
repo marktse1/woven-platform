@@ -191,27 +191,44 @@ export async function unwrapAndBake(
 
   // ---------------------------------------------------------------------------
   // Re-atlas mode — run xatlas + rasterise textures into new UV space.
+  // When texSourceBuf is provided (original hi-res upload), read textures from
+  // there rather than from the lo-res mesh, which may have no embedded textures
+  // after decimation. The lo-res TEXCOORD_0 values are compatible because UV-safe
+  // decimation preserves vertex attributes on surviving vertices.
   // ---------------------------------------------------------------------------
   const xatlasModule = await createXAtlas();
+
+  // Pre-load the hi-res source document once, outside the mesh loop.
+  const srcDoc = opts.texSourceBuf
+    ? await new WebIO().readBinary(new Uint8Array(opts.texSourceBuf))
+    : null;
+  const srcMatList = srcDoc?.getRoot().listMaterials() ?? [];
 
   for (const mesh of doc.getRoot().listMeshes()) {
     for (const prim of mesh.listPrimitives()) {
       if (!prim.getIndices() || !prim.getAttribute("POSITION")) continue;
 
-      // Per-primitive material — each prim may reference different textures.
-      const mat = prim.getMaterial() ?? null;
+      // Resolve the material to read textures from:
+      // 1. Matching source material by name (hi-res → lo-res correspondence)
+      // 2. First material in source doc (single-material models)
+      // 3. Lo-res own material (fallback when no texSourceBuf provided)
+      const lrMat = prim.getMaterial() ?? null;
+      const srcMat: typeof lrMat =
+        srcMatList.find((m) => m.getName() && m.getName() === lrMat?.getName()) ??
+        (srcMatList[0] as typeof lrMat | undefined) ??
+        lrMat;
 
       onProgress?.("decoding textures", 0.05);
       const [albedoSrc, normalSrc, aoSrc] = await Promise.all([
-        bakeMaps.includes("albedo") ? decodeTex(mat?.getBaseColorTexture()) : Promise.resolve(null),
-        bakeMaps.includes("normal") ? decodeTex(mat?.getNormalTexture())    : Promise.resolve(null),
-        bakeMaps.includes("ao")     ? decodeTex(mat?.getOcclusionTexture()) : Promise.resolve(null),
+        bakeMaps.includes("albedo") ? decodeTex(srcMat?.getBaseColorTexture()) : Promise.resolve(null),
+        bakeMaps.includes("normal") ? decodeTex(srcMat?.getNormalTexture())    : Promise.resolve(null),
+        bakeMaps.includes("ao")     ? decodeTex(srcMat?.getOcclusionTexture()) : Promise.resolve(null),
       ]);
 
       if (!albedoSrc && !normalSrc && !aoSrc) {
         throw new Error(
-          "No embedded textures found in the mesh for re-atlasing. " +
-          "Switch to 'Preserve original UVs' mode, or provide a source asset with embedded textures.",
+          "No embedded textures found in the source model. " +
+          "Make sure the original GLB has embedded textures (not external URI references).",
         );
       }
 
@@ -311,9 +328,9 @@ export async function unwrapAndBake(
           .setImage(new Uint8Array(pngBuf))
           .setMimeType("image/png")
           .setURI("");
-        if (name === "albedo" && mat) mat.setBaseColorTexture(newTex);
-        if (name === "normal" && mat) mat.setNormalTexture(newTex);
-        if (name === "ao"     && mat) mat.setOcclusionTexture(newTex);
+        if (name === "albedo" && lrMat) lrMat.setBaseColorTexture(newTex);
+        if (name === "normal" && lrMat) lrMat.setNormalTexture(newTex);
+        if (name === "ao"     && lrMat) lrMat.setOcclusionTexture(newTex);
       }
 
       // Expand all vertex attributes to the xatlas output vertex count.

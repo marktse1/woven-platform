@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
       sourceAssetId?: string;
     };
 
-    const { userId, loResAssetId, bakeMaps, reAtlas = false, sourceAssetId } = body;
+    const { userId, loResAssetId, bakeMaps, reAtlas = true, sourceAssetId } = body;
     if (!userId || !loResAssetId) {
       return NextResponse.json({ error: "userId and loResAssetId required" }, { status: 400 });
     }

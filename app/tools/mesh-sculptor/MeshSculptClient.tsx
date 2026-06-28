@@ -53,11 +53,11 @@ export default function MeshSculptClient() {
   const [brushStrength, setBrushStrength] = useState(0.5);
 
   const [clayMode, setClayMode] = useState(false);
-  const [clayColor, setClayColor] = useState("#c4a882");
+  const [clayColor, setClayColor] = useState("#ddd8cc");
 
   const CLAY_PRESETS = [
-    { color: "#c4a882", label: "Clay" },
-    { color: "#e8e0d5", label: "Cream" },
+    { color: "#ddd8cc", label: "Clay" },
+    { color: "#c4a882", label: "Warm" },
     { color: "#3a3735", label: "Dark" },
   ];
 

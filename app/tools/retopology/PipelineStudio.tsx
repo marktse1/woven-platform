@@ -533,8 +533,8 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                 <button
                   onClick={applySegment}
                   disabled={busy || !workingBuf}
-                  className="w-full py-2.5 rounded-[9px] font-bold text-[13px] border disabled:opacity-50"
-                  style={{ background: "#2c2926", borderColor: "rgba(255,255,255,0.08)", color: "#9b9082" }}
+                  className="w-full py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
+                  style={{ background: "#e2562a", color: "#fff3ec" }}
                 >
                   Apply
                 </button>
@@ -636,16 +636,6 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                 >
                   {pendingRetopo ? "Queued on Forge worker…" : "Apply"}
                 </button>
-                {pendingRetopo && (
-                  <div className="mt-3">
-                    <div className="flex justify-between text-[11px] mb-1.5" style={{ color: "#9b9082" }}>
-                      <span>{pendingRetopo === "queued" ? "Waiting for Forge worker…" : "Processing on Forge worker…"}</span>
-                    </div>
-                    <div className="h-[3px] rounded-full overflow-hidden" style={{ background: "#26231f" }}>
-                      <div className="h-full rounded-full animate-pulse" style={{ width: "60%", background: "#e2562a" }} />
-                    </div>
-                  </div>
-                )}
               </StepCard>
 
               <StepCard
@@ -676,20 +666,6 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                 >
                   {busy ? "Baking…" : "Apply"}
                 </button>
-                {busy && (
-                  <div className="mt-3">
-                    <div className="flex justify-between text-[11px] mb-1.5" style={{ color: "#9b9082" }}>
-                      <span className="capitalize">{bakeStage || "starting…"}</span>
-                      <span>{Math.round(bakeProgress * 100)}%</span>
-                    </div>
-                    <div className="h-[3px] rounded-full overflow-hidden" style={{ background: "#26231f" }}>
-                      <div
-                        className="h-full rounded-full transition-all duration-500 ease-out"
-                        style={{ width: `${Math.max(bakeProgress * 100, 2)}%`, background: "#e2562a" }}
-                      />
-                    </div>
-                  </div>
-                )}
               </StepCard>
           </>
         </div>
@@ -775,6 +751,30 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                 )}
               </div>
             </div>
+
+            {/* ---- global progress bar ---- */}
+            {(busy || pendingRetopo) && (
+              <div className="px-1">
+                <div className="flex items-center justify-between text-[11px] mb-1.5" style={{ color: "#9b9082" }}>
+                  <span className="capitalize">
+                    {pendingRetopo
+                      ? (pendingRetopo === "queued" ? "Waiting for Forge worker…" : "Processing on Forge worker…")
+                      : (bakeStage || "Working…")}
+                  </span>
+                  {busy && bakeProgress > 0 && <span>{Math.round(bakeProgress * 100)}%</span>}
+                </div>
+                <div className="h-[3px] rounded-full overflow-hidden" style={{ background: "#26231f" }}>
+                  {busy && bakeProgress > 0 ? (
+                    <div
+                      className="h-full rounded-full transition-all duration-500 ease-out"
+                      style={{ width: `${Math.max(bakeProgress * 100, 2)}%`, background: "#e2562a" }}
+                    />
+                  ) : (
+                    <div className="h-full rounded-full animate-pulse" style={{ width: "55%", background: "#e2562a" }} />
+                  )}
+                </div>
+              </div>
+            )}
 
             <div className="rounded-[12px] p-5">
               <p className="text-[11px] font-bold tracking-[.12em] uppercase mb-3" style={{ color: "#e8e1d5" }}>Pipeline history</p>

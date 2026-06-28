@@ -94,7 +94,7 @@ export default function SculptViewer({
   brushInnerRadius,
   brushStrength,
   clayMode = false,
-  clayColor = "#ddd8cc",
+  clayColor = "#ebe7e1",
   onModelLoaded,
   onLoadError,
   handleRef,

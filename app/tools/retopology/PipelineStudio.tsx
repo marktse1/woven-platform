@@ -37,7 +37,7 @@ const ModelViewer = dynamic(() => import("@/components/tools/ModelViewer"), {
   loading: () => <div className="w-full h-full flex items-center justify-center text-[12px]" style={{ color: "#9b9082" }}>Loading viewer…</div>,
 });
 
-const ACCENT = "#e2562a";
+const ACCENT = "#d65b36";
 
 function fmt(n: number | null | undefined) {
   if (n == null) return "—";
@@ -60,7 +60,7 @@ async function fetchAssetBytes(assetId: string): Promise<ArrayBuffer> {
 function StepBadge({ status }: { status: PipelineStepRow["status"] }) {
   const map: Record<PipelineStepRow["status"], { bg: string; c: string; label: string }> = {
     queued: { bg: "rgba(232,169,58,.16)", c: "#f0c66a", label: "queued" },
-    processing: { bg: "rgba(226,86,42,.16)", c: "#ffb09a", label: "processing" },
+    processing: { bg: "rgba(214,91,54,.16)", c: "#ffb09a", label: "processing" },
     done: { bg: "rgba(123,194,74,.16)", c: "#a6e06a", label: "done" },
     failed: { bg: "rgba(227,92,92,.16)", c: "#e88", label: "failed" },
   };
@@ -483,7 +483,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                       key={m}
                       onClick={() => setDecimateMode(m)}
                       className="flex-1 py-2 rounded-lg border text-[12.5px] font-semibold capitalize"
-                      style={{ borderColor: decimateMode === m ? ACCENT : "rgba(255,255,255,0.08)", background: decimateMode === m ? "rgba(226,86,42,.14)" : "#2c2926", color: decimateMode === m ? "#fff3ec" : "#9b9082" }}
+                      style={{ borderColor: decimateMode === m ? ACCENT : "rgba(255,255,255,0.08)", background: decimateMode === m ? "rgba(214,91,54,.14)" : "#2c2926", color: decimateMode === m ? "#fff3ec" : "#9b9082" }}
                     >
                       {m}
                     </button>
@@ -514,8 +514,8 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                       step={100}
                       value={sVal}
                       onChange={(e) => setTargetPolys(Number(e.target.value))}
-                      className="w-full h-[4px] rounded-full cursor-pointer appearance-none [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-[14px] [&::-webkit-slider-thumb]:h-[14px] [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#f2ede3] [&::-webkit-slider-thumb]:mt-[-5px] [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-track]:h-[4px] [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-[#26231f] [&::-moz-range-progress]:h-[4px] [&::-moz-range-progress]:rounded-full [&::-moz-range-progress]:bg-[#e2562a]"
-                      style={{ background: `linear-gradient(to right, #e2562a ${pct}%, #26231f ${pct}%)` }}
+                      className="w-full h-[4px] rounded-full cursor-pointer appearance-none [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-[14px] [&::-webkit-slider-thumb]:h-[14px] [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#f2ede3] [&::-webkit-slider-thumb]:mt-[-5px] [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-track]:h-[4px] [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-[#26231f] [&::-moz-range-progress]:h-[4px] [&::-moz-range-progress]:rounded-full [&::-moz-range-progress]:bg-[#d65b36]"
+                      style={{ background: `linear-gradient(to right, #d65b36 ${pct}%, #26231f ${pct}%)` }}
                     />
                   );
                 })()}
@@ -523,7 +523,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                   onClick={applyDecimate}
                   disabled={busy || !workingBuf}
                   className="w-full py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
-                  style={{ background: "#e2562a", color: "#fff3ec" }}
+                  style={{ background: "#d65b36", color: "#fff3ec" }}
                 >
                   Apply
                 </button>
@@ -534,7 +534,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                   onClick={applySegment}
                   disabled={busy || !workingBuf}
                   className="w-full py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
-                  style={{ background: "#e2562a", color: "#fff3ec" }}
+                  style={{ background: "#d65b36", color: "#fff3ec" }}
                 >
                   Apply
                 </button>
@@ -608,7 +608,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                         title={c.blurb}
                         onClick={() => setClassification(c.value)}
                         className="px-2.5 py-1 rounded-full border text-[12px] font-semibold"
-                        style={{ borderColor: on ? ACCENT : "rgba(255,255,255,.08)", background: on ? "rgba(226,86,42,.14)" : "#26231f", color: on ? "#fff3ec" : "#9b9082" }}
+                        style={{ borderColor: on ? ACCENT : "rgba(255,255,255,.08)", background: on ? "rgba(214,91,54,.14)" : "#26231f", color: on ? "#fff3ec" : "#9b9082" }}
                       >
                         {c.label}
                       </button>
@@ -632,7 +632,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                   onClick={applyRetopo}
                   disabled={busy || !!pendingRetopo}
                   className="w-full py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
-                  style={{ background: "#e2562a", color: "#fff3ec" }}
+                  style={{ background: "#d65b36", color: "#fff3ec" }}
                 >
                   {pendingRetopo ? "Queued on Forge worker…" : "Apply"}
                 </button>
@@ -650,7 +650,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                         key={m}
                         onClick={() => setBakeMaps((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]))}
                         className="text-[12px] px-2.5 py-1 rounded-full border capitalize"
-                        style={{ borderColor: on ? ACCENT : "rgba(255,255,255,0.08)", background: on ? "rgba(226,86,42,.14)" : "#2c2926", color: on ? "#fff3ec" : "#9b9082" }}
+                        style={{ borderColor: on ? ACCENT : "rgba(255,255,255,0.08)", background: on ? "rgba(214,91,54,.14)" : "#2c2926", color: on ? "#fff3ec" : "#9b9082" }}
                       >
                         {m}
                       </button>
@@ -662,7 +662,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                   onClick={applyBake}
                   disabled={busy || !workingBuf}
                   className="w-full py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
-                  style={{ background: "#e2562a", color: "#fff3ec" }}
+                  style={{ background: "#d65b36", color: "#fff3ec" }}
                 >
                   {busy ? "Baking…" : "Apply"}
                 </button>
@@ -678,28 +678,28 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                   onClick={() => setCompareToSource((v) => !v)}
                   disabled={!sourceBuf}
                   className="px-3 py-1.5 rounded-lg border text-[12.5px] font-semibold disabled:opacity-40"
-                  style={{ borderColor: compareToSource ? ACCENT : "rgba(255,255,255,0.08)", background: compareToSource ? "rgba(226,86,42,.14)" : "transparent", color: compareToSource ? "#fff3ec" : "#9b9082" }}
+                  style={{ borderColor: compareToSource ? ACCENT : "rgba(255,255,255,0.08)", background: compareToSource ? "rgba(214,91,54,.14)" : "transparent", color: compareToSource ? "#fff3ec" : "#9b9082" }}
                 >
                   {compareToSource ? "Viewing source" : "Viewing current"}
                 </button>
                 <button
                   onClick={() => setWireframe((v) => !v)}
                   className="px-3 py-1.5 rounded-lg border text-[12.5px] font-semibold"
-                  style={{ borderColor: wireframe ? ACCENT : "rgba(255,255,255,0.08)", background: wireframe ? "rgba(226,86,42,.14)" : "transparent", color: wireframe ? "#fff3ec" : "#9b9082" }}
+                  style={{ borderColor: wireframe ? ACCENT : "rgba(255,255,255,0.08)", background: wireframe ? "rgba(214,91,54,.14)" : "transparent", color: wireframe ? "#fff3ec" : "#9b9082" }}
                 >
                   Wireframe {wireframe ? "on" : "off"}
                 </button>
                 <button
                   onClick={() => setShowGrid((v) => !v)}
                   className="px-3 py-1.5 rounded-lg border text-[12.5px] font-semibold"
-                  style={{ borderColor: showGrid ? ACCENT : "rgba(255,255,255,0.08)", background: showGrid ? "rgba(226,86,42,.14)" : "transparent", color: showGrid ? "#fff3ec" : "#9b9082" }}
+                  style={{ borderColor: showGrid ? ACCENT : "rgba(255,255,255,0.08)", background: showGrid ? "rgba(214,91,54,.14)" : "transparent", color: showGrid ? "#fff3ec" : "#9b9082" }}
                 >
                   Grid {showGrid ? "on" : "off"}
                 </button>
                 <button
                   onClick={() => setClayMode((v) => !v)}
                   className="px-3 py-1.5 rounded-lg border text-[12.5px] font-semibold"
-                  style={{ borderColor: clayMode ? ACCENT : "rgba(255,255,255,0.08)", background: clayMode ? "rgba(226,86,42,.14)" : "transparent", color: clayMode ? "#fff3ec" : "#9b9082" }}
+                  style={{ borderColor: clayMode ? ACCENT : "rgba(255,255,255,0.08)", background: clayMode ? "rgba(214,91,54,.14)" : "transparent", color: clayMode ? "#fff3ec" : "#9b9082" }}
                 >
                   Clay {clayMode ? "on" : "off"}
                 </button>
@@ -720,7 +720,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                     className="px-3 py-1.5 rounded-lg border text-[12.5px] font-semibold capitalize"
                     style={{
                       borderColor: textureChannel === c ? ACCENT : "rgba(255,255,255,0.08)",
-                      background: textureChannel === c ? "rgba(226,86,42,.14)" : "transparent",
+                      background: textureChannel === c ? "rgba(214,91,54,.14)" : "transparent",
                       color: textureChannel === c ? "#fff3ec" : "#9b9082",
                     }}
                   >
@@ -767,10 +767,10 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                   {busy && bakeProgress > 0 ? (
                     <div
                       className="h-full rounded-full transition-all duration-500 ease-out"
-                      style={{ width: `${Math.max(bakeProgress * 100, 2)}%`, background: "#e2562a" }}
+                      style={{ width: `${Math.max(bakeProgress * 100, 2)}%`, background: "#d65b36" }}
                     />
                   ) : (
-                    <div className="h-full rounded-full animate-pulse" style={{ width: "55%", background: "#e2562a" }} />
+                    <div className="h-full rounded-full animate-pulse" style={{ width: "55%", background: "#d65b36" }} />
                   )}
                 </div>
               </div>

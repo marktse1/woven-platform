@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import dynamic from "next/dynamic";
 import { useUser } from "@clerk/nextjs";
 import DropZone from "@/components/tools/DropZone";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
@@ -18,9 +17,6 @@ import {
 } from "@/lib/assets";
 import PaintStudio from "./PaintStudio";
 
-// The lighter ModelViewer (not PaintViewer, which needs a lot of paint-specific
-// seed data) is enough for the empty "nothing selected yet" state.
-const ModelViewer = dynamic(() => import("@/components/tools/ModelViewer"), { ssr: false });
 
 function fmt(n: number | null | undefined) {
   if (n == null) return "—";
@@ -133,8 +129,12 @@ export default function SubstanceWeaverClient() {
             {openedAsset && user?.id ? (
               <PaintStudio asset={openedAsset} userId={user.id} onBack={() => setOpenedAsset(null)} onAssetCreated={refreshLibrary} />
             ) : (
-              <div className="bg-panel border border-line rounded-[12px] overflow-hidden h-[clamp(260px,38vh,420px)]">
-                <ModelViewer data={null} wireframe={false} accent="#56a6e8" />
+              <div
+                className="bg-panel border border-line rounded-[12px] h-[clamp(320px,52vh,700px)] flex flex-col items-center justify-center gap-2"
+                style={{ borderStyle: "dashed" }}
+              >
+                <p className="text-[15px] font-bold" style={{ color: "#3a5a7a" }}>No model loaded</p>
+                <p className="text-[12.5px]" style={{ color: "#2a4258" }}>Drop a GLB or pick one from your library</p>
               </div>
             )}
           </div>
@@ -158,7 +158,7 @@ export default function SubstanceWeaverClient() {
               {assets.length === 0 ? (
                 <div className="text-[12.5px] text-dim">No assets yet. Drop a GLB to get started — private by default.</div>
               ) : (
-                <div className="flex flex-col gap-2 max-h-[520px] overflow-y-auto">
+                <div className="flex flex-col gap-2">
                   {assets.map((a) => (
                     <div
                       key={a.id}

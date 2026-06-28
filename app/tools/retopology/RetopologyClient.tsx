@@ -96,7 +96,7 @@ export default function RetopologyClient() {
             Forge tools are available once your creator profile is approved.
           </p>
           <div className="flex gap-2 mt-5">
-            <Link href="/creator" className="px-4 py-2 rounded-[8px] font-bold text-[13px] no-underline" style={{ background: "linear-gradient(180deg,#e2562a,#2c6aa0)", color: "#06121d" }}>
+            <Link href="/creator" className="px-4 py-2 rounded-[8px] font-bold text-[13px] no-underline" style={{ background: "linear-gradient(180deg,#d65b36,#2c6aa0)", color: "#06121d" }}>
               Become a creator
             </Link>
             <Link href="/forge" className="px-4 py-2 rounded-[8px] border border-line bg-panel2 text-[13px] font-semibold no-underline">
@@ -134,7 +134,7 @@ export default function RetopologyClient() {
                   title="Collapse library"
                 >✕</button>
               </div>
-              <DropZone onFile={onFile} hint="Drop a GLB" compact accentColor="#e2562a" inactiveBorder="rgba(226,86,42,.30)" baseBg="rgba(226,86,42,0.05)" />
+              <DropZone onFile={onFile} hint="Drop a GLB" compact accentColor="#d65b36" inactiveBorder="rgba(214,91,54,.30)" baseBg="rgba(214,91,54,0.05)" />
               {busy && <p className="text-[11.5px] mt-2 text-center" style={{ color: "#c7bfb2" }}>Uploading…</p>}
               <p className="text-[11px] mt-2.5 leading-relaxed" style={{ color: "#c7bfb2" }}>
                 Select an asset below, or drop a new one.
@@ -155,8 +155,8 @@ export default function RetopologyClient() {
                       key={a.id}
                       className="flex items-center gap-2 p-2.5 rounded-[9px] border transition-colors"
                       style={{
-                        background: openedAsset?.id === a.id ? "rgba(226,86,42,.08)" : "transparent",
-                        borderColor: openedAsset?.id === a.id ? "rgba(226,86,42,.40)" : "rgba(255,255,255,.06)",
+                        background: openedAsset?.id === a.id ? "rgba(214,91,54,.08)" : "transparent",
+                        borderColor: openedAsset?.id === a.id ? "rgba(214,91,54,.40)" : "rgba(255,255,255,.06)",
                       }}
                     >
                       <button onClick={() => setOpenedAsset(a)} className="min-w-0 flex-1 text-left">
@@ -171,7 +171,7 @@ export default function RetopologyClient() {
                             className="appearance-none rounded-md px-1.5 py-1 text-[11.5px]"
                             style={{
                               background: "#2c2926",
-                              border: `1px solid ${openedAsset?.id === a.id ? "rgba(226,86,42,.45)" : "rgba(255,255,255,0.12)"}`,
+                              border: `1px solid ${openedAsset?.id === a.id ? "rgba(214,91,54,.45)" : "rgba(255,255,255,0.12)"}`,
                               color: "#f3946a",
                               WebkitAppearance: "none",
                             }}
@@ -187,7 +187,7 @@ export default function RetopologyClient() {
                           className="text-[11px] px-2 py-0.5 rounded-full border"
                           style={{
                             color: openedAsset?.id === a.id ? "#f3946a" : "#9b9082",
-                            borderColor: openedAsset?.id === a.id ? "rgba(226,86,42,.40)" : "rgba(255,255,255,.10)",
+                            borderColor: openedAsset?.id === a.id ? "rgba(214,91,54,.40)" : "rgba(255,255,255,.10)",
                           }}
                         >{a.visibility}</span>
                       )}

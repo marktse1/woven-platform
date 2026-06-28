@@ -222,15 +222,6 @@ const PaintViewer = forwardRef<PaintViewerHandle, Props>(function PaintViewer(
   useEffect(() => { brushRef.current = brush; }, [brush]);
   useEffect(() => {
     paintModeRef.current = paintMode;
-    if (transformControlsRef.current) {
-      const tc = transformControlsRef.current;
-      tc.enabled = !paintMode;
-      tc.getHelper().visible = !paintMode && tc.object !== undefined;
-    }
-    if (controlsRef.current) {
-      // Orbit is on in orbit mode only when no light is selected (light selection disables it).
-      controlsRef.current.enabled = !paintMode && selectedLightIdRef.current === null;
-    }
   }, [paintMode]);
 
   // ---- stable helpers -------------------------------------------------------
@@ -246,7 +237,8 @@ const PaintViewer = forwardRef<PaintViewerHandle, Props>(function PaintViewer(
         const entry = userLightsRef.current.find((e) => e.id === id);
         if (entry) {
           tc.attach(entry.gizmoGroup);
-          if (paintModeRef.current) tc.getHelper().visible = false;
+          tc.enabled = true;
+          tc.getHelper().visible = true;
           // Disable orbit so TC owns all pointer events while a light is selected.
           if (controlsRef.current) controlsRef.current.enabled = false;
         } else {
@@ -254,8 +246,8 @@ const PaintViewer = forwardRef<PaintViewerHandle, Props>(function PaintViewer(
         }
       } else {
         tc.detach();
-        // Re-enable orbit when nothing is selected (and not painting).
-        if (controlsRef.current && !paintModeRef.current) controlsRef.current.enabled = true;
+        tc.enabled = false;
+        if (controlsRef.current) controlsRef.current.enabled = true;
       }
     }
     const entry = id ? userLightsRef.current.find((e) => e.id === id) : null;
@@ -291,7 +283,7 @@ const PaintViewer = forwardRef<PaintViewerHandle, Props>(function PaintViewer(
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
-    controls.enabled = !paintModeRef.current;
+    controls.enabled = true;
     controlsRef.current = controls;
 
     scene.add(new THREE.HemisphereLight(0xbcd4ff, 0x1a2230, 1.6));
@@ -299,7 +291,7 @@ const PaintViewer = forwardRef<PaintViewerHandle, Props>(function PaintViewer(
     // TransformControls for XYZ arrow handles on the selected light.
     const tc = new TransformControls(camera, renderer.domElement);
     tc.setMode("translate");
-    tc.enabled = !paintModeRef.current;
+    tc.enabled = false;
     // In Three.js 0.16x+, TransformControls extends Controls (not Object3D).
     // The renderable gizmo is tc.getHelper() — that's what goes in the scene.
     scene.add(tc.getHelper());
@@ -676,9 +668,9 @@ const PaintViewer = forwardRef<PaintViewerHandle, Props>(function PaintViewer(
     }
 
     function onPointerDown(e: PointerEvent) {
-      if (!paintModeRef.current) return;
       const uv = uvAtEvent(e);
-      if (!uv) return;
+      if (!uv) return; // miss — orbit controls handle this naturally
+      if (controlsRef.current) controlsRef.current.enabled = false;
       dom.setPointerCapture(e.pointerId);
       activeStrokeRef.current = true;
       strokeTrackerRef.current.reset();
@@ -687,15 +679,19 @@ const PaintViewer = forwardRef<PaintViewerHandle, Props>(function PaintViewer(
     }
 
     function onPointerMove(e: PointerEvent) {
-      if (!activeStrokeRef.current) return;
-      const uv = uvAtEvent(e);
-      if (!uv) return;
-      paintAt(uv);
+      if (activeStrokeRef.current) {
+        const uv = uvAtEvent(e);
+        if (!uv) return;
+        paintAt(uv);
+        return;
+      }
+      dom.style.cursor = uvAtEvent(e) ? "crosshair" : "default";
     }
 
     function endStroke() {
       if (!activeStrokeRef.current) return;
       activeStrokeRef.current = false;
+      if (controlsRef.current && selectedLightIdRef.current === null) controlsRef.current.enabled = true;
       const channel = paintChannelRef.current;
       if (channel === "albedo" && albedoCtxRef.current) {
         undoStackRef.current.endStroke(canvasSurface(albedoCtxRef.current));
@@ -839,7 +835,7 @@ const PaintViewer = forwardRef<PaintViewerHandle, Props>(function PaintViewer(
     normalDirtyRef.current = true;
   }
 
-  return <div ref={mountRef} className="w-full h-full min-h-[260px]" style={{ cursor: paintMode ? "crosshair" : "grab" }} />;
+  return <div ref={mountRef} className="w-full h-full min-h-[260px]" style={{ cursor: "default" }} />;
 });
 
 export default PaintViewer;

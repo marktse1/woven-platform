@@ -12,16 +12,24 @@ const tabs = [
   { label: "Community", href: "/community" },
 ];
 
-function LogoMark({ warm }: { warm?: boolean }) {
+function toolTheme(path: string) {
+  if (path.startsWith("/tools/mesh-sculptor"))
+    return { accent: "#c47be8", headerBg: "rgba(24,16,30,0.96)", border: "#2d2035", logoBorder: "rgba(196,123,232,.4)", logoA: "#c47be8", logoB: "#8b3db0", logoBg: "#1b1520", activeText: "#f5ecff" };
+  if (path.startsWith("/tools/substance-weaver"))
+    return { accent: "#56a6e8", headerBg: "rgba(10,14,20,0.96)", border: "#263040", logoBorder: "rgba(86,166,232,.4)", logoA: "#56a6e8", logoB: "#2c6aa0", logoBg: "#0b0f14", activeText: "#cfe6fb" };
+  return { accent: "#d65b36", headerBg: "rgba(24,20,14,0.96)", border: "#2a2420", logoBorder: "rgba(214,91,54,.4)", logoA: "#d65b36", logoB: "#a03018", logoBg: "#1b1815", activeText: "#fff3ec" };
+}
+
+function LogoMark({ warm, theme }: { warm?: boolean; theme?: ReturnType<typeof toolTheme> }) {
   return (
     <div
       className="w-[27px] h-[27px] rounded-[7px] shrink-0"
       style={{
-        border: warm ? "1px solid rgba(226,86,42,.4)" : "1px solid var(--color-accent2)",
-        background: warm
-          ? `repeating-linear-gradient(45deg, #e2562a 0 3px, transparent 3px 7px),
-             repeating-linear-gradient(-45deg, #b03e18 0 3px, transparent 3px 7px),
-             #1b1815`
+        border: warm && theme ? `1px solid ${theme.logoBorder}` : "1px solid var(--color-accent2)",
+        background: warm && theme
+          ? `repeating-linear-gradient(45deg, ${theme.logoA} 0 3px, transparent 3px 7px),
+             repeating-linear-gradient(-45deg, ${theme.logoB} 0 3px, transparent 3px 7px),
+             ${theme.logoBg}`
           : `repeating-linear-gradient(45deg, #56a6e8 0 3px, transparent 3px 7px),
              repeating-linear-gradient(-45deg, #2c6aa0 0 3px, transparent 3px 7px),
              #0b0f14`,
@@ -54,19 +62,20 @@ export default function MainNav() {
       : pathname === "/" ? "/" : pathname;
 
   const isForge = activeSection === "/forge";
+  const theme = isForge ? toolTheme(pathname) : null;
 
   return (
     <nav
       className="flex items-center gap-3 px-4 sm:gap-4 sm:px-6 lg:gap-6 lg:px-12 py-[13px] border-b"
       style={{
-        borderBottomColor: isForge ? "#2a2420" : "var(--color-line)",
+        borderBottomColor: isForge ? (theme?.border ?? "#2a2420") : "var(--color-line)",
         background: isForge
-          ? "linear-gradient(180deg, rgba(226,86,42,.06), transparent)"
+          ? (theme?.headerBg ?? "rgba(24,20,14,0.96)")
           : "linear-gradient(180deg, rgba(255,255,255,.03), transparent)",
       }}
     >
       <Link href="/" className="flex items-center gap-2.5 font-extrabold text-xl tracking-[-0.01em] mr-1 text-ink no-underline">
-        <LogoMark warm={isForge} />
+        <LogoMark warm={isForge} theme={theme ?? undefined} />
         Woven
       </Link>
 
@@ -89,7 +98,7 @@ export default function MainNav() {
               ].join(" ")}
               style={
                 active && t.href === "/forge"
-                  ? { background: "#e2562a", color: "#fff3ec" }
+                  ? { background: theme?.accent ?? "#d65b36", color: theme?.activeText ?? "#fff3ec" }
                   : active
                   ? { background: "linear-gradient(180deg, #56a6e8, #2c6aa0)" }
                   : isForge
@@ -131,8 +140,8 @@ export default function MainNav() {
         <Link
           href="/creator"
           className="px-4 py-2 rounded-[9px] font-bold text-[14px] no-underline"
-          style={isForge
-            ? { background: "#e2562a", color: "#fff3ec" }
+          style={isForge && theme
+            ? { background: theme.accent, color: theme.activeText }
             : { background: "linear-gradient(180deg, #56a6e8, #2c6aa0)", color: "#06121d" }
           }
         >

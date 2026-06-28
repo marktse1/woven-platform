@@ -26,8 +26,6 @@ function pillButton(active: boolean) {
 }
 
 type Props = {
-  paintMode: boolean;
-  onPaintModeChange: (v: boolean) => void;
   showGrid: boolean;
   onShowGridChange: (v: boolean) => void;
   paintChannel: PaintChannel;
@@ -52,8 +50,6 @@ type Props = {
 };
 
 export default function BrushPanel({
-  paintMode,
-  onPaintModeChange,
   showGrid,
   onShowGridChange,
   paintChannel,
@@ -77,29 +73,10 @@ export default function BrushPanel({
 }: Props) {
   return (
     <div className="flex flex-col gap-5">
-      <StepCard title="Mode" description="Drag to paint, or switch to orbit to rotate the model.">
-        <div className="flex gap-2">
-          {([false, true] as const).map((paint) => (
-            <button
-              key={String(paint)}
-              onClick={() => onPaintModeChange(paint)}
-              className="flex-1 py-2 rounded-lg border text-[12.5px] font-semibold"
-              style={{
-                borderColor: paintMode === paint ? ACCENT : "#26384a",
-                background: paintMode === paint ? "rgba(86,166,232,.14)" : "#0d141c",
-                color: paintMode === paint ? "#cfe6fb" : "#8aa0b4",
-              }}
-            >
-              {paint ? "Paint" : "Orbit"}
-            </button>
-          ))}
-        </div>
-        <button onClick={() => onShowGridChange(!showGrid)} {...pillButton(showGrid)} className={pillButton(showGrid).className + " mt-2 w-full"}>
+      <StepCard title="Brush" description="Click on mesh to paint, drag off mesh to orbit.">
+        <button onClick={() => onShowGridChange(!showGrid)} {...pillButton(showGrid)} className={pillButton(showGrid).className + " w-full mb-4"}>
           Grid {showGrid ? "on" : "off"}
         </button>
-      </StepCard>
-
-      <StepCard title="Brush" description="Paint color (albedo) or relief detail (height -> normal map).">
         <div className="flex gap-2 mb-4">
           {(["albedo", "relief"] as const).map((c) => (
             <button key={c} onClick={() => onPaintChannelChange(c)} {...pillButton(paintChannel === c)}>

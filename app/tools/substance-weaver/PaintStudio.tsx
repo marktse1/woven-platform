@@ -52,7 +52,6 @@ export default function PaintStudio({ asset, userId, onBack, onAssetCreated }: P
   const [viewChannel, setViewChannel] = useState<ViewChannel>("combined");
   const [paintChannel, setPaintChannel] = useState<PaintChannel>("albedo");
   const [erasing, setErasing] = useState(false);
-  const [paintMode, setPaintMode] = useState(true);
   const [showGrid, setShowGrid] = useState(true);
   const [brush, setBrush] = useState<BrushSettings>({
     size: 32,
@@ -190,8 +189,6 @@ export default function PaintStudio({ asset, userId, onBack, onAssetCreated }: P
       <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-6 items-start">
         {/* ---- left: brush / mode / lights panel ---- */}
         <BrushPanel
-          paintMode={paintMode}
-          onPaintModeChange={setPaintMode}
           showGrid={showGrid}
           onShowGridChange={setShowGrid}
           paintChannel={paintChannel}
@@ -274,7 +271,7 @@ export default function PaintStudio({ asset, userId, onBack, onAssetCreated }: P
                 paintChannel={paintChannel}
                 erasing={erasing}
                 brush={brush}
-                paintMode={paintMode}
+                paintMode={true}
                 showGrid={showGrid}
                 onUndoRedoChange={(s) => {
                   setCanUndo(s.canUndo);

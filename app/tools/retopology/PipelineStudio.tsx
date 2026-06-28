@@ -786,7 +786,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                     showGrid={showGrid}
                     accent={ACCENT}
                     segmentation={compareToSource ? null : segmentation}
-                    textureChannel={clayMode ? null : (compareToSource ? null : textureChannel)}
+                    textureChannel={clayMode ? null : textureChannel}
                     clayMode={clayMode}
                     focusedSegId={compareToSource ? null : hoveredSegId}
                     onLoadError={setError}

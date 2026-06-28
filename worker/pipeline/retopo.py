@@ -54,6 +54,7 @@ def _quadriflow(obj, target_faces: int) -> None:
         target_faces=max(4, int(target_faces)),
         use_preserve_sharp=True,
         use_preserve_boundary=False,
+        use_mesh_curvature=True,
     )
 
 

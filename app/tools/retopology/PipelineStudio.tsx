@@ -223,8 +223,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
         decimateMode === "adaptive"
           ? await optimizeGlbAdaptive(workingBuf, {
               targetPolys,
-              curvatureWeight: isCharacter ? 4.5 : 2.5,
-              lockFraction:    isCharacter ? 0.05 : 0.02,
+              lockFraction: isCharacter ? 0.05 : 0.02,
             })
           : await optimizeGlb(workingBuf, { targetPolys, adaptive: false });
 

@@ -434,7 +434,7 @@ export const CLASSIFICATIONS: {
 }[] = [
   { value: "auto", label: "Auto-detect", icon: "✨", blurb: "Inspect the mesh and choose the best strategy automatically." },
   { value: "object", label: "Object / Prop", icon: "📦", blurb: "Optimise for silhouette and surface detail. No character-specific edgeloops." },
-  { value: "biped", label: "Biped", icon: "🧍", blurb: "Stronger curvature preservation around joints and face. Queues quad retopology with biped edgeloops on the Forge worker." },
+  { value: "biped", label: "Biped", icon: "🧍", blurb: "Locks more high-curvature vertices (face, joints) to prevent collapse. Queues quad retopology with biped edgeloops on the Forge worker." },
   { value: "creature", label: "Creature", icon: "🐉", blurb: "Adaptive curvature for non-standard anatomy. Queues quad retopology on the Forge worker." },
 ];
 

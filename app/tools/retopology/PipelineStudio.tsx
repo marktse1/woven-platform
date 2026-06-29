@@ -703,14 +703,32 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                     />
                   );
                 })()}
-                <button
-                  onClick={applyRetopo}
-                  disabled={busy || !!pendingRetopo}
-                  className="w-full py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
-                  style={{ background: "#d65b36", color: "#fff3ec" }}
-                >
-                  {pendingRetopo ? "Queued on Forge worker…" : "Apply"}
-                </button>
+                {pendingRetopo ? (
+                  <div className="flex gap-2">
+                    <div
+                      className="flex-1 py-2.5 rounded-[9px] font-bold text-[13px] text-center opacity-40 cursor-not-allowed select-none"
+                      style={{ background: "#d65b36", color: "#fff3ec" }}
+                    >
+                      {pendingRetopo === "queued" ? "Queued on Forge worker…" : "Processing on Forge worker…"}
+                    </div>
+                    <button
+                      onClick={cancelRetopo}
+                      className="px-3 py-2.5 rounded-[9px] font-bold text-[13px] border"
+                      style={{ borderColor: "rgba(255,255,255,0.12)", background: "#2c2926", color: "#c7bfb2" }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={applyRetopo}
+                    disabled={busy}
+                    className="w-full py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
+                    style={{ background: "#d65b36", color: "#fff3ec" }}
+                  >
+                    Apply
+                  </button>
+                )}
               </StepCard>
 
               <StepCard

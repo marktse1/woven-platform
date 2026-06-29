@@ -13,6 +13,7 @@ import {
   queueTier2Step,
   syncStepFromJob,
   deletePipelineStep,
+  cancelPipelineStep,
   getJob,
   getJobForStep,
   getAsset,
@@ -444,12 +445,24 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
     }
   }, [session, workingBuf, userId, currentAssetId, bakeMaps, reAtlas, asset?.id, asset?.name, steps.length, workingPolys]);
 
-  const pendingRetopo = useMemo(() => {
+  const pendingRetopoStep = useMemo(() => {
     const retopoSteps = steps.filter((s) => s.op === "retopo");
     const last = retopoSteps[retopoSteps.length - 1];
     if (!last || last.status === "done" || last.status === "failed") return null;
-    return last.status as "queued" | "processing";
+    return last;
   }, [steps]);
+  const pendingRetopo = pendingRetopoStep?.status as "queued" | "processing" | null ?? null;
+
+  const cancelRetopo = useCallback(async () => {
+    if (!pendingRetopoStep) return;
+    try {
+      await cancelPipelineStep(pendingRetopoStep.id);
+      setSteps((prev) => prev.map((s) => s.id === pendingRetopoStep.id ? { ...s, status: "failed" } : s));
+      setPendingTier2((prev) => prev.filter((p) => p.step.id !== pendingRetopoStep.id));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to cancel job.");
+    }
+  }, [pendingRetopoStep]);
 
   // Show a "worker offline" hint if the job hasn't moved in 45 s.
   const [workerOfflineHint, setWorkerOfflineHint] = useState(false);
@@ -823,6 +836,15 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                       ? (pendingRetopo === "queued" ? "Waiting for Forge worker…" : "Processing on Forge worker…")
                       : (bakeStage || "Working…")}
                   </span>
+                  {pendingRetopo && (
+                    <button
+                      onClick={cancelRetopo}
+                      className="text-[11px] underline cursor-pointer"
+                      style={{ color: "#9b9082" }}
+                    >
+                      Cancel
+                    </button>
+                  )}
                   {busy && bakeProgress > 0 && <span>{Math.round(bakeProgress * 100)}%</span>}
                 </div>
                 <div className="h-[3px] rounded-full overflow-hidden" style={{ background: "#26231f" }}>

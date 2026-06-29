@@ -135,6 +135,16 @@ export async function deletePipelineStep(stepId: string): Promise<void> {
   if (error) throw error;
 }
 
+/** Mark a pipeline step as "failed" so the UI unblocks without deleting history. */
+export async function cancelPipelineStep(stepId: string): Promise<void> {
+  const supabase = client();
+  const { error } = await supabase
+    .from("pipeline_steps")
+    .update({ status: "failed" })
+    .eq("id", stepId);
+  if (error) throw error;
+}
+
 export async function getAsset(id: string): Promise<AssetRow | null> {
   const supabase = client();
   const { data, error } = await supabase

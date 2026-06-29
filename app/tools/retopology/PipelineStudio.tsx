@@ -687,7 +687,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                   />
                 </div>
                 {(() => {
-                  const rMax = Math.max(1000, workingPolys || 20000);
+                  const rMax = 200000;
                   const rVal = Math.min(retopoTargetPolys, rMax);
                   const pct = rMax > 200 ? Math.round(((rVal - 200) / (rMax - 200)) * 100) : 0;
                   return (
@@ -695,7 +695,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                       type="range"
                       min={200}
                       max={rMax}
-                      step={100}
+                      step={500}
                       value={rVal}
                       onChange={(e) => setRetopoTargetPolys(Number(e.target.value))}
                       className="w-full h-[4px] rounded-full cursor-pointer appearance-none mb-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-[14px] [&::-webkit-slider-thumb]:h-[14px] [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#f2ede3] [&::-webkit-slider-thumb]:mt-[-5px] [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-track]:h-[4px] [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-[#26231f] [&::-moz-range-progress]:h-[4px] [&::-moz-range-progress]:rounded-full [&::-moz-range-progress]:bg-[#d65b36]"

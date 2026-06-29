@@ -80,6 +80,8 @@ type Props = {
   focusedSegId?: number | null;
   /** Called if the GLB fails to parse - without this, a failure left the previous model torn down with nothing shown and no visible signal why. */
   onLoadError?: (message: string) => void;
+  /** Optional decimated preview mesh shown as a high-contrast x-ray wireframe to preview retopo density. */
+  previewData?: ArrayBuffer | null;
 };
 
 /** Deterministic, visually-distinct palette — golden-angle hue stepping needs no lookup table. */
@@ -198,7 +200,7 @@ function applyTextureChannelToGroup(
   });
 }
 
-export default function ModelViewer({ data, wireframe, showGrid = true, accent = "#56a6e8", segmentation = null, textureChannel = null, clayMode = false, clayColor = "#ebe7e1", focusedSegId = null, onLoadError }: Props) {
+export default function ModelViewer({ data, wireframe, showGrid = true, accent = "#56a6e8", segmentation = null, textureChannel = null, clayMode = false, clayColor = "#ebe7e1", focusedSegId = null, onLoadError, previewData }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -207,6 +209,8 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
   const modelRef = useRef<THREE.Group | null>(null);
   const gridRef = useRef<THREE.GridHelper | null>(null);
   const wireMatRef = useRef<THREE.LineBasicMaterial | null>(null);
+  const previewMatRef = useRef<THREE.LineBasicMaterial | null>(null);
+  const previewGroupRef = useRef<THREE.Group | null>(null);
   const originalMaterialsRef = useRef<WeakMap<THREE.Mesh, THREE.Material | THREE.Material[]>>(new WeakMap());
   const clayMatRef = useRef<THREE.MeshMatcapMaterial | null>(null);
   const clayMatcapTexRef = useRef<THREE.Texture | null>(null);
@@ -265,6 +269,12 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
       color: new THREE.Color(accent),
       transparent: true,
       opacity: 0.5,
+    });
+    previewMatRef.current = new THREE.LineBasicMaterial({
+      color: new THREE.Color("#00ffcc"),
+      transparent: true,
+      opacity: 0.85,
+      depthTest: false,
     });
 
     const resize = () => {
@@ -375,6 +385,58 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
       if (o.name === "__wire") o.visible = wireframe;
     });
   }, [wireframe]);
+
+  // ---- x-ray preview wireframe (density preview for retopo target) ----------
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+
+    // Remove previous preview
+    if (previewGroupRef.current) {
+      scene.remove(previewGroupRef.current);
+      previewGroupRef.current.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.geometry) m.geometry.dispose();
+        if ((m as unknown as THREE.LineSegments).isLineSegments) {
+          (m.material as THREE.Material)?.dispose();
+        }
+      });
+      previewGroupRef.current = null;
+    }
+
+    if (!previewData) return;
+
+    const loader = new GLTFLoader();
+    loader.parse(
+      previewData.slice(0),
+      "",
+      (gltf) => {
+        const group = gltf.scene;
+        // Center using same strategy as the main model
+        const box = new THREE.Box3().setFromObject(group);
+        const center = box.getCenter(new THREE.Vector3());
+        group.position.sub(center);
+
+        group.traverse((o) => {
+          const mesh = o as THREE.Mesh;
+          if (!mesh.isMesh || !mesh.geometry) return;
+          // Hide the surface — we only want the wireframe
+          (mesh.material as THREE.Material).visible = false;
+          const wire = new THREE.LineSegments(
+            new THREE.WireframeGeometry(mesh.geometry),
+            previewMatRef.current!,
+          );
+          wire.name = "__preview_wire";
+          mesh.add(wire);
+        });
+
+        previewGroupRef.current = group;
+        scene.add(group);
+      },
+      (err) => console.warn("preview GLB parse error", err),
+    );
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewData]);
 
   // ---- live texture channel switch — no model reload -----------------------
   useEffect(() => {

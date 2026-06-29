@@ -104,6 +104,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
   const [hoveredSegId, setHoveredSegId] = useState<number | null>(null);
   const [textureChannel, setTextureChannel] = useState<TextureChannel | null>(null);
   const [wireframe, setWireframe] = useState(false);
+  const [retopoPreviewBuf, setRetopoPreviewBuf] = useState<ArrayBuffer | null>(null);
   const [showGrid, setShowGrid] = useState(true);
   const [clayMode, setClayMode] = useState(false);
   // Defaults to the original upload (matching the poly count shown on the library
@@ -463,6 +464,20 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
       setError(e instanceof Error ? e.message : "Failed to cancel job.");
     }
   }, [pendingRetopoStep]);
+
+  // ---- retopo density preview: client-side decimate to target for visual guidance ---
+  useEffect(() => {
+    if (!workingBuf || !retopoTargetPolys) { setRetopoPreviewBuf(null); return; }
+    const id = setTimeout(async () => {
+      try {
+        const result = await optimizeGlb(workingBuf, { targetPolys: retopoTargetPolys, adaptive: false });
+        setRetopoPreviewBuf(result.output.buffer as ArrayBuffer);
+      } catch {
+        setRetopoPreviewBuf(null);
+      }
+    }, 600);
+    return () => clearTimeout(id);
+  }, [retopoTargetPolys, workingBuf]);
 
   // Show a "worker offline" hint if the job hasn't moved in 45 s.
   const [workerOfflineHint, setWorkerOfflineHint] = useState(false);
@@ -840,6 +855,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                     clayMode={clayMode}
                     focusedSegId={compareToSource ? null : hoveredSegId}
                     onLoadError={setError}
+                    previewData={compareToSource ? null : retopoPreviewBuf}
                   />
                 )}
               </div>

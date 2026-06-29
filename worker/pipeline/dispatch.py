@@ -29,7 +29,12 @@ def process_job(job: dict) -> tuple[dict, dict]:
             f.write(source_bytes)
 
         if op == "retopo":
-            stats = retopo.run(input_path, output_path, classification, target_polys)
+            # Segment face-set guidance is stored in the step's params (same
+            # pattern as finalize/bake reads dilationPx from step params).
+            step = io_glb.get_step(job["pipeline_step_id"]) if job.get("pipeline_step_id") else None
+            step_params = (step or {}).get("params") or {}
+            segment_data_b64 = step_params.get("segmentData")
+            stats = retopo.run(input_path, output_path, classification, target_polys, segment_data_b64=segment_data_b64)
         elif op == "segment":
             stats = segment.run(input_path, output_path, classification)
         elif op == "finalize":

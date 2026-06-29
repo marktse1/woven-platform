@@ -23,6 +23,16 @@ export async function GET(request: Request) {
     return Response.json({ error: "Worker storage not configured" }, { status: 503 });
   }
 
+  // Reset any job stuck in "processing" for > 20 min back to "queued" so it
+  // gets picked up again on the next poll. Covers worker crashes, OOM kills,
+  // and Modal cold-start timeouts without leaving jobs permanently stuck.
+  const staleThreshold = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+  await admin
+    .from("retopo_jobs")
+    .update({ status: "queued", started_at: null })
+    .eq("status", "processing")
+    .lt("started_at", staleThreshold);
+
   const { data: job, error } = await admin
     .from("retopo_jobs")
     .select("*")

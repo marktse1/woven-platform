@@ -447,6 +447,14 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clayMode, clayColor]);
 
+  // ---- wireframe color: dark grey in clay mode, accent otherwise ------------
+  useEffect(() => {
+    if (wireMatRef.current) {
+      wireMatRef.current.color.set(clayMode ? "#3d3838" : accent);
+      wireMatRef.current.opacity = clayMode ? 0.7 : 0.5;
+      wireMatRef.current.needsUpdate = true;
+    }
+  }, [clayMode, accent]);
 
   return <div ref={mountRef} className="w-full h-full min-h-[260px]" />;
 }

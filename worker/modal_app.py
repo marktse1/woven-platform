@@ -21,7 +21,7 @@ image = (
         "libsm6",
         "libgl1",
     )
-    .pip_install("bpy==4.5.9", "requests==2.32.3", "numpy==1.26.4")
+    .pip_install("bpy==4.5.11", "requests==2.32.3", "numpy==1.26.4")
     .add_local_python_source("pipeline")
 )
 

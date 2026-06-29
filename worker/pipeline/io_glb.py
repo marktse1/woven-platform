@@ -3,6 +3,7 @@
 # Python), plus thin bpy helpers shared by every pipeline stage.
 
 import os
+import time
 import uuid
 
 import bpy
@@ -59,13 +60,23 @@ def get_session(session_id: str) -> dict | None:
 
 
 def download_asset_bytes(storage_path: str) -> bytes:
-    r = requests.get(
-        f"{_supabase_url()}/storage/v1/object/{BUCKET}/{storage_path}",
-        headers=_service_headers(),
-        timeout=120,
-    )
-    r.raise_for_status()
-    return r.content
+    url = f"{_supabase_url()}/storage/v1/object/{BUCKET}/{storage_path}"
+    last_err: Exception | None = None
+    for attempt in range(4):
+        if attempt:
+            time.sleep(5 * attempt)  # 5s, 10s, 15s between retries
+        try:
+            r = requests.get(url, headers=_service_headers(), timeout=180)
+            r.raise_for_status()
+            return r.content
+        except requests.HTTPError as exc:
+            # 502/503/504 are transient gateway errors; retry
+            if exc.response is not None and exc.response.status_code in (502, 503, 504) and attempt < 3:
+                print(f"download: {exc.response.status_code} on attempt {attempt + 1}, retrying…")
+                last_err = exc
+                continue
+            raise
+    raise last_err  # type: ignore[misc]
 
 
 def upload_asset(

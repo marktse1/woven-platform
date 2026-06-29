@@ -28,6 +28,7 @@ import {
 } from "@/lib/retopo/optimize";
 import { segmentByConnectivity, type Segment } from "@/lib/retopo/segment";
 import { stripSegments } from "@/lib/retopo/strip";
+import { encodeSegmentRle } from "@/lib/retopo/encode-segments";
 import type { SegmentationOverlay, TextureChannel } from "@/components/tools/ModelViewer";
 import { BAKE_OPTIONS } from "@/lib/retopo/optimize";
 import StepCard from "./StepCard";
@@ -352,6 +353,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
         targetPolys: retopoTargetPolys,
         mode: "retopo",
         adaptive: decimateMode === "adaptive",
+        params: segmentation ? { segmentData: encodeSegmentRle(segmentation.trianglePerSegment) } : {},
       });
       setSteps((prev) => [...prev, step]);
       setPendingTier2((prev) => [...prev, { step, jobId: job.id }]);
@@ -658,7 +660,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                     );
                   })}
                 </div>
-                <div className="flex items-center justify-between gap-2 mb-3">
+                <div className="flex items-center justify-between gap-2 mb-2">
                   <span className="text-[12.5px]" style={{ color: "#c7bfb2" }}>Target triangles</span>
                   <input
                     type="number"
@@ -671,6 +673,23 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                     style={{ color: "#f3946a" }}
                   />
                 </div>
+                {(() => {
+                  const rMax = Math.max(1000, workingPolys || 20000);
+                  const rVal = Math.min(retopoTargetPolys, rMax);
+                  const pct = rMax > 200 ? Math.round(((rVal - 200) / (rMax - 200)) * 100) : 0;
+                  return (
+                    <input
+                      type="range"
+                      min={200}
+                      max={rMax}
+                      step={100}
+                      value={rVal}
+                      onChange={(e) => setRetopoTargetPolys(Number(e.target.value))}
+                      className="w-full h-[4px] rounded-full cursor-pointer appearance-none mb-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-[14px] [&::-webkit-slider-thumb]:h-[14px] [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#f2ede3] [&::-webkit-slider-thumb]:mt-[-5px] [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-track]:h-[4px] [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-[#26231f] [&::-moz-range-progress]:h-[4px] [&::-moz-range-progress]:rounded-full [&::-moz-range-progress]:bg-[#d65b36]"
+                      style={{ background: `linear-gradient(to right, #d65b36 ${pct}%, #26231f ${pct}%)` }}
+                    />
+                  );
+                })()}
                 <button
                   onClick={applyRetopo}
                   disabled={busy || !!pendingRetopo}

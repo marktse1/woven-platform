@@ -507,7 +507,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
       });
       setSteps((prev) => [...prev, step]);
       setPendingTier2((prev) => [...prev, { step, jobId: job.id }]);
-      setStatus(`Queued AI retopology (${aiRetopoPreset}) on Forge worker.`);
+      setStatus(`Queued AI Retopology (${aiRetopoPreset}) on Forge worker.`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not queue AI retopology.");
     } finally {
@@ -807,7 +807,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
               </StepCard>
 
               <StepCard
-                title="3.5 · AI Retopo"
+                title="3.5 · AI Retopology"
                 delay={0.3}
                 description="AI-generated topology using MeshAnything V2 — recognises bipedal structure and creates clean edge loops for hands, joints, and fused geometry."
                 badge="Beta"
@@ -841,7 +841,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                       className="relative flex-1 overflow-hidden py-2.5 rounded-[9px] font-bold text-[13px] text-center cursor-not-allowed select-none"
                       style={{ background: "#d65b36", color: "#fff3ec", opacity: 0.45 }}
                     >
-                      {pendingAiRetopo === "queued" ? "Queued for AI mesh…" : "AI generating topology…"}
+                      {pendingAiRetopo === "queued" ? "Queued for AI Retopology…" : "AI Retopology running…"}
                       <motion.div
                         className="absolute inset-y-0 w-[45%] bg-gradient-to-r from-transparent via-white/15 to-transparent pointer-events-none"
                         animate={{ x: ["-100%", "250%"] }}

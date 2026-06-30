@@ -30,9 +30,12 @@ MODEL_ID = "adirik/meshanything-v2"
 PRESET_FACES = {"fast": 800, "balanced": 2000, "quality": 4000}
 
 
-def run(input_path: str, output_path: str, target_polys: int = 2000, preset: str = "balanced") -> dict:
+def run(input_path: str, output_path: str, target_polys: int = 2000, preset: str = "balanced", mesh_url: str | None = None) -> dict:
     """
     Run MeshAnything V2 on the GLB at input_path and write the result to output_path.
+
+    mesh_url — if provided (e.g. a signed Supabase URL), use it directly and
+                skip the Replicate file-upload step entirely. Preferred.
     Returns a stats dict: {faces, preset}.
     """
     if not REPLICATE_API_KEY:
@@ -45,9 +48,12 @@ def run(input_path: str, output_path: str, target_polys: int = 2000, preset: str
     face_count = PRESET_FACES.get(preset, target_polys)
     log.info("MeshAnything V2: preset=%s faces=%d", preset, face_count)
 
-    # Upload the input GLB to Replicate file storage
-    mesh_url = _upload_file(input_path, "model/gltf-binary")
-    log.info("Uploaded input to Replicate: %s", mesh_url)
+    if not mesh_url:
+        # Fallback: upload directly to Replicate (requires Content-Disposition header)
+        mesh_url = _upload_file(input_path, "model/gltf-binary")
+        log.info("Uploaded input to Replicate: %s", mesh_url)
+    else:
+        log.info("Using pre-signed mesh URL: %s", mesh_url[:80])
 
     headers = {
         "Authorization": f"Token {REPLICATE_API_KEY}",

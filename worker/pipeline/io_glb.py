@@ -79,6 +79,22 @@ def download_asset_bytes(storage_path: str) -> bytes:
     raise last_err  # type: ignore[misc]
 
 
+def signed_asset_url(storage_path: str, expires_in: int = 7200) -> str:
+    """Generate a signed URL for a private Supabase storage object.
+    Replicate (and any external service) can fetch it directly with no auth header.
+    """
+    r = requests.post(
+        f"{_supabase_url()}/storage/v1/object/sign/{BUCKET}/{storage_path}",
+        headers={**_service_headers(), "Content-Type": "application/json"},
+        json={"expiresIn": expires_in},
+        timeout=20,
+    )
+    r.raise_for_status()
+    signed_path = r.json()["signedURL"]
+    # signedURL is a relative path like /storage/v1/object/sign/...?token=...
+    return f"{_supabase_url()}{signed_path}"
+
+
 def upload_asset(
     clerk_user_id: str,
     name: str,

@@ -57,7 +57,9 @@ def process_job(job: dict) -> tuple[dict, dict]:
             step = io_glb.get_step(job["pipeline_step_id"]) if job.get("pipeline_step_id") else None
             step_params = (step or {}).get("params") or {}
             preset = step_params.get("preset", "balanced")
-            stats = meshanything.run(input_path, output_path, target_polys=target_polys, preset=preset)
+            # Pass a signed Supabase URL directly — avoids Replicate file upload API entirely
+            mesh_url = io_glb.signed_asset_url(source_asset["storage_path"])
+            stats = meshanything.run(input_path, output_path, target_polys=target_polys, preset=preset, mesh_url=mesh_url)
         else:
             raise ValueError(f"unknown job op: {op}")
 

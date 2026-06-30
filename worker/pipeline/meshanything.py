@@ -38,7 +38,16 @@ def run(input_path: str, output_path: str, target_polys: int = 2000, preset: str
                 skip the Replicate file-upload step entirely. Preferred.
     Returns a stats dict: {faces, preset}.
     """
-    if not REPLICATE_API_KEY:
+    # MeshAnything V2 is not yet available on Replicate.
+    # The model needs to run directly on a Modal A10G GPU.
+    # This is the next step to implement — for now fail fast with a clear message.
+    raise NotImplementedError(
+        "AI Retopology requires direct Modal GPU inference (MeshAnything V2 is not on Replicate). "
+        "The next step is to add a Modal A10G function with the HuggingFace weights. "
+        "See worker/pipeline/meshanything.py for details."
+    )
+
+    if not REPLICATE_API_KEY:  # noqa: unreachable — kept for reference
         raise ValueError(
             "REPLICATE_API_KEY is not set. "
             "Add it via the Modal web dashboard at https://modal.com/secrets "

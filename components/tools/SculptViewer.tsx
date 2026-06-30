@@ -115,6 +115,7 @@ export default function SculptViewer({
   const brushInnerIndicatorRef = useRef<THREE.Mesh | null>(null);
   const strokeActiveRef = useRef(false);
   const lastHitRef = useRef<BrushHit | null>(null);
+  const shiftDownRef = useRef(false);
 
   // Keep latest brush params accessible from pointer handlers without stale closures
   const brushModeRef = useRef(brushMode);
@@ -491,6 +492,7 @@ export default function SculptViewer({
           hit,
           mesh: entry.mesh,
           seams: entry.seams,
+          invert: brushModeRef.current === "clay_buildup" && shiftDownRef.current,
         });
       }
     }
@@ -512,6 +514,7 @@ export default function SculptViewer({
           prevHit,
           mesh: entry.mesh,
           seams: entry.seams,
+          invert: brushModeRef.current === "clay_buildup" && shiftDownRef.current,
         });
       }
       lastHitRef.current = hit;
@@ -562,6 +565,16 @@ export default function SculptViewer({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  // Shift tracking for clay_buildup invert
+  useEffect(() => {
+    const dn = (e: KeyboardEvent) => { if (e.key === "Shift") shiftDownRef.current = true; };
+    const up = (e: KeyboardEvent) => { if (e.key === "Shift") shiftDownRef.current = false; };
+    window.addEventListener("keydown", dn);
+    window.addEventListener("keyup", up);
+    return () => { window.removeEventListener("keydown", dn); window.removeEventListener("keyup", up); };
+  }, []);
+
 
   // ── expose handle for parent (export, undo buttons) ───────────────────────
   const exportGlb = useCallback(async (): Promise<Uint8Array> => {

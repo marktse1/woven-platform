@@ -4,7 +4,7 @@
 import * as THREE from "three";
 import type { SeamData } from "./seams";
 
-export type BrushMode = "push" | "pull" | "smooth" | "flatten" | "move";
+export type BrushMode = "clay_buildup" | "push" | "pull" | "smooth" | "flatten" | "move";
 
 export type BrushHit = {
   point: THREE.Vector3;   // world-space hit point
@@ -16,6 +16,7 @@ export type BrushParams = {
   radius: number;       // world-space outer radius
   innerRadius: number;  // 0–1 fraction of radius that stays at full strength
   strength: number;     // 0–1
+  invert?: boolean;
   hit: BrushHit;
   prevHit?: BrushHit;
   mesh: THREE.Mesh;
@@ -71,7 +72,7 @@ function expandSeams(indices: number[], seams: SeamData): Set<number> {
 }
 
 export function applyBrush(params: BrushParams): void {
-  const { mode, radius, innerRadius, strength, hit, mesh, seams } = params;
+  const { mode, radius, innerRadius, strength, hit, mesh, seams, invert = false } = params;
   const positions = mesh.geometry.attributes.position as THREE.BufferAttribute;
 
   _inv.copy(mesh.matrixWorld).invert();
@@ -83,7 +84,23 @@ export function applyBrush(params: BrushParams): void {
   const localNormal = hit.normal.clone().transformDirection(_inv).normalize();
   const localHit = hit.point.clone().applyMatrix4(_inv);
 
-  if (mode === "push" || mode === "pull") {
+  if (mode === "clay_buildup") {
+    const sign = invert ? -1 : 1;
+    const allIdx = expandSeams(gathered.map((g) => g.idx), seams);
+    const foMap = new Map<number, number>();
+    for (const { idx, fo } of gathered) {
+      const group = seams.groups[seams.vertToGroup[idx]];
+      for (const j of group) {
+        const prev = foMap.get(j);
+        if (prev === undefined || fo > prev) foMap.set(j, fo);
+      }
+    }
+    for (const idx of allIdx) {
+      const fo = foMap.get(idx) ?? 0;
+      const disp = sign * strength * fo * radius * 0.07;
+      positions.setXYZ(idx, positions.getX(idx) + localNormal.x * disp, positions.getY(idx) + localNormal.y * disp, positions.getZ(idx) + localNormal.z * disp);
+    }
+  } else if (mode === "push" || mode === "pull") {
     const sign = mode === "push" ? 1 : -1;
     const allIdx = expandSeams(gathered.map((g) => g.idx), seams);
 

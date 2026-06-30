@@ -112,7 +112,13 @@ def run(input_path: str, output_path: str, target_polys: int = 2000, preset: str
 
 
 def _upload_file(path: str, content_type: str) -> str:
-    """Upload a local file to Replicate file storage and return its public URL."""
+    """Upload a local file to Replicate file storage and return its public URL.
+
+    Replicate requires both Content-Type AND Content-Disposition headers;
+    omitting Content-Disposition causes a 400 Bad Request.
+    """
+    import os as _os
+    filename = _os.path.basename(path)
     with open(path, "rb") as f:
         data = f.read()
     res = requests.post(
@@ -120,10 +126,15 @@ def _upload_file(path: str, content_type: str) -> str:
         headers={
             "Authorization": f"Token {REPLICATE_API_KEY}",
             "Content-Type": content_type,
+            "Content-Disposition": f'attachment; filename="{filename}"',
         },
         data=data,
         timeout=60,
     )
+    if res.status_code == 400:
+        raise RuntimeError(
+            f"Replicate file upload failed (400): {res.text[:200]}"
+        )
     res.raise_for_status()
     return res.json()["urls"]["get"]
 

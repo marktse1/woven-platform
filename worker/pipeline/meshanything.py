@@ -2,11 +2,12 @@
 MeshAnything V2 — AI topology generation via Replicate API.
 
 Requires REPLICATE_API_KEY in the Modal secret (woven-worker-env).
-Add it with: modal secret update woven-worker-env REPLICATE_API_KEY=r8_...
+Add it via the Modal web dashboard: https://modal.com/secrets
+  → woven-worker-env → Edit → add REPLICATE_API_KEY = r8_...
 
-Model: https://replicate.com/meshanything/meshanything-v2
-Input: GLB file  Output: OBJ file (converted to GLB by this module)
-Average inference time: 60–90 s on A40 GPU.
+Model: https://replicate.com/adirik/meshanything-v2
+Input: GLB or OBJ file  Output: OBJ (converted to GLB here)
+Average inference time: 60–90 s.
 """
 
 import os
@@ -21,9 +22,9 @@ log = logging.getLogger(__name__)
 REPLICATE_API_KEY = os.environ.get("REPLICATE_API_KEY", "")
 REPLICATE_API_BASE = "https://api.replicate.com/v1"
 
-# Latest stable version of MeshAnything V2 on Replicate.
-# Check https://replicate.com/meshanything/meshanything-v2/versions for updates.
-MODEL_ID = "meshanything/meshanything-v2"
+# Community-hosted MeshAnything V2 on Replicate.
+# See https://replicate.com/adirik/meshanything-v2 for version IDs.
+MODEL_ID = "adirik/meshanything-v2"
 
 # Face count per preset
 PRESET_FACES = {"fast": 800, "balanced": 2000, "quality": 4000}
@@ -32,28 +33,28 @@ PRESET_FACES = {"fast": 800, "balanced": 2000, "quality": 4000}
 def run(input_path: str, output_path: str, target_polys: int = 2000, preset: str = "balanced") -> dict:
     """
     Run MeshAnything V2 on the GLB at input_path and write the result to output_path.
-
-    Returns a stats dict with keys: faces, preset.
+    Returns a stats dict: {faces, preset}.
     """
     if not REPLICATE_API_KEY:
         raise ValueError(
             "REPLICATE_API_KEY is not set. "
-            "Add it to your Modal secret: modal secret update woven-worker-env REPLICATE_API_KEY=r8_..."
+            "Add it via the Modal web dashboard at https://modal.com/secrets "
+            "→ woven-worker-env → Edit → REPLICATE_API_KEY = r8_..."
         )
 
     face_count = PRESET_FACES.get(preset, target_polys)
     log.info("MeshAnything V2: preset=%s faces=%d", preset, face_count)
 
-    # Upload the input GLB to Replicate's file storage
+    # Upload the input GLB to Replicate file storage
     mesh_url = _upload_file(input_path, "model/gltf-binary")
     log.info("Uploaded input to Replicate: %s", mesh_url)
 
-    # Create prediction
     headers = {
         "Authorization": f"Token {REPLICATE_API_KEY}",
         "Content-Type": "application/json",
-        "Prefer": "wait=5",  # Replicate will wait up to 5 s before returning async
     }
+
+    # Create prediction
     pred_res = requests.post(
         f"{REPLICATE_API_BASE}/predictions",
         headers=headers,
@@ -66,7 +67,15 @@ def run(input_path: str, output_path: str, target_polys: int = 2000, preset: str
         },
         timeout=30,
     )
+
+    if pred_res.status_code == 404:
+        raise RuntimeError(
+            f"Replicate model '{MODEL_ID}' not found. "
+            "The MeshAnything V2 model may have moved — check "
+            "https://replicate.com and update MODEL_ID in worker/pipeline/meshanything.py"
+        )
     pred_res.raise_for_status()
+
     prediction = pred_res.json()
     pred_id = prediction["id"]
     log.info("Created prediction %s", pred_id)
@@ -89,7 +98,7 @@ def run(input_path: str, output_path: str, target_polys: int = 2000, preset: str
             if isinstance(output, list):
                 output = output[0]
             if not output:
-                raise RuntimeError("MeshAnything V2 succeeded but output URL is empty.")
+                raise RuntimeError("MeshAnything V2 succeeded but returned no output URL.")
             _download_and_convert(output, output_path)
             return {"faces": face_count, "preset": preset}
 
@@ -124,12 +133,10 @@ def _download_and_convert(url: str, output_glb_path: str) -> None:
     r = requests.get(url, timeout=120)
     r.raise_for_status()
 
-    # Detect format from URL or Content-Type header
     content_type = r.headers.get("Content-Type", "")
     is_obj = url.lower().endswith(".obj") or "text/plain" in content_type or "wavefront" in content_type
 
     if is_obj:
-        # Convert OBJ → GLB using trimesh
         import trimesh
         with tempfile.NamedTemporaryFile(suffix=".obj", delete=False) as tmp:
             tmp.write(r.content)
@@ -139,7 +146,6 @@ def _download_and_convert(url: str, output_glb_path: str) -> None:
         os.unlink(tmp_path)
         log.info("Converted OBJ → GLB at %s", output_glb_path)
     else:
-        # Assume GLB
         with open(output_glb_path, "wb") as f:
             f.write(r.content)
         log.info("Wrote GLB at %s", output_glb_path)

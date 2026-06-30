@@ -212,6 +212,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
             setWorkingPolys(await countGlbTriangles(bytes));
             setSegmentation(null);
             setCompareToSource(false);
+            setRetopoPreviewBuf(null);
             setStatus(`${updatedStep.op === "bake" ? "Texture bake" : "Retopology"} complete.`);
             onAssetCreated?.();
           } else if (job.status === "failed") {
@@ -343,6 +344,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
 
   const applyRetopo = useCallback(async () => {
     if (!session) return;
+    setRetopoPreviewBuf(null);
     setBusy(true);
     setError("");
     try {

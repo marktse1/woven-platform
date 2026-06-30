@@ -7,30 +7,26 @@ type Props = {
   title: string;
   description: string;
   badge?: string;
-  badgeColor?: "green" | "purple";
   disabled?: boolean;
+  delay?: number;
   children: ReactNode;
   footer?: ReactNode;
 };
 
-/** Shared panel chrome for one Pipeline Studio step — animates in on mount. */
-export default function StepCard({ title, description, badge, badgeColor = "green", disabled, children, footer }: Props) {
-  const badgeStyle = badgeColor === "purple"
-    ? { background: "rgba(108,95,168,.2)", color: "#c4b4ff" }
-    : { background: "rgba(123,194,74,.16)", color: "#a6e06a" };
-
+/** Shared panel chrome for one Pipeline Studio step — slides up on mount with optional stagger delay. */
+export default function StepCard({ title, description, badge, disabled, delay = 0, children, footer }: Props) {
   return (
     <motion.div
-      initial={{ opacity: 0, y: 12 }}
+      initial={{ opacity: 0, y: 24 }}
       animate={{ opacity: disabled ? 0.5 : 1, y: 0 }}
-      transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+      transition={{ duration: 0.4, delay, ease: [0.16, 1, 0.3, 1] }}
       className="rounded-[12px] p-5"
       style={disabled ? { pointerEvents: "none" } : undefined}
     >
       <div className="flex items-center gap-2 mb-1">
         <p className="text-[11px] font-bold tracking-[.12em] uppercase" style={{ color: "#e8e1d5" }}>{title}</p>
         {badge && (
-          <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase" style={badgeStyle}>
+          <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase" style={{ background: "rgba(123,194,74,.16)", color: "#a6e06a" }}>
             {badge}
           </span>
         )}

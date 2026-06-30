@@ -662,7 +662,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                 </button>
               </StepCard>
 
-              <StepCard title="2 · Segment objects" description="Splits the mesh into parts by existing material/connectivity boundaries — deterministic, works in any order." badge="Optional">
+              <StepCard title="2 · Segment objects" delay={0.1} description="Splits the mesh into parts by existing material/connectivity boundaries — deterministic, works in any order." badge="Optional">
                 <button
                   onClick={applySegment}
                   disabled={busy || !workingBuf}
@@ -731,7 +731,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                 )}
               </StepCard>
 
-              <StepCard title="3 · Retopology" description="Quad-dominant remesh with proper edge loops on the Forge worker — best for characters and creatures." badge="Optional">
+              <StepCard title="3 · Retopology" delay={0.2} description="Quad-dominant remesh with proper edge loops on the Forge worker — best for characters and creatures." badge="Optional">
                 <div className="flex gap-1.5 flex-wrap mb-3">
                   {CLASSIFICATIONS.map((c) => {
                     const on = classification === c.value;
@@ -808,9 +808,9 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
 
               <StepCard
                 title="3.5 · AI Retopo"
+                delay={0.3}
                 description="AI-generated topology using MeshAnything V2 — recognises bipedal structure and creates clean edge loops for hands, joints, and fused geometry."
                 badge="Beta"
-                badgeColor="purple"
               >
                 <div className="flex gap-1.5 mb-3">
                   {(["fast", "balanced", "quality"] as const).map((p) => {
@@ -822,9 +822,9 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                         onClick={() => setAiRetopoPreset(p)}
                         className="flex-1 py-1.5 rounded-lg border text-[12px] font-semibold"
                         style={{
-                          borderColor: on ? "#6c5fa8" : "rgba(255,255,255,.08)",
-                          background: on ? "rgba(108,95,168,.2)" : "#26231f",
-                          color: on ? "#d4c4ff" : "#9b9082",
+                          borderColor: on ? ACCENT : "rgba(255,255,255,.08)",
+                          background: on ? "rgba(214,91,54,.14)" : "#26231f",
+                          color: on ? "#fff3ec" : "#9b9082",
                         }}
                       >
                         {labels[p]}
@@ -839,7 +839,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                   <div className="flex gap-2">
                     <div
                       className="relative flex-1 overflow-hidden py-2.5 rounded-[9px] font-bold text-[13px] text-center cursor-not-allowed select-none"
-                      style={{ background: "#3d2f6a", color: "#d4c4ff" }}
+                      style={{ background: "#d65b36", color: "#fff3ec", opacity: 0.45 }}
                     >
                       {pendingAiRetopo === "queued" ? "Queued for AI mesh…" : "AI generating topology…"}
                       <motion.div
@@ -861,7 +861,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                     onClick={applyAiRetopo}
                     disabled={busy}
                     className="w-full py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
-                    style={{ background: "#4a3a8a", color: "#e8e0ff" }}
+                    style={{ background: "#d65b36", color: "#fff3ec" }}
                   >
                     Apply AI Retopo
                   </button>
@@ -870,6 +870,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
 
               <StepCard
                 title="4 · Bake Textures"
+                delay={0.4}
                 description={`Generates a new UV atlas with xatlas and transfers textures from the original source onto the decimated mesh — works regardless of UV changes.${asset ? ` Source: ${asset.name}` : ""}`}
               >
                 <div className="flex flex-wrap gap-1.5 mb-3">

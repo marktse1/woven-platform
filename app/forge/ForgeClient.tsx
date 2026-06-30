@@ -338,7 +338,7 @@ export default function ForgeClient() {
             className="grid grid-cols-3 gap-4"
             initial="initial"
             animate="animate"
-            variants={{ animate: { transition: { staggerChildren: 0.07 } } }}
+            variants={{ animate: { transition: { staggerChildren: 0.1 } } }}
           >
             {devTools.map((t) => {
               const dot = DEV_TOOL_DOTS[t.slug] ?? t.accent ?? "#56a6e8";
@@ -372,8 +372,8 @@ export default function ForgeClient() {
               const cardCls = "text-left rounded-[12px] border p-5 transition-all block no-underline group";
               const cardStyle = { background: "#111820", borderColor: "#26384a" };
               const cardVariants = {
-                initial: { opacity: 0, y: 14 },
-                animate: { opacity: 1, y: 0, transition: { duration: 0.28, ease: [0.16, 1, 0.3, 1] as [number,number,number,number] } },
+                initial: { opacity: 0, y: 28 },
+                animate: { opacity: 1, y: 0, transition: { duration: 0.45, ease: [0.16, 1, 0.3, 1] as [number,number,number,number] } },
               };
               return t.kind === "native" && t.href ? (
                 <motion.div key={t.slug} variants={cardVariants}>

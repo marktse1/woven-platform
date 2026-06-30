@@ -16,6 +16,7 @@ import {
   type Visibility,
 } from "@/lib/assets";
 import PipelineStudio from "./PipelineStudio";
+import { motion } from "framer-motion";
 
 function fmt(n: number | null | undefined) {
   if (n == null) return "—";
@@ -82,14 +83,14 @@ export default function RetopologyClient() {
   // ---- access gating --------------------------------------------------------
   if (!isLoaded || creatorStatus === "loading") {
     return (
-      <main className="min-h-[calc(100vh-73px)] bg-[#1b1815] text-ink flex items-center justify-center">
+      <motion.main className="min-h-[calc(100vh-73px)] bg-[#1b1815] text-ink flex items-center justify-center" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.25 }}>
         <div className="text-[13px]" style={{ color: "#9b9082" }}>Loading Mesh Loom…</div>
-      </main>
+      </motion.main>
     );
   }
   if (creatorStatus !== "approved") {
     return (
-      <main className="min-h-[calc(100vh-73px)] bg-[#1b1815] text-ink flex items-center justify-center px-6">
+      <motion.main className="min-h-[calc(100vh-73px)] bg-[#1b1815] text-ink flex items-center justify-center px-6" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.25 }}>
         <div className="max-w-[520px] w-full bg-panel border border-line rounded-[10px] p-6">
           <div className="text-[20px] font-extrabold tracking-[-0.02em] mb-2">Mesh Loom</div>
           <p className="text-[13px] leading-relaxed" style={{ color: "#c7bfb2" }}>
@@ -104,12 +105,12 @@ export default function RetopologyClient() {
             </Link>
           </div>
         </div>
-      </main>
+      </motion.main>
     );
   }
 
   return (
-    <main className="min-h-[calc(100vh-73px)] bg-[#1b1815] text-ink">
+    <motion.main className="min-h-[calc(100vh-73px)] bg-[#1b1815] text-ink" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}>
       <div className="max-w-[1920px] mx-auto px-6 lg:px-10 pt-6 pb-16">
         {error && (
           <div className="mb-4 p-3 rounded-[9px] border text-[13px]" style={{ borderColor: "rgba(227,92,92,.4)", background: "rgba(227,92,92,.08)", color: "#f0a6a6" }}>
@@ -228,6 +229,6 @@ export default function RetopologyClient() {
           }}
         />
       )}
-    </main>
+    </motion.main>
   );
 }

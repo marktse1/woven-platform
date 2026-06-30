@@ -11,7 +11,7 @@
 import os
 import tempfile
 
-from . import io_glb, retopo, segment, uv_bake
+from . import io_glb, meshanything, retopo, segment, uv_bake
 
 
 def process_job(job: dict) -> tuple[dict, dict]:
@@ -53,6 +53,11 @@ def process_job(job: dict) -> tuple[dict, dict]:
             params = (step or {}).get("params") or {}
             dilation_px = int(params.get("dilationPx", 16))
             stats = uv_bake.run(input_path, high_path, output_path, bake_maps, dilation_px=dilation_px)
+        elif op == "meshanything":
+            step = io_glb.get_step(job["pipeline_step_id"]) if job.get("pipeline_step_id") else None
+            step_params = (step or {}).get("params") or {}
+            preset = step_params.get("preset", "balanced")
+            stats = meshanything.run(input_path, output_path, target_polys=target_polys, preset=preset)
         else:
             raise ValueError(f"unknown job op: {op}")
 

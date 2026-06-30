@@ -8,6 +8,7 @@ import { useSearchParams } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
 import { getSupabaseClient, getSupabaseEnvStatus } from "@/lib/supabase";
 import { mergeHostedTools, type ApprovedHostedTool } from "@/lib/tools/registry";
+import { motion } from "framer-motion";
 
 type ToolRow = {
   id: string;
@@ -333,7 +334,12 @@ export default function ForgeClient() {
             In-house pipeline tools for getting models game-ready, plus community-built tools — native ones run with no iframe handoff.
           </p>
 
-          <div className="grid grid-cols-3 gap-4">
+          <motion.div
+            className="grid grid-cols-3 gap-4"
+            initial="initial"
+            animate="animate"
+            variants={{ animate: { transition: { staggerChildren: 0.07 } } }}
+          >
             {devTools.map((t) => {
               const dot = DEV_TOOL_DOTS[t.slug] ?? t.accent ?? "#56a6e8";
               const logo = DEV_TOOL_LOGOS[t.slug];
@@ -365,13 +371,21 @@ export default function ForgeClient() {
               );
               const cardCls = "text-left rounded-[12px] border p-5 transition-all block no-underline group";
               const cardStyle = { background: "#111820", borderColor: "#26384a" };
+              const cardVariants = {
+                initial: { opacity: 0, y: 14 },
+                animate: { opacity: 1, y: 0, transition: { duration: 0.28, ease: [0.16, 1, 0.3, 1] as [number,number,number,number] } },
+              };
               return t.kind === "native" && t.href ? (
-                <Link key={t.slug} href={t.href} className={cardCls} style={cardStyle}>{inner}</Link>
+                <motion.div key={t.slug} variants={cardVariants}>
+                  <Link href={t.href} className={cardCls} style={cardStyle}>{inner}</Link>
+                </motion.div>
               ) : (
-                <a key={t.slug} href={t.buildUrl} target="_blank" rel="noreferrer" className={cardCls} style={cardStyle}>{inner}</a>
+                <motion.div key={t.slug} variants={cardVariants}>
+                  <a href={t.buildUrl} target="_blank" rel="noreferrer" className={cardCls} style={cardStyle}>{inner}</a>
+                </motion.div>
               );
             })}
-          </div>
+          </motion.div>
         </div>
 
         <div className="mt-8 text-[12.5px] text-dim">

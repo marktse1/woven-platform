@@ -246,7 +246,7 @@ export type PipelineSessionRow = {
   updated_at: string;
 };
 
-export type PipelineStepOp = "decimate" | "retopo" | "segment" | "adaptive_density" | "uv_map" | "bake" | "mask";
+export type PipelineStepOp = "decimate" | "retopo" | "meshanything" | "segment" | "adaptive_density" | "uv_map" | "bake" | "mask";
 export type PipelineStepTier = "tier1" | "tier2";
 export type PipelineStepStatus = "queued" | "processing" | "done" | "failed";
 
@@ -416,7 +416,7 @@ export async function queueTier2Step(params: {
   inputAssetId: string;
   classification: string;
   targetPolys?: number;
-  mode?: "decimate" | "retopo";
+  mode?: "decimate" | "retopo" | "meshanything";
   adaptive?: boolean;
   bakeMaps?: string[];
   params?: Record<string, unknown>;

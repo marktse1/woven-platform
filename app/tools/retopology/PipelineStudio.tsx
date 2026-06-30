@@ -33,6 +33,7 @@ import { encodeSegmentRle } from "@/lib/retopo/encode-segments";
 import type { SegmentationOverlay, TextureChannel } from "@/components/tools/ModelViewer";
 import { BAKE_OPTIONS } from "@/lib/retopo/optimize";
 import StepCard from "./StepCard";
+import { AnimatePresence, motion } from "framer-motion";
 
 const ModelViewer = dynamic(() => import("@/components/tools/ModelViewer"), {
   ssr: false,
@@ -115,6 +116,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [pendingTier2, setPendingTier2] = useState<{ step: PipelineStepRow; jobId: string }[]>([]);
+  const [aiRetopoPreset, setAiRetopoPreset] = useState<"fast" | "balanced" | "quality">("balanced");
 
   const hasSteps = steps.length > 0;
   const isCharacter = needsRetopoWorker(classification);
@@ -467,6 +469,52 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
     }
   }, [pendingRetopoStep]);
 
+  const pendingAiRetopoStep = useMemo(() => {
+    const aiSteps = steps.filter((s) => s.op === "meshanything");
+    const last = aiSteps[aiSteps.length - 1];
+    if (!last || last.status === "done" || last.status === "failed") return null;
+    return last;
+  }, [steps]);
+  const pendingAiRetopo = pendingAiRetopoStep?.status as "queued" | "processing" | null ?? null;
+
+  const cancelAiRetopo = useCallback(async () => {
+    if (!pendingAiRetopoStep) return;
+    try {
+      await cancelPipelineStep(pendingAiRetopoStep.id);
+      setSteps((prev) => prev.map((s) => s.id === pendingAiRetopoStep.id ? { ...s, status: "failed" } : s));
+      setPendingTier2((prev) => prev.filter((p) => p.step.id !== pendingAiRetopoStep.id));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to cancel AI retopo job.");
+    }
+  }, [pendingAiRetopoStep]);
+
+  const applyAiRetopo = useCallback(async () => {
+    if (!session) return;
+    setBusy(true);
+    setError("");
+    const faceTargets = { fast: 800, balanced: 2000, quality: 4000 };
+    try {
+      const { step, job } = await queueTier2Step({
+        sessionId: session.id,
+        userId,
+        op: "meshanything",
+        inputAssetId: currentAssetId,
+        classification,
+        targetPolys: faceTargets[aiRetopoPreset],
+        mode: "retopo",
+        adaptive: false,
+        params: { preset: aiRetopoPreset },
+      });
+      setSteps((prev) => [...prev, step]);
+      setPendingTier2((prev) => [...prev, { step, jobId: job.id }]);
+      setStatus(`Queued AI retopology (${aiRetopoPreset}) on Forge worker.`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not queue AI retopology.");
+    } finally {
+      setBusy(false);
+    }
+  }, [session, userId, currentAssetId, classification, aiRetopoPreset]);
+
   // ---- retopo density preview: client-side decimate to target for visual guidance ---
   useEffect(() => {
     if (!workingBuf || !retopoTargetPolys) { setRetopoPreviewBuf(null); return; }
@@ -506,11 +554,21 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
         {status && <div className="text-[12px] truncate max-w-[34ch]" style={{ color: "#c7bfb2" }}>{status}</div>}
       </div>
 
-      {error && (
-        <div className="p-3 rounded-[9px] border text-[13px]" style={{ borderColor: "rgba(227,92,92,.4)", background: "rgba(227,92,92,.08)", color: "#f0a6a6" }}>
-          {error}
-        </div>
-      )}
+      <AnimatePresence>
+        {error && (
+          <motion.div
+            key="error-banner"
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
+            transition={{ duration: 0.2 }}
+            className="p-3 rounded-[9px] border text-[13px]"
+            style={{ borderColor: "rgba(227,92,92,.4)", background: "rgba(227,92,92,.08)", color: "#f0a6a6" }}
+          >
+            {error}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <div className="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-6 items-start">
         {/* ---- left: step rail ---- */}
@@ -749,6 +807,68 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
               </StepCard>
 
               <StepCard
+                title="3.5 · AI Retopo"
+                description="AI-generated topology using MeshAnything V2 — recognises bipedal structure and creates clean edge loops for hands, joints, and fused geometry."
+                badge="Beta"
+                badgeColor="purple"
+              >
+                <div className="flex gap-1.5 mb-3">
+                  {(["fast", "balanced", "quality"] as const).map((p) => {
+                    const labels = { fast: "Fast · 800f", balanced: "Balanced · 2k", quality: "Quality · 4k" };
+                    const on = aiRetopoPreset === p;
+                    return (
+                      <button
+                        key={p}
+                        onClick={() => setAiRetopoPreset(p)}
+                        className="flex-1 py-1.5 rounded-lg border text-[12px] font-semibold"
+                        style={{
+                          borderColor: on ? "#6c5fa8" : "rgba(255,255,255,.08)",
+                          background: on ? "rgba(108,95,168,.2)" : "#26231f",
+                          color: on ? "#d4c4ff" : "#9b9082",
+                        }}
+                      >
+                        {labels[p]}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[11px] mb-3" style={{ color: "#6b6460" }}>
+                  Requires <code className="text-[10px]" style={{ color: "#b4a6e0" }}>REPLICATE_API_KEY</code> in Vercel + Modal env. Output: ~60–90 s.
+                </p>
+                {pendingAiRetopo ? (
+                  <div className="flex gap-2">
+                    <div
+                      className="relative flex-1 overflow-hidden py-2.5 rounded-[9px] font-bold text-[13px] text-center cursor-not-allowed select-none"
+                      style={{ background: "#3d2f6a", color: "#d4c4ff" }}
+                    >
+                      {pendingAiRetopo === "queued" ? "Queued for AI mesh…" : "AI generating topology…"}
+                      <motion.div
+                        className="absolute inset-y-0 w-[45%] bg-gradient-to-r from-transparent via-white/15 to-transparent pointer-events-none"
+                        animate={{ x: ["-100%", "250%"] }}
+                        transition={{ duration: 1.5, repeat: Infinity, ease: "linear" }}
+                      />
+                    </div>
+                    <button
+                      onClick={cancelAiRetopo}
+                      className="px-3 py-2.5 rounded-[9px] font-bold text-[13px] border"
+                      style={{ borderColor: "rgba(255,255,255,0.12)", background: "#2c2926", color: "#c7bfb2" }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={applyAiRetopo}
+                    disabled={busy}
+                    className="w-full py-2.5 rounded-[9px] font-bold text-[13px] disabled:opacity-50"
+                    style={{ background: "#4a3a8a", color: "#e8e0ff" }}
+                  >
+                    Apply AI Retopo
+                  </button>
+                )}
+              </StepCard>
+
+              <StepCard
                 title="4 · Bake Textures"
                 description={`Generates a new UV atlas with xatlas and transfers textures from the original source onto the decimated mesh — works regardless of UV changes.${asset ? ` Source: ${asset.name}` : ""}`}
               >
@@ -909,8 +1029,15 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                 <div className="text-[12.5px]" style={{ color: "#c7bfb2" }}>Applied steps will appear here, in the order you run them.</div>
               ) : (
                 <div className="flex flex-col gap-2">
+                  <AnimatePresence mode="popLayout">
                   {steps.map((s) => (
-                    <div key={s.id} className="flex items-center gap-2.5 p-2.5 rounded-[9px] border border-[#2a2420] bg-[#201d1a]">
+                    <motion.div
+                      key={s.id}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, scale: 0.94 }}
+                      transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+                      className="flex items-center gap-2.5 p-2.5 rounded-[9px] border border-[#2a2420] bg-[#201d1a]">
                       <div className="min-w-0 flex-1">
                         <div className="font-semibold text-[13px] capitalize" style={{ color: "#e8e1d5" }}>{s.seq} · {s.op.replace("_", " ")}</div>
                         <div className="text-[11.5px]" style={{ color: "#8e8579" }}>{s.tier} {s.error ? `· ${s.error}` : ""}</div>
@@ -929,8 +1056,9 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                         style={{ color: "#8e8579" }}
                         title="Delete step"
                       >✕</button>
-                    </div>
+                    </motion.div>
                   ))}
+                  </AnimatePresence>
                 </div>
               )}
             </div>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { motion } from "framer-motion";
 
 type Props = {
   title: string;
@@ -23,17 +24,23 @@ export default function ConfirmDialog({ title, message, confirmLabel = "Delete",
   const warm = theme === "warm";
 
   return (
-    <div
+    <motion.div
       className="fixed inset-0 z-50 flex items-center justify-center p-6"
-      style={{ background: "rgba(0,0,0,.65)", backdropFilter: "blur(4px)" }}
+      style={{ backdropFilter: "blur(4px)" }}
+      initial={{ backgroundColor: "rgba(0,0,0,0)" }}
+      animate={{ backgroundColor: "rgba(0,0,0,0.65)" }}
+      transition={{ duration: 0.2 }}
       onClick={(e) => e.target === e.currentTarget && onCancel()}
     >
-      <div
+      <motion.div
         className="rounded-[14px] w-full max-w-[420px] shadow-[0_24px_60px_rgba(0,0,0,.7)]"
         style={warm
           ? { background: "#2c2926", border: "1px solid rgba(255,255,255,0.08)" }
           : { background: "var(--color-panel)", border: "1px solid var(--color-line)" }
         }
+        initial={{ opacity: 0, scale: 0.94 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
       >
         <div className="px-6 py-5">
           <h2
@@ -70,7 +77,7 @@ export default function ConfirmDialog({ title, message, confirmLabel = "Delete",
             {confirmLabel}
           </button>
         </div>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 }

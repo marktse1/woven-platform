@@ -10,6 +10,9 @@ import "three-mesh-bvh"; // pulls in BufferGeometry.boundsTree augmentation
 import { buildSeamData, type SeamData } from "@/lib/sculpt/seams";
 import { applyBrush, type BrushMode, type BrushHit } from "@/lib/sculpt/brushes";
 import { SculptUndoStack } from "@/lib/sculpt/undo";
+import { computeAvgEdgeLen, dynTopoRefine } from "@/lib/sculpt/dyntopo";
+import { detectQuads, catmullClarkSubdivide } from "@/lib/sculpt/catmullclark";
+import * as BufferGeometryUtils from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
 // Patch Three.js raycaster to use BVH acceleration
 (THREE.Mesh.prototype as THREE.Mesh & { raycast: typeof acceleratedRaycast }).raycast = acceleratedRaycast;
@@ -17,19 +20,82 @@ import { SculptUndoStack } from "@/lib/sculpt/undo";
 type SculptMeshEntry = {
   mesh: THREE.Mesh;
   seams: SeamData;
+  paintCanvas?: HTMLCanvasElement;
+  paintTexture?: THREE.CanvasTexture;
+  paintMat?: THREE.MeshBasicMaterial;
+  hasPaint?: boolean;
+  baseEdgeLen?: number;
+  /** Quad face index buffer for Catmull-Clark subdivision (4 indices per quad, CCW). Empty = Loop fallback. */
+  quadIndices?: Uint32Array;
 };
 
+const PAINT_TEX_SIZE = 1024;
 export type SculptViewerHandle = {
   exportGlb: () => Promise<Uint8Array>;
   undo: () => void;
   redo: () => void;
+  subdivide: () => void;
+  loadPrimitive: (type: PrimitiveType) => void;
+  remesh: () => void;
+  loadGeometry: (geo: THREE.BufferGeometry, name?: string) => void;
+  clearScene: () => void;
 };
 
 export type ViewMode = "combined" | "clay" | "wireframe" | "albedo" | "ao";
+export type PrimitiveType = "sphere" | "box" | "cylinder" | "cone" | "torus" | "capsule" | "plane" | "human";
 
 // ── MatCap clay texture generator (CPU / canvas) ──────────────────────────────
 // Generates a 256×256 sphere image on a canvas using view-space lighting.
 // Canvas approach avoids WebGL render-target color-space issues entirely.
+// ── Primitive geometry helpers ────────────────────────────────────────────────
+function buildHumanBase(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  function add(geo: THREE.BufferGeometry, x: number, y: number, z: number) {
+    geo.translate(x, y, z); parts.push(geo);
+  }
+  add(new THREE.SphereGeometry(0.13, 10, 8),           0,     1.65, 0);      // head
+  add(new THREE.CylinderGeometry(0.06, 0.07, 0.10, 8), 0,     1.52, 0);     // neck
+  add(new THREE.BoxGeometry(0.42, 0.52, 0.22),          0,     1.10, 0);     // torso
+  add(new THREE.BoxGeometry(0.40, 0.22, 0.22),          0,     0.75, 0);     // hips
+  add(new THREE.SphereGeometry(0.08, 8, 6),            -0.24,  1.32, 0);     // L shoulder
+  add(new THREE.SphereGeometry(0.08, 8, 6),             0.24,  1.32, 0);     // R shoulder
+  add(new THREE.CylinderGeometry(0.065, 0.06, 0.28, 8),-0.30, 1.10, 0);     // L upper arm
+  add(new THREE.CylinderGeometry(0.065, 0.06, 0.28, 8), 0.30, 1.10, 0);     // R upper arm
+  add(new THREE.SphereGeometry(0.065, 8, 6),           -0.30,  0.94, 0);     // L elbow
+  add(new THREE.SphereGeometry(0.065, 8, 6),            0.30,  0.94, 0);     // R elbow
+  add(new THREE.CylinderGeometry(0.055, 0.05, 0.26, 8),-0.30, 0.82, 0);     // L forearm
+  add(new THREE.CylinderGeometry(0.055, 0.05, 0.26, 8), 0.30, 0.82, 0);     // R forearm
+  add(new THREE.BoxGeometry(0.10, 0.14, 0.05),         -0.30,  0.66, 0);     // L hand
+  add(new THREE.BoxGeometry(0.10, 0.14, 0.05),          0.30,  0.66, 0);     // R hand
+  add(new THREE.CylinderGeometry(0.105, 0.095, 0.38, 10),-0.12,0.47, 0);    // L thigh
+  add(new THREE.CylinderGeometry(0.105, 0.095, 0.38, 10), 0.12,0.47, 0);    // R thigh
+  add(new THREE.SphereGeometry(0.09, 8, 6),            -0.12,  0.27, 0);     // L knee
+  add(new THREE.SphereGeometry(0.09, 8, 6),             0.12,  0.27, 0);     // R knee
+  add(new THREE.CylinderGeometry(0.08, 0.065, 0.36, 10),-0.12, 0.08, 0);    // L shin
+  add(new THREE.CylinderGeometry(0.08, 0.065, 0.36, 10), 0.12, 0.08, 0);    // R shin
+  add(new THREE.SphereGeometry(0.07, 8, 6),            -0.12, -0.11, 0);     // L ankle
+  add(new THREE.SphereGeometry(0.07, 8, 6),             0.12, -0.11, 0);     // R ankle
+  add(new THREE.BoxGeometry(0.12, 0.07, 0.22),         -0.12, -0.155,0.04);  // L foot
+  add(new THREE.BoxGeometry(0.12, 0.07, 0.22),          0.12, -0.155,0.04);  // R foot
+  const merged = BufferGeometryUtils.mergeGeometries(parts, false);
+  merged.translate(0, -0.795, 0); // center vertically
+  return merged;
+}
+
+function buildPrimitiveGeometry(type: PrimitiveType): THREE.BufferGeometry {
+  switch (type) {
+    case "sphere":   return new THREE.SphereGeometry(1, 16, 12);
+    case "box":      return new THREE.BoxGeometry(1.8, 1.8, 1.8);
+    case "cylinder": return new THREE.CylinderGeometry(0.8, 0.8, 2, 16);
+    case "cone":     return new THREE.ConeGeometry(1, 2, 16);
+    case "torus":    return new THREE.TorusGeometry(0.8, 0.35, 12, 24);
+    case "capsule":  return new THREE.CapsuleGeometry(0.7, 1.4, 8, 16);
+    case "plane":    return new THREE.PlaneGeometry(2, 2, 4, 4);
+    case "human":    return buildHumanBase();
+    default:         return new THREE.SphereGeometry(1, 16, 12);
+  }
+}
+// ─────────────────────────────────────────────────────────────────────────────
 function generateClayMatcap(color: THREE.Color, size = 256): THREE.CanvasTexture {
   const canvas = document.createElement("canvas");
   canvas.width = size; canvas.height = size;
@@ -86,6 +152,8 @@ type Props = {
   brushStrength: number;
   viewMode?: ViewMode;
   clayColor?: string;
+  paintColor?: string;
+  dynTopo?: boolean;
   onModelLoaded?: (vertexCount: number) => void;
   onLoadError?: (msg: string) => void;
   handleRef?: React.RefObject<SculptViewerHandle | null>;
@@ -99,6 +167,8 @@ export default function SculptViewer({
   brushStrength,
   viewMode = "combined",
   clayColor = "#ebe7e1",
+  paintColor = "#e8925a",
+  dynTopo = false,
   onModelLoaded,
   onLoadError,
   handleRef,
@@ -115,7 +185,11 @@ export default function SculptViewer({
   const brushInnerIndicatorRef = useRef<THREE.Mesh | null>(null);
   const strokeActiveRef = useRef(false);
   const lastHitRef = useRef<BrushHit | null>(null);
+  const lastUVRef = useRef<{ uv: THREE.Vector2; mesh: THREE.Mesh } | null>(null);
+  const altDownRef = useRef(false);
   const shiftDownRef = useRef(false);
+  const dynTopoRef = useRef(false);
+  useEffect(() => { dynTopoRef.current = dynTopo; }, [dynTopo]);
 
   // Keep latest brush params accessible from pointer handlers without stale closures
   const brushModeRef = useRef(brushMode);
@@ -143,6 +217,8 @@ export default function SculptViewer({
   const clayColorRef = useRef(clayColor);
   useEffect(() => { viewModeRef.current = viewMode; }, [viewMode]);
   useEffect(() => { clayColorRef.current = clayColor; }, [clayColor]);
+  const paintColorRef = useRef(paintColor);
+  useEffect(() => { paintColorRef.current = paintColor; }, [paintColor]);
 
   function getClayMat(color: string): THREE.MeshMatcapMaterial {
     if (!clayMatRef.current || lastClayColorRef.current !== color) {
@@ -207,6 +283,22 @@ export default function SculptViewer({
     applyViewToGroup(group, scene, viewMode, clayColor);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewMode, clayColor]);
+
+  // ── paint brush mode: swap mesh materials ──────────────────────────────────
+  useEffect(() => {
+    const group = modelRef.current;
+    const scene = sceneRef.current;
+    if (!group || !scene) return;
+    if (brushMode === "paint") {
+      meshEntriesRef.current.forEach((entry) => {
+        if (entry.paintMat) entry.mesh.material = entry.paintMat;
+      });
+    } else {
+      applyViewToGroup(group, scene, viewModeRef.current, clayColorRef.current);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brushMode]);
+
 
   // ── one-time scene setup ──────────────────────────────────────────────────
   useEffect(() => {
@@ -354,7 +446,22 @@ export default function SculptViewer({
 
         const posArr = mesh.geometry.attributes.position.array as Float32Array;
         const seams = buildSeamData(posArr);
-        meshEntriesRef.current.push({ mesh, seams });
+        const baseEdgeLen = computeAvgEdgeLen(mesh.geometry);
+        // Build paint canvas — getContext("2d") can return null in some environments.
+        // Skip drawImage seeding (CORS taints canvas); always use a flat grey base.
+        let paintEntry: Partial<SculptMeshEntry> = {};
+        try {
+          const pc = document.createElement("canvas"); pc.width = pc.height = PAINT_TEX_SIZE;
+          const pCtx = pc.getContext("2d");
+          if (pCtx) {
+            pCtx.fillStyle = "#888888"; pCtx.fillRect(0, 0, PAINT_TEX_SIZE, PAINT_TEX_SIZE);
+            const pt = new THREE.CanvasTexture(pc); pt.colorSpace = THREE.SRGBColorSpace;
+            const pm = new THREE.MeshBasicMaterial({ map: pt });
+            paintEntry = { paintCanvas: pc, paintTexture: pt, paintMat: pm };
+          }
+        } catch { /* canvas context unavailable */ }
+        const quadIndices = detectQuads(mesh.geometry);
+        meshEntriesRef.current.push({ mesh, seams, baseEdgeLen, quadIndices, ...paintEntry });
         totalVerts += mesh.geometry.attributes.position.count;
 
         // Wireframe overlay — excluded from GLB export, hidden by default
@@ -437,6 +544,7 @@ export default function SculptViewer({
       const normal = nearest.face.normal.clone()
         .transformDirection(nearest.object.matrixWorld)
         .normalize();
+      lastUVRef.current = nearest.uv ? { uv: nearest.uv.clone(), mesh: nearest.object as THREE.Mesh } : null;
       return { point: nearest.point.clone(), normal };
     }
 
@@ -469,6 +577,34 @@ export default function SculptViewer({
       }
     }
 
+
+    // ── UV texture painting ──────────────────────────────────────────────────
+    function applyPaintDab() {
+      const uvHit = lastUVRef.current;
+      if (!uvHit) return;
+      const entry = meshEntriesRef.current.find((e) => e.mesh === uvHit.mesh);
+      if (!entry?.paintCanvas || !entry.paintTexture) return;
+      const canvas = entry.paintCanvas;
+      const ctx = canvas.getContext("2d")!;
+      const u = uvHit.uv.x;
+      const v = 1 - uvHit.uv.y; // flip Y for canvas
+      const cx = u * PAINT_TEX_SIZE;
+      const cy = v * PAINT_TEX_SIZE;
+      const r = Math.max(1, brushRadiusRef.current * 80);
+      const innerR = r * brushInnerRadiusRef.current;
+      const hex = paintColorRef.current;
+      const grad = ctx.createRadialGradient(cx, cy, innerR, cx, cy, r);
+      grad.addColorStop(0, hex);
+      grad.addColorStop(1, hex + "00");
+      ctx.save();
+      ctx.globalAlpha = brushStrengthRef.current;
+      ctx.fillStyle = grad;
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+      entry.paintTexture.needsUpdate = true;
+      entry.hasPaint = true;
+    }
+
     function onPointerDown(e: PointerEvent) {
       if (e.button !== 0) return;
       const hit = getHitFromEvent(e);
@@ -482,18 +618,25 @@ export default function SculptViewer({
       controlsRef.current!.enabled = false;
       mount.setPointerCapture(e.pointerId);
 
-      // Apply on first down too
-      for (const entry of meshEntriesRef.current) {
-        applyBrush({
-          mode: brushModeRef.current,
-          radius: brushRadiusRef.current,
-          innerRadius: brushInnerRadiusRef.current,
-          strength: brushStrengthRef.current,
-          hit,
-          mesh: entry.mesh,
-          seams: entry.seams,
-          invert: brushModeRef.current === "clay_buildup" && shiftDownRef.current,
-        });
+
+      // Apply on first down
+      const isPaint = brushModeRef.current === "paint";
+      if (isPaint) {
+        applyPaintDab();
+      } else {
+        const pressure = e.pointerType === "pen" && e.pressure > 0 ? e.pressure : 1.0;
+        for (const entry of meshEntriesRef.current) {
+          applyBrush({
+            mode: shiftDownRef.current ? "smooth" : brushModeRef.current,
+            radius: brushRadiusRef.current,
+            innerRadius: brushInnerRadiusRef.current,
+            strength: brushStrengthRef.current * pressure,
+            hit,
+            mesh: entry.mesh,
+            seams: entry.seams,
+            invert: altDownRef.current,
+          });
+        }
       }
     }
 
@@ -504,19 +647,26 @@ export default function SculptViewer({
       if (!strokeActiveRef.current || !hit) return;
       const prevHit = lastHitRef.current ?? undefined;
 
-      for (const entry of meshEntriesRef.current) {
-        applyBrush({
-          mode: brushModeRef.current,
-          radius: brushRadiusRef.current,
-          innerRadius: brushInnerRadiusRef.current,
-          strength: brushStrengthRef.current,
-          hit,
-          prevHit,
-          mesh: entry.mesh,
-          seams: entry.seams,
-          invert: brushModeRef.current === "clay_buildup" && shiftDownRef.current,
-        });
+
+      if (brushModeRef.current === "paint") {
+        applyPaintDab();
+      } else {
+        const pressure = e.pointerType === "pen" && e.pressure > 0 ? e.pressure : 1.0;
+        for (const entry of meshEntriesRef.current) {
+          applyBrush({
+            mode: shiftDownRef.current ? "smooth" : brushModeRef.current,
+            radius: brushRadiusRef.current,
+            innerRadius: brushInnerRadiusRef.current,
+            strength: brushStrengthRef.current * pressure,
+            hit,
+            prevHit,
+            mesh: entry.mesh,
+            seams: entry.seams,
+            invert: altDownRef.current,
+          });
+        }
       }
+      lastHitRef.current = hit;
       lastHitRef.current = hit;
     }
 
@@ -526,6 +676,41 @@ export default function SculptViewer({
       lastHitRef.current = null;
       controlsRef.current!.enabled = true;
       mount.releasePointerCapture(e.pointerId);
+
+      if (dynTopoRef.current && meshEntriesRef.current.length > 0) {
+        let totalVerts = 0;
+        let anyChanged = false;
+        for (const entry of meshEntriesRef.current) {
+          const changed = dynTopoRefine(
+            entry.mesh.geometry,
+            entry.baseEdgeLen ?? 0.05,
+            { maxNewVerts: 2000, passes: 3 },
+          );
+          if (changed) {
+            anyChanged = true;
+            entry.mesh.geometry.boundsTree = new MeshBVH(entry.mesh.geometry);
+            entry.seams = buildSeamData(entry.mesh.geometry.attributes.position.array as Float32Array);
+            const wire = entry.mesh.children.find((c) => c.name === "__wire");
+            if (wire) {
+              entry.mesh.remove(wire);
+              const newWire = new THREE.LineSegments(
+                new THREE.WireframeGeometry(entry.mesh.geometry),
+                (wire as THREE.LineSegments).material as THREE.Material,
+              );
+              newWire.name = "__wire";
+              newWire.visible = (wire as THREE.Object3D).visible;
+              newWire.renderOrder = 999;
+              entry.mesh.add(newWire);
+            }
+          }
+          totalVerts += entry.mesh.geometry.attributes.position.count;
+        }
+        // Topology changed — old position snapshots are now invalid
+        if (anyChanged) {
+          undoRef.current.clear();
+          onModelLoadedRef.current?.(totalVerts);
+        }
+      }
     }
 
     function onPointerLeave() {
@@ -566,10 +751,10 @@ export default function SculptViewer({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Shift tracking for clay_buildup invert
+  // Modifier key tracking: Shift = smooth override, Alt/Option = invert
   useEffect(() => {
-    const dn = (e: KeyboardEvent) => { if (e.key === "Shift") shiftDownRef.current = true; };
-    const up = (e: KeyboardEvent) => { if (e.key === "Shift") shiftDownRef.current = false; };
+    const dn = (e: KeyboardEvent) => { if (e.key === "Shift") shiftDownRef.current = true; if (e.key === "Alt") altDownRef.current = true; };
+    const up = (e: KeyboardEvent) => { if (e.key === "Shift") shiftDownRef.current = false; if (e.key === "Alt") altDownRef.current = false; };
     window.addEventListener("keydown", dn);
     window.addEventListener("keyup", up);
     return () => { window.removeEventListener("keydown", dn); window.removeEventListener("keyup", up); };
@@ -589,16 +774,38 @@ export default function SculptViewer({
     });
     detached.forEach(({ parent, obj }) => parent.remove(obj));
 
+    // If any mesh has been painted, bake the paint canvas into the export material.
+    // Prefer cloning the original GLTF MeshStandardMaterial and patching only its
+    // albedo slot so roughness/metallic/normals/AO are preserved. Fall back to the
+    // plain MeshBasicMaterial for primitives (whose original is a clay matcap).
+    const swapped: Array<{ mesh: THREE.Mesh; prev: THREE.Material | THREE.Material[] }> = [];
+    for (const entry of meshEntriesRef.current) {
+      if (!entry.hasPaint || !entry.paintTexture) continue;
+      const origMat = originalMaterialsRef.current.get(entry.mesh.uuid);
+      if (origMat && (origMat as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
+        const baked = (origMat as THREE.MeshStandardMaterial).clone();
+        baked.map = entry.paintTexture;
+        baked.needsUpdate = true;
+        swapped.push({ mesh: entry.mesh, prev: entry.mesh.material });
+        entry.mesh.material = baked;
+      } else if (entry.paintMat && entry.mesh.material !== entry.paintMat) {
+        swapped.push({ mesh: entry.mesh, prev: entry.mesh.material });
+        entry.mesh.material = entry.paintMat;
+      }
+    }
+
     const exporter = new GLTFExporter();
     return new Promise((resolve, reject) => {
       exporter.parse(
         modelRef.current!,
         (result) => {
           detached.forEach(({ parent, obj }) => parent.add(obj));
+          swapped.forEach(({ mesh, prev }) => { mesh.material = prev; });
           resolve(new Uint8Array(result as ArrayBuffer));
         },
         (err) => {
           detached.forEach(({ parent, obj }) => parent.add(obj));
+          swapped.forEach(({ mesh, prev }) => { mesh.material = prev; });
           reject(err);
         },
         { binary: true },
@@ -626,11 +833,231 @@ export default function SculptViewer({
     }
   }, []);
 
+  const subdivide = useCallback(() => {
+    if (meshEntriesRef.current.length === 0) return;
+    // Vertex cap — Loop subdivision ≈ 4× vertex count; block before hitting WebGL limits
+    const currentVerts = meshEntriesRef.current.reduce(
+      (s, e) => s + e.mesh.geometry.attributes.position.count, 0,
+    );
+    if (currentVerts * 4 > 1_000_000) {
+      onLoadErrorRef.current?.("Subdivide would exceed 1M vertices — save and reduce the mesh first.");
+      return;
+    }
+    // Subdivision changes topology (new vertex count), so position snapshots from previous
+    // sculpt strokes would be invalid after this point. Clear rather than push.
+    undoRef.current.clear();
+    let totalVerts = 0;
+    for (const entry of meshEntriesRef.current) {
+      const { mesh } = entry;
+      const { geometry: subdivided, newQuadIndices } = catmullClarkSubdivide(
+        mesh.geometry,
+        entry.quadIndices ?? new Uint32Array(0),
+      );
+      mesh.geometry.dispose();
+      mesh.geometry = subdivided;
+      mesh.geometry.boundsTree = new MeshBVH(mesh.geometry);
+      entry.quadIndices = newQuadIndices; // 4× quads for the next level
+      const posArr = mesh.geometry.attributes.position.array as Float32Array;
+      entry.seams = buildSeamData(posArr);
+      // Rebuild wireframe overlay
+      const wire = mesh.children.find((c) => c.name === "__wire");
+      if (wire) {
+        mesh.remove(wire);
+        const newWire = new THREE.LineSegments(
+          new THREE.WireframeGeometry(mesh.geometry),
+          (wire as THREE.LineSegments).material as THREE.Material,
+        );
+        newWire.name = "__wire";
+        newWire.visible = (wire as THREE.Object3D).visible;
+        newWire.renderOrder = 999;
+        mesh.add(newWire);
+      }
+      totalVerts += mesh.geometry.attributes.position.count;
+    }
+    onModelLoadedRef.current?.(totalVerts);
+  }, []);
+
+  const remesh = useCallback(() => {
+    if (meshEntriesRef.current.length === 0) return;
+    undoRef.current.clear();
+    let totalVerts = 0;
+    for (const entry of meshEntriesRef.current) {
+      const changed = dynTopoRefine(
+        entry.mesh.geometry,
+        entry.baseEdgeLen ?? 0.05,
+        { maxNewVerts: 10_000, passes: 6 },
+      );
+      if (changed) {
+        entry.mesh.geometry.boundsTree = new MeshBVH(entry.mesh.geometry);
+        entry.seams = buildSeamData(entry.mesh.geometry.attributes.position.array as Float32Array);
+        const wire = entry.mesh.children.find((c) => c.name === "__wire");
+        if (wire) {
+          entry.mesh.remove(wire);
+          const newWire = new THREE.LineSegments(
+            new THREE.WireframeGeometry(entry.mesh.geometry),
+            (wire as THREE.LineSegments).material as THREE.Material,
+          );
+          newWire.name = "__wire";
+          newWire.visible = (wire as THREE.Object3D).visible;
+          newWire.renderOrder = 999;
+          entry.mesh.add(newWire);
+        }
+      }
+      totalVerts += entry.mesh.geometry.attributes.position.count;
+    }
+    onModelLoadedRef.current?.(totalVerts);
+  }, []);
+
+  const loadPrimitive = useCallback((type: PrimitiveType) => {
+    const scene   = sceneRef.current;
+    const camera  = cameraRef.current;
+    const controls = controlsRef.current;
+    if (!scene || !camera || !controls) return;
+    // Clear existing
+    if (modelRef.current) {
+      scene.remove(modelRef.current);
+      modelRef.current.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.geometry) { m.geometry.boundsTree = undefined; m.geometry.dispose(); }
+      });
+      modelRef.current = null;
+    }
+    meshEntriesRef.current = [];
+    undoRef.current.clear();
+    // Build geometry
+    const geo = buildPrimitiveGeometry(type);
+    geo.computeVertexNormals();
+    if (!geo.index) {
+      const vCount = geo.attributes.position.count;
+      const idx = new Uint32Array(vCount);
+      for (let i = 0; i < vCount; i++) idx[i] = i;
+      geo.setIndex(new THREE.BufferAttribute(idx, 1));
+    }
+    geo.boundsTree = new MeshBVH(geo);
+    const mat = clayMatRef.current ?? new THREE.MeshMatcapMaterial();
+    const mesh = new THREE.Mesh(geo, mat);
+    if (!wireMatRef.current) {
+      wireMatRef.current = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.3, depthTest: false });
+    }
+    const wire = new THREE.LineSegments(new THREE.WireframeGeometry(geo), wireMatRef.current);
+    wire.name = "__wire"; wire.visible = false; wire.renderOrder = 999;
+    mesh.add(wire);
+    const posArr = geo.attributes.position.array as Float32Array;
+    const seams = buildSeamData(posArr);
+    const pc2 = document.createElement("canvas"); pc2.width = pc2.height = PAINT_TEX_SIZE;
+    const pCtx2 = pc2.getContext("2d")!; pCtx2.fillStyle = "#888888"; pCtx2.fillRect(0, 0, PAINT_TEX_SIZE, PAINT_TEX_SIZE);
+    const pt2 = new THREE.CanvasTexture(pc2); pt2.colorSpace = THREE.SRGBColorSpace;
+    const pm2 = new THREE.MeshBasicMaterial({ map: pt2 });
+    const primQuadIndices = detectQuads(geo);
+    meshEntriesRef.current.push({ mesh, seams, baseEdgeLen: computeAvgEdgeLen(geo), quadIndices: primQuadIndices, paintCanvas: pc2, paintTexture: pt2, paintMat: pm2 });
+    const group = new THREE.Group();
+    group.add(mesh);
+    scene.add(group);
+    modelRef.current = group;
+    originalMaterialsRef.current.clear();
+    originalMaterialsRef.current.set(mesh.uuid, mesh.material);
+    channelMatsRef.current.forEach((m) => m.dispose());
+    channelMatsRef.current = [];
+    // Frame camera
+    const box = new THREE.Box3().setFromObject(group);
+    const sz  = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(sz.x, sz.y, sz.z) || 1;
+    const dist = maxDim * 2.2;
+    camera.position.set(dist * 0.7, dist * 0.5, dist);
+    camera.near = maxDim / 100; camera.far = maxDim * 100;
+    camera.updateProjectionMatrix();
+    controls.target.set(0, 0, 0); controls.update();
+    applyViewToGroup(group, scene, viewModeRef.current, clayColorRef.current);
+    onModelLoadedRef.current?.(geo.attributes.position.count);
+  }, []);
+
+
+  const loadGeometry = useCallback((geo: THREE.BufferGeometry, _name?: string) => {
+    const scene    = sceneRef.current;
+    const camera   = cameraRef.current;
+    const controls = controlsRef.current;
+    if (!scene || !camera || !controls) return;
+    if (modelRef.current) {
+      scene.remove(modelRef.current);
+      modelRef.current.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.geometry) { m.geometry.boundsTree = undefined; m.geometry.dispose(); }
+      });
+      modelRef.current = null;
+    }
+    meshEntriesRef.current = [];
+    undoRef.current.clear();
+
+    geo.computeVertexNormals();
+    if (!geo.index) {
+      const vCount = geo.attributes.position.count;
+      const idx = new Uint32Array(vCount);
+      for (let i = 0; i < vCount; i++) idx[i] = i;
+      geo.setIndex(new THREE.BufferAttribute(idx, 1));
+    }
+    geo.boundsTree = new MeshBVH(geo);
+    const mat = clayMatRef.current ?? new THREE.MeshMatcapMaterial();
+    const mesh = new THREE.Mesh(geo, mat);
+    if (!wireMatRef.current) {
+      wireMatRef.current = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.3, depthTest: false });
+    }
+    const wire = new THREE.LineSegments(new THREE.WireframeGeometry(geo), wireMatRef.current);
+    wire.name = "__wire"; wire.visible = false; wire.renderOrder = 999;
+    mesh.add(wire);
+    const posArr = geo.attributes.position.array as Float32Array;
+    const seams = buildSeamData(posArr);
+    const pc = document.createElement("canvas"); pc.width = pc.height = PAINT_TEX_SIZE;
+    const pCtx = pc.getContext("2d")!; pCtx.fillStyle = "#888888"; pCtx.fillRect(0, 0, PAINT_TEX_SIZE, PAINT_TEX_SIZE);
+    const pt = new THREE.CanvasTexture(pc); pt.colorSpace = THREE.SRGBColorSpace;
+    const pm = new THREE.MeshBasicMaterial({ map: pt });
+    meshEntriesRef.current.push({ mesh, seams, baseEdgeLen: computeAvgEdgeLen(geo), quadIndices: detectQuads(geo), paintCanvas: pc, paintTexture: pt, paintMat: pm });
+    const group = new THREE.Group();
+    group.add(mesh);
+    scene.add(group);
+    modelRef.current = group;
+    originalMaterialsRef.current.clear();
+    originalMaterialsRef.current.set(mesh.uuid, mesh.material);
+    channelMatsRef.current.forEach((m) => m.dispose());
+    channelMatsRef.current = [];
+    const box = new THREE.Box3().setFromObject(group);
+    const sz  = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(sz.x, sz.y, sz.z) || 1;
+    const dist = maxDim * 2.2;
+    camera.position.set(dist * 0.7, dist * 0.5, dist);
+    camera.near = maxDim / 100; camera.far = maxDim * 100;
+    camera.updateProjectionMatrix();
+    controls.target.set(0, 0, 0); controls.update();
+    applyViewToGroup(group, scene, viewModeRef.current, clayColorRef.current);
+    onModelLoadedRef.current?.(geo.attributes.position.count);
+  }, []);
+
+  const clearScene = useCallback(() => {
+    const scene = sceneRef.current;
+    if (modelRef.current && scene) {
+      scene.remove(modelRef.current);
+      modelRef.current.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.geometry) { m.geometry.boundsTree = undefined; m.geometry.dispose(); }
+        if (m.material) {
+          const mats = Array.isArray(m.material) ? m.material : [m.material];
+          mats.forEach((mat) => mat.dispose());
+        }
+      });
+      modelRef.current = null;
+    }
+    meshEntriesRef.current = [];
+    undoRef.current.clear();
+    originalMaterialsRef.current.clear();
+    channelMatsRef.current.forEach((m) => m.dispose());
+    channelMatsRef.current = [];
+    onModelLoadedRef.current?.(0);
+  }, []);
+
   useEffect(() => {
     if (handleRef) {
-      (handleRef as React.MutableRefObject<SculptViewerHandle | null>).current = { exportGlb, undo, redo };
+      (handleRef as React.MutableRefObject<SculptViewerHandle | null>).current = { exportGlb, undo, redo, subdivide, loadPrimitive, remesh, loadGeometry, clearScene };
     }
-  }, [handleRef, exportGlb, undo, redo]);
+  }, [handleRef, exportGlb, undo, redo, subdivide, loadPrimitive, remesh, loadGeometry, clearScene]);
 
   return <div ref={mountRef} className="w-full h-full" style={{ touchAction: "none" }} />;
 }

@@ -26,6 +26,7 @@
     "stripe": "^22.2.1",
     "three": "^0.184.0",
     "three-mesh-bvh": "^0.9.10",
+    "three-subdivide": "^1.1.5",
     "xatlas-wasm": "^0.1.3"
   },
   "devDependencies": {

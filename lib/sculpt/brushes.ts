@@ -4,7 +4,7 @@
 import * as THREE from "three";
 import type { SeamData } from "./seams";
 
-export type BrushMode = "clay_buildup" | "push" | "pull" | "smooth" | "flatten" | "move";
+export type BrushMode = "clay_buildup" | "push" | "smooth" | "flatten" | "move" | "paint";
 
 export type BrushHit = {
   point: THREE.Vector3;   // world-space hit point
@@ -84,6 +84,8 @@ export function applyBrush(params: BrushParams): void {
   const localNormal = hit.normal.clone().transformDirection(_inv).normalize();
   const localHit = hit.point.clone().applyMatrix4(_inv);
 
+  if (mode === "paint") return; // Handled via UV raycasting in SculptViewer
+
   if (mode === "clay_buildup") {
     const sign = invert ? -1 : 1;
     const allIdx = expandSeams(gathered.map((g) => g.idx), seams);
@@ -100,8 +102,8 @@ export function applyBrush(params: BrushParams): void {
       const disp = sign * strength * fo * radius * 0.07;
       positions.setXYZ(idx, positions.getX(idx) + localNormal.x * disp, positions.getY(idx) + localNormal.y * disp, positions.getZ(idx) + localNormal.z * disp);
     }
-  } else if (mode === "push" || mode === "pull") {
-    const sign = mode === "push" ? 1 : -1;
+  } else if (mode === "push") {
+    const sign = invert ? -1 : 1;
     const allIdx = expandSeams(gathered.map((g) => g.idx), seams);
 
     // Build falloff map so seam-expanded verts use the same falloff.
@@ -114,25 +116,30 @@ export function applyBrush(params: BrushParams): void {
       }
     }
 
+    const nAttr = mesh.geometry.attributes.normal as THREE.BufferAttribute;
     for (const idx of allIdx) {
       const fo = foMap.get(idx) ?? 0;
       const disp = sign * strength * fo * radius * 0.05;
       positions.setXYZ(
         idx,
-        positions.getX(idx) + localNormal.x * disp,
-        positions.getY(idx) + localNormal.y * disp,
-        positions.getZ(idx) + localNormal.z * disp,
+        positions.getX(idx) + nAttr.getX(idx) * disp,
+        positions.getY(idx) + nAttr.getY(idx) * disp,
+        positions.getZ(idx) + nAttr.getZ(idx) * disp,
       );
     }
   } else if (mode === "smooth") {
-    // Average position of all vertices in radius.
-    const avg = new THREE.Vector3();
-    for (const { idx } of gathered) {
-      avg.x += positions.getX(idx);
-      avg.y += positions.getY(idx);
-      avg.z += positions.getZ(idx);
+    // Ring-1 Laplacian: each vertex moves toward the average of its topology neighbors.
+    // Building from the full index buffer once avoids the collapse that happens when all
+    // vertices share a single centroid target.
+    const idxBuf = mesh.geometry.index!;
+    const adj = new Map<number, Set<number>>();
+    for (let i = 0; i < idxBuf.count; i += 3) {
+      const a = idxBuf.getX(i), b = idxBuf.getX(i + 1), c = idxBuf.getX(i + 2);
+      for (const [v, n1, n2] of [[a,b,c],[b,a,c],[c,a,b]] as [number,number,number][]) {
+        if (!adj.has(v)) adj.set(v, new Set());
+        adj.get(v)!.add(n1); adj.get(v)!.add(n2);
+      }
     }
-    avg.divideScalar(gathered.length);
 
     const allIdx = expandSeams(gathered.map((g) => g.idx), seams);
     const foMap = new Map<number, number>();
@@ -145,13 +152,21 @@ export function applyBrush(params: BrushParams): void {
     }
 
     for (const idx of allIdx) {
+      const neighbors = adj.get(idx);
+      if (!neighbors || neighbors.size === 0) continue;
       const fo = foMap.get(idx) ?? 0;
+      if (fo === 0) continue;
+      let ax = 0, ay = 0, az = 0;
+      for (const n of neighbors) {
+        ax += positions.getX(n); ay += positions.getY(n); az += positions.getZ(n);
+      }
+      const inv = 1 / neighbors.size;
       const t = fo * strength * 0.4;
       positions.setXYZ(
         idx,
-        positions.getX(idx) * (1 - t) + avg.x * t,
-        positions.getY(idx) * (1 - t) + avg.y * t,
-        positions.getZ(idx) * (1 - t) + avg.z * t,
+        positions.getX(idx) * (1 - t) + ax * inv * t,
+        positions.getY(idx) * (1 - t) + ay * inv * t,
+        positions.getZ(idx) * (1 - t) + az * inv * t,
       );
     }
   } else if (mode === "flatten") {

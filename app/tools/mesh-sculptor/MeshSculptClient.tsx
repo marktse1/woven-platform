@@ -192,6 +192,32 @@ export default function MeshSculptClient() {
             setTimeout(() => setUploadMsg(""), 3000);
           } catch { setUploadMsg("Loaded locally (library upload failed)."); }
         }
+      } else if (ext === "drc") {
+        const { DRACOLoader } = await import("three/examples/jsm/loaders/DRACOLoader.js");
+        const buf = await file.arrayBuffer();
+        const dracoLoader = new DRACOLoader();
+        dracoLoader.setDecoderPath("/libs/draco/");
+        // DRACOLoader.load needs a URL — create a temporary blob URL
+        const blob = new Blob([buf], { type: "application/octet-stream" });
+        const blobUrl = URL.createObjectURL(blob);
+        const geo = await new Promise<THREE.BufferGeometry>((resolve, reject) => {
+          dracoLoader.load(blobUrl, resolve, undefined, reject);
+        });
+        URL.revokeObjectURL(blobUrl);
+        dracoLoader.dispose();
+        viewerHandleRef.current?.loadGeometry(geo, file.name);
+        // Convert to GLB and upload
+        if (user?.id && viewerHandleRef.current) {
+          try {
+            setUploadMsg("Converting & uploading…");
+            const glbBytes = await viewerHandleRef.current.exportGlb();
+            const glbName = file.name.replace(/\.drc$/i, ".glb");
+            await uploadAsset({ userId: user.id, name: glbName, bytes: glbBytes.buffer as ArrayBuffer, visibility: "private" });
+            await refreshAssets();
+            setUploadMsg("Added to library.");
+            setTimeout(() => setUploadMsg(""), 3000);
+          } catch { setUploadMsg("Loaded locally (library upload failed)."); }
+        }
       } else if (ext === "obj") {
         const { OBJLoader } = await import("three/examples/jsm/loaders/OBJLoader.js");
         const BGU = await import("three/examples/jsm/utils/BufferGeometryUtils.js");
@@ -235,7 +261,7 @@ export default function MeshSculptClient() {
           } catch { setUploadMsg("Loaded locally (library upload failed)."); }
         }
       } else {
-        throw new Error(`Unsupported format: .${ext}. Use .glb, .obj, or .stl`);
+        throw new Error(`Unsupported format: .${ext}. Use .glb, .drc, .obj, or .stl`);
       }
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : "Failed to load file.");
@@ -259,8 +285,8 @@ export default function MeshSculptClient() {
     const file = e.dataTransfer.files?.[0];
     if (!file) return;
     const ext = file.name.split(".").pop()?.toLowerCase();
-    if (ext !== "glb" && ext !== "obj" && ext !== "stl") {
-      setLoadError(`Unsupported format: .${ext}. Drop a .glb, .obj, or .stl file.`);
+    if (ext !== "glb" && ext !== "drc" && ext !== "obj" && ext !== "stl") {
+      setLoadError(`Unsupported format: .${ext}. Drop a .glb, .drc, .obj, or .stl file.`);
       return;
     }
     await handleLocalFile(file);
@@ -407,7 +433,7 @@ export default function MeshSculptClient() {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".glb,.obj,.stl"
+            accept=".glb,.drc,.obj,.stl"
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];
@@ -418,7 +444,7 @@ export default function MeshSculptClient() {
           <button
             onClick={() => fileInputRef.current?.click()}
             className="w-full mt-2 py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors"
-            title="Load a .glb, .obj, or .stl file directly from disk">
+            title="Load a .glb, .drc, .obj, or .stl file directly from disk">
             Load from disk…
           </button>
           {loadingAsset && <p className="text-[11px] text-dim mt-2">Loading…</p>}
@@ -489,16 +515,28 @@ export default function MeshSculptClient() {
               <span className="text-[11px] text-dim">Subdivision</span>
               <span className="text-[11px] text-ink">Level {subdivLevel}</span>
             </div>
-            <button
-              onClick={() => {
-                viewerHandleRef.current?.subdivide();
-                setSubdivLevel((l) => l + 1);
-              }}
-              disabled={vertexCount == null || (vertexCount * 4 > 1_000_000)}
-              className="w-full py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              title="Loop subdivision — each level ≈ 4× triangle count">
-              Subdivide ▲
-            </button>
+            <div className="flex gap-1">
+              <button
+                onClick={() => {
+                  const ok = viewerHandleRef.current?.subdivideDown();
+                  if (ok) setSubdivLevel((l) => Math.max(0, l - 1));
+                }}
+                disabled={subdivLevel === 0}
+                className="flex-1 py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                title="Step back to previous subdivision level">
+                ▼ Down
+              </button>
+              <button
+                onClick={() => {
+                  viewerHandleRef.current?.subdivide();
+                  setSubdivLevel((l) => l + 1);
+                }}
+                disabled={vertexCount == null || (vertexCount * 4 > 1_000_000)}
+                className="flex-1 py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                title="Catmull-Clark subdivision — each level ≈ 4× triangle count">
+                ▲ Up
+              </button>
+            </div>
             <button
               onClick={() => viewerHandleRef.current?.remesh()}
               disabled={vertexCount == null}
@@ -668,7 +706,7 @@ export default function MeshSculptClient() {
                   <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" stroke={isDragging ? "#c47be8" : "#8aa0b4"} strokeWidth="1.6" strokeLinecap="round"/>
                 </svg>
                 <p className="text-sm font-medium" style={{ color: isDragging ? "#c47be8" : "#c0b8b0" }}>
-                  {isDragging ? "Drop to load" : "Drop a GLB or OBJ here"}
+                  {isDragging ? "Drop to load" : "Drop a GLB, DRC, or OBJ here"}
                 </p>
                 <p className="text-[11px]" style={{ color: "#6a8098" }}>
                   or select a mesh from the sidebar

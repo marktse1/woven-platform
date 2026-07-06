@@ -17,6 +17,11 @@ import * as BufferGeometryUtils from "three/examples/jsm/utils/BufferGeometryUti
 // Patch Three.js raycaster to use BVH acceleration
 (THREE.Mesh.prototype as THREE.Mesh & { raycast: typeof acceleratedRaycast }).raycast = acceleratedRaycast;
 
+type SubdivGeomSnapshot = {
+  geometry: THREE.BufferGeometry;
+  quadIndices: Uint32Array;
+};
+
 type SculptMeshEntry = {
   mesh: THREE.Mesh;
   seams: SeamData;
@@ -27,6 +32,8 @@ type SculptMeshEntry = {
   baseEdgeLen?: number;
   /** Quad face index buffer for Catmull-Clark subdivision (4 indices per quad, CCW). Empty = Loop fallback. */
   quadIndices?: Uint32Array;
+  /** Geometry snapshots taken before each subdivide — allows stepping back down levels. Max 8 levels. */
+  subdivStack?: SubdivGeomSnapshot[];
 };
 
 const PAINT_TEX_SIZE = 1024;
@@ -35,6 +42,8 @@ export type SculptViewerHandle = {
   undo: () => void;
   redo: () => void;
   subdivide: () => void;
+  subdivideDown: () => boolean;
+  subdivLevel: () => number;
   loadPrimitive: (type: PrimitiveType) => void;
   remesh: () => void;
   loadGeometry: (geo: THREE.BufferGeometry, name?: string) => void;
@@ -849,6 +858,12 @@ export default function SculptViewer({
     let totalVerts = 0;
     for (const entry of meshEntriesRef.current) {
       const { mesh } = entry;
+      // Snapshot current geometry so we can step back down
+      if (!entry.subdivStack) entry.subdivStack = [];
+      if (entry.subdivStack.length < 8) {
+        const snapGeo = mesh.geometry.clone();
+        entry.subdivStack.push({ geometry: snapGeo, quadIndices: entry.quadIndices ? entry.quadIndices.slice() : new Uint32Array(0) });
+      }
       const { geometry: subdivided, newQuadIndices } = catmullClarkSubdivide(
         mesh.geometry,
         entry.quadIndices ?? new Uint32Array(0),
@@ -1031,6 +1046,46 @@ export default function SculptViewer({
     onModelLoadedRef.current?.(geo.attributes.position.count);
   }, []);
 
+  const subdivideDown = useCallback((): boolean => {
+    // Returns true if a level was restored, false if already at base
+    const entries = meshEntriesRef.current;
+    if (entries.length === 0) return false;
+    if (!entries[0].subdivStack || entries[0].subdivStack.length === 0) return false;
+    undoRef.current.clear();
+    let totalVerts = 0;
+    for (const entry of entries) {
+      if (!entry.subdivStack || entry.subdivStack.length === 0) continue;
+      const snap = entry.subdivStack.pop()!;
+      entry.mesh.geometry.dispose();
+      entry.mesh.geometry = snap.geometry;
+      entry.mesh.geometry.boundsTree = new MeshBVH(entry.mesh.geometry);
+      entry.quadIndices = snap.quadIndices;
+      const posArr = entry.mesh.geometry.attributes.position.array as Float32Array;
+      entry.seams = buildSeamData(posArr);
+      // Rebuild wireframe overlay
+      const wire = entry.mesh.children.find((c) => c.name === "__wire");
+      if (wire) {
+        entry.mesh.remove(wire);
+        const newWire = new THREE.LineSegments(
+          new THREE.WireframeGeometry(entry.mesh.geometry),
+          (wire as THREE.LineSegments).material as THREE.Material,
+        );
+        newWire.name = "__wire";
+        newWire.visible = (wire as THREE.Object3D).visible;
+        newWire.renderOrder = 999;
+        entry.mesh.add(newWire);
+      }
+      totalVerts += entry.mesh.geometry.attributes.position.count;
+    }
+    onModelLoadedRef.current?.(totalVerts);
+    return true;
+  }, []);
+
+  const subdivLevel = useCallback((): number => {
+    const entry = meshEntriesRef.current[0];
+    return entry?.subdivStack?.length ?? 0;
+  }, []);
+
   const clearScene = useCallback(() => {
     const scene = sceneRef.current;
     if (modelRef.current && scene) {
@@ -1055,9 +1110,9 @@ export default function SculptViewer({
 
   useEffect(() => {
     if (handleRef) {
-      (handleRef as React.MutableRefObject<SculptViewerHandle | null>).current = { exportGlb, undo, redo, subdivide, loadPrimitive, remesh, loadGeometry, clearScene };
+      (handleRef as React.MutableRefObject<SculptViewerHandle | null>).current = { exportGlb, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene };
     }
-  }, [handleRef, exportGlb, undo, redo, subdivide, loadPrimitive, remesh, loadGeometry, clearScene]);
+  }, [handleRef, exportGlb, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene]);
 
   return <div ref={mountRef} className="w-full h-full" style={{ touchAction: "none" }} />;
 }

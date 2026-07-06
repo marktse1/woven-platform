@@ -158,6 +158,7 @@ export default function MeshSculptClient() {
 
   const [viewMode, setViewMode] = useState<ViewMode>("combined");
   const [subdivLevel, setSubdivLevel] = useState(0);
+  const [exportLevel, setExportLevel] = useState(0);
   const [showPrimitives, setShowPrimitives] = useState(false);
   const [clayColor, setClayColor] = useState("#ebe7e1");
   const [dynTopo, setDynTopo] = useState(false);
@@ -365,10 +366,12 @@ export default function MeshSculptClient() {
     if (!viewerHandleRef.current || !user?.id) return;
     setSaving(true); setSaveMsg("");
     try {
-      const bytes = await viewerHandleRef.current.exportGlb();
+      const bytes = exportLevel === subdivLevel 
+        ? await viewerHandleRef.current.exportGlb()
+        : await viewerHandleRef.current.exportAtLevel(subdivLevel - exportLevel);
       await uploadAsset({
         userId: user.id,
-        name: `${selectedAsset?.name ?? "sculpted-mesh"}-sculpted.glb`,
+        name: `${selectedAsset?.name ?? "sculpted-mesh"}-sculpted${exportLevel > 0 ? `-level${exportLevel}` : ""}.glb`,
         bytes: bytes.buffer as ArrayBuffer,
         visibility: "private",
         polyCount: vertexCount ?? undefined,
@@ -378,7 +381,7 @@ export default function MeshSculptClient() {
     } catch (e) {
       setSaveMsg(e instanceof Error ? e.message : "Save failed.");
     } finally { setSaving(false); }
-  }, [user?.id, selectedAsset, vertexCount, refreshAssets]);
+  }, [user?.id, selectedAsset, vertexCount, subdivLevel, exportLevel, refreshAssets]);
 
   if (!isLoaded || creatorStatus === "loading") return null;
 
@@ -562,10 +565,26 @@ export default function MeshSculptClient() {
               Clear Workspace
             </button>
           )}
+          {subdivLevel > 0 && (
+            <label className="block mb-2">
+              <div className="text-[10px] text-dim mb-1">Export level</div>
+              <select
+                value={exportLevel}
+                onChange={(e) => setExportLevel(Number(e.target.value))}
+                className="w-full px-2 py-1.5 rounded bg-[#1e1a17] text-[11px] text-ink border border-[#3a2a50] outline-none transition-colors"
+              >
+                {Array.from({ length: subdivLevel + 1 }, (_, i) => (
+                  <option key={i} value={i}>
+                    Level {i} {i === subdivLevel ? "(current)" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <button onClick={handleSave} disabled={saving || !glbData}
             className="w-full py-2 rounded-md disabled:opacity-40 disabled:cursor-not-allowed text-white text-[12px] font-medium transition-colors"
             style={{ background: saving || !glbData ? "#3a2a50" : PURPLE }}>
-            {saving ? "Saving…" : "Save to Library"}
+            {saving ? "Saving…" : `Save to Library${exportLevel > 0 ? ` (level ${exportLevel})` : ""}`}
           </button>
           {saveMsg && (
             <p className={`text-[11px] mt-1.5 ${saveMsg.includes("ailed") ? "text-red-400" : "text-green-400"}`}>{saveMsg}</p>

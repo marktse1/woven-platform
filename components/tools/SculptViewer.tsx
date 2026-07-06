@@ -39,6 +39,7 @@ type SculptMeshEntry = {
 const PAINT_TEX_SIZE = 1024;
 export type SculptViewerHandle = {
   exportGlb: () => Promise<Uint8Array>;
+  exportAtLevel: (level: number) => Promise<Uint8Array>;
   undo: () => void;
   redo: () => void;
   subdivide: () => void;
@@ -771,6 +772,32 @@ export default function SculptViewer({
 
 
   // ── expose handle for parent (export, undo buttons) ───────────────────────
+  const exportAtLevel = useCallback(async (level: number): Promise<Uint8Array> => {
+    // Export a specific subdivision level (0 = base, 1 = first subdivide, etc.)
+    if (meshEntriesRef.current.length === 0) return new Uint8Array(0);
+    // Swap in the geometry at that level temporarily
+    const originalGeos = meshEntriesRef.current.map((e) => e.mesh.geometry);
+    const swappedGeos: THREE.BufferGeometry[] = [];
+    for (const entry of meshEntriesRef.current) {
+      if (!entry.subdivStack || level >= entry.subdivStack.length) {
+        // Level doesn't exist in this mesh's stack, use current
+        continue;
+      }
+      const snap = entry.subdivStack[entry.subdivStack.length - 1 - level];
+      swappedGeos.push(snap.geometry);
+      entry.mesh.geometry = snap.geometry;
+    }
+    try {
+      const bytes = await exportGlb();
+      return bytes;
+    } finally {
+      // Restore original geometries
+      for (let i = 0; i < meshEntriesRef.current.length; i++) {
+        meshEntriesRef.current[i].mesh.geometry = originalGeos[i];
+      }
+    }
+  }, []);
+
   const exportGlb = useCallback(async (): Promise<Uint8Array> => {
     if (!modelRef.current) throw new Error("No model loaded.");
 
@@ -1110,9 +1137,9 @@ export default function SculptViewer({
 
   useEffect(() => {
     if (handleRef) {
-      (handleRef as React.MutableRefObject<SculptViewerHandle | null>).current = { exportGlb, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene };
+      (handleRef as React.MutableRefObject<SculptViewerHandle | null>).current = { exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene };
     }
-  }, [handleRef, exportGlb, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene]);
+  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene]);
 
   return <div ref={mountRef} className="w-full h-full" style={{ touchAction: "none" }} />;
 }

@@ -1,9 +1,54 @@
 "use client";
+import { useRef } from "react";
 
 import StepCard from "../retopology/StepCard";
 import type { BrushSettings, LightInfo, PaintChannel } from "@/components/tools/PaintViewer";
 import type { Rgb } from "@/lib/paint/brush";
 
+
+// ── Brush alpha uploader sub-component ─────────────────────────────────────
+function AlphaUploader({ brushAlpha, onBrushAlphaChange }: {
+  brushAlpha: ImageBitmap | null;
+  onBrushAlphaChange: (b: ImageBitmap | null) => void;
+}) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const previewRef = useRef<HTMLCanvasElement>(null);
+
+  function handleFile(file: File) {
+    if (!file.type.startsWith("image/")) return;
+    createImageBitmap(file).then((bmp) => {
+      onBrushAlphaChange(bmp);
+      // Draw preview
+      const c = previewRef.current;
+      if (!c) return;
+      const ctx = c.getContext("2d")!;
+      ctx.clearRect(0, 0, 64, 64);
+      ctx.drawImage(bmp, 0, 0, 64, 64);
+    });
+  }
+
+  return (
+    <div className="flex items-center gap-3">
+      <canvas
+        ref={previewRef}
+        width={64} height={64}
+        className="rounded border border-line flex-shrink-0"
+        style={{ width: 64, height: 64, background: brushAlpha ? "transparent" : "#0d141c",
+          cursor: "pointer", imageRendering: "pixelated" }}
+        onClick={() => fileRef.current?.click()}
+      />
+      <div
+        onClick={() => fileRef.current?.click()}
+        className="flex-1 border border-dashed rounded-lg p-3 text-center cursor-pointer transition-colors hover:border-[#56a6e8]"
+        style={{ borderColor: "#26384a" }}>
+        <p className="text-[11px] text-dim">{brushAlpha ? "Click to replace" : "Click to upload PNG"}</p>
+      </div>
+      <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp"
+        className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
+    </div>
+  );
+}
+// ─────────────────────────────────────────────────────────────────────────────
 const ACCENT = "#56a6e8";
 
 function rgbToHex(c: Rgb): string {
@@ -47,6 +92,8 @@ type Props = {
   onSetLightIntensity: (v: number) => void;
   onSetLightDistance: (v: number) => void;
   onSetLightsGizmosVisible: (v: boolean) => void;
+  brushAlpha: ImageBitmap | null;
+  onBrushAlphaChange: (b: ImageBitmap | null) => void;
 };
 
 export default function BrushPanel({
@@ -70,6 +117,8 @@ export default function BrushPanel({
   onSetLightIntensity,
   onSetLightDistance,
   onSetLightsGizmosVisible,
+  brushAlpha,
+  onBrushAlphaChange,
 }: Props) {
   return (
     <div className="flex flex-col gap-5">
@@ -159,6 +208,22 @@ export default function BrushPanel({
           >
             Redo
           </button>
+        </div>
+
+        {/* Brush Alpha (shape mask) */}
+        <div className="mt-4 pt-4 border-t border-line">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[12.5px] text-muted font-medium">Brush shape</span>
+            {brushAlpha && (
+              <button onClick={() => onBrushAlphaChange(null)}
+                className="text-[11px] px-2 py-0.5 rounded-full border"
+                style={{ borderColor: "#5a2020", background: "#1a0a0a", color: "#e88" }}>
+                Clear
+              </button>
+            )}
+          </div>
+          <AlphaUploader brushAlpha={brushAlpha} onBrushAlphaChange={onBrushAlphaChange} />
+          <p className="text-[11px] text-dim mt-2">Greyscale PNG — white = full stroke, black = no stroke</p>
         </div>
       </StepCard>
 

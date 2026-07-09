@@ -11,7 +11,7 @@ import {
   writePaintedTextures,
   exportPaintedGlb,
 } from "@/lib/paint/textures";
-import type { PaintViewerHandle, ViewChannel, PaintChannel, BrushSettings, LightInfo } from "@/components/tools/PaintViewer";
+import type { PaintViewerHandle, ViewChannel, PaintChannel, BrushSettings, LightInfo, BrushAlpha } from "@/components/tools/PaintViewer";
 import BrushPanel from "./BrushPanel";
 
 const VIEW_CHANNELS: { value: ViewChannel; label: string }[] = [
@@ -62,6 +62,7 @@ export default function PaintStudio({ asset, userId, onBack, onAssetCreated }: P
   });
 
   const [canUndo, setCanUndo] = useState(false);
+  const [brushAlpha, setBrushAlpha] = useState<BrushAlpha>(null);
   const [canRedo, setCanRedo] = useState(false);
   const [selectedLight, setSelectedLight] = useState<LightInfo | null>(null);
   const [lightsGizmosVisible, setLightsGizmosVisible] = useState(true);
@@ -231,6 +232,8 @@ export default function PaintStudio({ asset, userId, onBack, onAssetCreated }: P
             viewerRef.current?.setLightsGizmosVisible(v);
             setLightsGizmosVisible(v);
           }}
+          brushAlpha={brushAlpha}
+          onBrushAlphaChange={setBrushAlpha}
         />
 
         {/* ---- right: top bar + viewer ---- */}
@@ -292,6 +295,7 @@ export default function PaintStudio({ asset, userId, onBack, onAssetCreated }: P
                 paintChannel={paintChannel}
                 erasing={erasing}
                 brush={brush}
+                brushAlpha={brushAlpha}
                 paintMode={true}
                 showGrid={showGrid}
                 onUndoRedoChange={(s) => {

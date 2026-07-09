@@ -11,6 +11,23 @@ export type Point = { x: number; y: number };
 export type Rgb = { r: number; g: number; b: number };
 export type DirtyRect = { x: number; y: number; width: number; height: number };
 export type HeightField = { data: Uint8ClampedArray; width: number; height: number };
+export type AlphaMap = { data: Uint8ClampedArray; width: number; height: number };
+
+/** Pre-compute a grayscale lookup from an ImageBitmap for fast per-pixel sampling. */
+export function computeAlphaMap(bitmap: ImageBitmap, resolution = 64): AlphaMap {
+  const canvas = document.createElement("canvas");
+  canvas.width = resolution; canvas.height = resolution;
+  const ctx = canvas.getContext("2d")!;
+  ctx.drawImage(bitmap, 0, 0, resolution, resolution);
+  const id = ctx.getImageData(0, 0, resolution, resolution);
+  const data = new Uint8ClampedArray(resolution * resolution);
+  for (let i = 0; i < data.length; i++) {
+    const ri = i * 4;
+    data[i] = Math.round(0.299 * id.data[ri] + 0.587 * id.data[ri + 1] + 0.114 * id.data[ri + 2]);
+  }
+  return { data, width: resolution, height: resolution };
+}
+
 
 export function createHeightField(width: number, height: number, initial = 128): HeightField {
   return { data: new Uint8ClampedArray(width * height).fill(initial), width, height };
@@ -25,6 +42,8 @@ export type StampOptions = {
   opacity: number;
   color: Rgb;
   compositeOperation?: GlobalCompositeOperation;
+  /** Optional ZBrush-style alpha mask — grayscale PNG where white = full stroke, black = no stroke. */
+  alphaBitmap?: ImageBitmap | null;
 };
 
 function rgba(c: Rgb, a: number): string {
@@ -33,21 +52,45 @@ function rgba(c: Rgb, a: number): string {
 
 /** Draws one soft round color stamp centered at `point` onto a real canvas. Returns the dirty rect it touched. */
 export function stampDab(ctx: CanvasRenderingContext2D, point: Point, opts: StampOptions): DirtyRect {
-  const { radius, hardness, opacity, color, compositeOperation = "source-over" } = opts;
-  const innerStop = Math.min(0.99, Math.max(0, hardness));
+  const { radius, hardness, opacity, color, compositeOperation = "source-over", alphaBitmap } = opts;
+  const r = Math.ceil(radius);
 
+  if (alphaBitmap) {
+    // Alpha-mask mode: draw bitmap scaled to brush size, convert luminance→alpha, composite
+    const sz = r * 2;
+    const off = document.createElement("canvas");
+    off.width = sz; off.height = sz;
+    const offCtx = off.getContext("2d")!;
+    offCtx.drawImage(alphaBitmap, 0, 0, sz, sz);
+    const id = offCtx.getImageData(0, 0, sz, sz);
+    const d = id.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const lum = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) / 255;
+      d[i] = color.r; d[i + 1] = color.g; d[i + 2] = color.b;
+      d[i + 3] = Math.round(lum * 255);
+    }
+    offCtx.putImageData(id, 0, 0);
+    ctx.save();
+    ctx.globalAlpha = opacity;
+    ctx.globalCompositeOperation = compositeOperation;
+    ctx.drawImage(off, point.x - r, point.y - r);
+    ctx.restore();
+    return { x: point.x - r, y: point.y - r, width: sz, height: sz };
+  }
+
+  // Default: soft radial gradient
+  const innerStop = Math.min(0.99, Math.max(0, hardness));
   ctx.save();
   ctx.globalAlpha = opacity;
   ctx.globalCompositeOperation = compositeOperation;
   const gradient = ctx.createRadialGradient(point.x, point.y, radius * innerStop, point.x, point.y, radius);
-  gradient.addColorStop(0, rgba(color, 1));
-  gradient.addColorStop(1, rgba(color, 0));
+  gradient.addColorStop(0, `rgba(${color.r}, ${color.g}, ${color.b}, 1)`);
+  gradient.addColorStop(1, `rgba(${color.r}, ${color.g}, ${color.b}, 0)`);
   ctx.fillStyle = gradient;
   ctx.beginPath();
   ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
-
   return { x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2 };
 }
 
@@ -96,9 +139,9 @@ export function stampRestoreDab(
 export function stampHeightDab(
   field: HeightField,
   point: Point,
-  opts: { radius: number; hardness: number; delta: number },
+  opts: { radius: number; hardness: number; delta: number; alphaMap?: AlphaMap | null },
 ): DirtyRect {
-  const { radius, hardness, delta } = opts;
+  const { radius, hardness, delta, alphaMap } = opts;
   const x0 = Math.max(0, Math.floor(point.x - radius));
   const y0 = Math.max(0, Math.floor(point.y - radius));
   const x1 = Math.min(field.width, Math.ceil(point.x + radius));
@@ -113,8 +156,14 @@ export function stampHeightDab(
       const dist = Math.hypot(x - point.x, y - point.y);
       if (dist > radius) continue;
       const falloff = dist > innerR ? 1 - (dist - innerR) / falloffRange : 1;
+      let alphaFactor = 1;
+      if (alphaMap) {
+        const ax = Math.min(alphaMap.width  - 1, Math.floor(((x - point.x + radius) / (2 * radius)) * alphaMap.width));
+        const ay = Math.min(alphaMap.height - 1, Math.floor(((y - point.y + radius) / (2 * radius)) * alphaMap.height));
+        alphaFactor = alphaMap.data[Math.max(0, ay) * alphaMap.width + Math.max(0, ax)] / 255;
+      }
       const i = y * field.width + x;
-      field.data[i] = field.data[i] + delta * falloff;
+      field.data[i] = field.data[i] + delta * falloff * alphaFactor;
     }
   }
   return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };

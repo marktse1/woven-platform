@@ -18,6 +18,8 @@ import {
   stampHeightDab,
   stampRestoreDab,
   type HeightField,
+  type AlphaMap,
+  computeAlphaMap,
   type Rgb,
 } from "@/lib/paint/brush";
 import { deriveNormalRegion, deriveNormalFull, blendNormalsAdditive } from "@/lib/paint/heightToNormal";
@@ -25,6 +27,7 @@ import { PaintUndoStack, canvasSurface, heightFieldSurface } from "@/lib/paint/u
 
 export type ViewChannel = "combined" | "albedo" | "normal" | "ao";
 export type PaintChannel = "albedo" | "relief";
+export type BrushAlpha = ImageBitmap | null;
 
 export type BrushSettings = {
   size: number;
@@ -65,6 +68,7 @@ type Props = {
   paintChannel: PaintChannel;
   erasing: boolean;
   brush: BrushSettings;
+  brushAlpha?: BrushAlpha;
   paintMode: boolean;
   showGrid?: boolean;
   onUndoRedoChange?: (state: { canUndo: boolean; canRedo: boolean }) => void;
@@ -162,6 +166,7 @@ const PaintViewer = forwardRef<PaintViewerHandle, Props>(function PaintViewer(
     paintChannel,
     erasing,
     brush,
+    brushAlpha,
     paintMode,
     showGrid = true,
     onUndoRedoChange,
@@ -215,11 +220,21 @@ const PaintViewer = forwardRef<PaintViewerHandle, Props>(function PaintViewer(
   const paintChannelRef = useRef(paintChannel);
   const erasingRef = useRef(erasing);
   const brushRef = useRef(brush);
+  const brushAlphaRef    = useRef<BrushAlpha>(null);
+  const brushAlphaMapRef = useRef<AlphaMap | null>(null);
   const paintModeRef = useRef(paintMode);
   useEffect(() => { viewChannelRef.current = viewChannel; }, [viewChannel]);
   useEffect(() => { paintChannelRef.current = paintChannel; }, [paintChannel]);
   useEffect(() => { erasingRef.current = erasing; }, [erasing]);
   useEffect(() => { brushRef.current = brush; }, [brush]);
+  useEffect(() => {
+    brushAlphaRef.current = brushAlpha ?? null;
+    if (brushAlpha) {
+      brushAlphaMapRef.current = computeAlphaMap(brushAlpha, 64);
+    } else {
+      brushAlphaMapRef.current = null;
+    }
+  }, [brushAlpha]);
   useEffect(() => {
     paintModeRef.current = paintMode;
   }, [paintMode]);
@@ -645,7 +660,7 @@ const PaintViewer = forwardRef<PaintViewerHandle, Props>(function PaintViewer(
             strokeTrackerRef.current.addDirty(rect);
           } else {
             undoStackRef.current.trackDirty(surface, { x: p.x - b.size, y: p.y - b.size, width: b.size * 2, height: b.size * 2 }, ctx.canvas.width, ctx.canvas.height);
-            const rect = stampDab(ctx, p, { radius: b.size, hardness: b.hardness, opacity: b.opacity, color: b.color });
+            const rect = stampDab(ctx, p, { radius: b.size, hardness: b.hardness, opacity: b.opacity, color: b.color, alphaBitmap: brushAlphaRef.current });
             strokeTrackerRef.current.addDirty(rect);
           }
         }
@@ -660,7 +675,7 @@ const PaintViewer = forwardRef<PaintViewerHandle, Props>(function PaintViewer(
         for (const p of points) {
           const surface = heightFieldSurface(field);
           undoStackRef.current.trackDirty(surface, { x: p.x - b.size, y: p.y - b.size, width: b.size * 2, height: b.size * 2 }, field.width, field.height);
-          const rect = stampHeightDab(field, p, { radius: b.size, hardness: b.hardness, delta: sign * magnitude });
+          const rect = stampHeightDab(field, p, { radius: b.size, hardness: b.hardness, delta: sign * magnitude, alphaMap: brushAlphaMapRef.current });
           strokeTrackerRef.current.addDirty(rect);
           recomputeNormalRegion(rect);
         }

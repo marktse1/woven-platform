@@ -306,7 +306,7 @@ export default function MeshSculptClient() {
   }, []);
 
   useEffect(() => {
-    if (creatorStatus === "approved" && user?.id) refreshAssets();
+    if (user?.id) refreshAssets();
   }, [creatorStatus, user?.id, refreshAssets]);
 
   // ── Persist brush settings per user in localStorage ──────────────────────
@@ -394,14 +394,6 @@ export default function MeshSculptClient() {
     </main>
   );
 
-  if (creatorStatus !== "approved") return (
-    <main className="min-h-[calc(100vh-73px)] bg-[#0c0a08] flex items-center justify-center">
-      <div className="text-center max-w-sm">
-        <p className="text-ink font-semibold mb-2">Creator access required</p>
-        <p className="text-dim text-sm">Apply for creator access to use Mesh Sculptor.</p>
-      </div>
-    </main>
-  );
 
   const highVertCount = vertexCount != null && vertexCount > 1_000_000;
   const activeDef = BRUSH_MODES.find((m) => m.mode === brushMode)!;

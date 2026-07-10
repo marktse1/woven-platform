@@ -49,7 +49,7 @@ export default function SubstanceWeaverClient() {
 
   // Library is always visible now, not just on a separate landing screen, so it loads as soon as we're approved.
   useEffect(() => {
-    if (creatorStatus === "approved" && user?.id) refreshLibrary();
+    if (user?.id) refreshLibrary();
   }, [creatorStatus, user?.id, refreshLibrary]);
 
   const onFile = useCallback(
@@ -85,18 +85,6 @@ export default function SubstanceWeaverClient() {
       </main>
     );
   }
-  if (creatorStatus !== "approved") {
-    return (
-      <main className="min-h-[calc(100vh-73px)] bg-[#070b11] text-ink flex items-center justify-center px-6">
-        <div className="max-w-[520px] w-full bg-panel border border-line rounded-[10px] p-6">
-          <div className="text-[20px] font-extrabold tracking-[-0.02em] mb-2">Mesh Painter</div>
-          <p className="text-[13px] text-dim leading-relaxed">
-            Forge tools are available once your creator profile is approved.
-          </p>
-          <div className="flex gap-2 mt-5">
-            <Link href="/creator" className="px-4 py-2 rounded-[8px] font-bold text-[13px] no-underline" style={{ background: "linear-gradient(180deg,#56a6e8,#2c6aa0)", color: "#06121d" }}>
-              Become a creator
-            </Link>
             <Link href="/forge" className="px-4 py-2 rounded-[8px] border border-line bg-panel2 text-[13px] font-semibold no-underline">
               All tools
             </Link>

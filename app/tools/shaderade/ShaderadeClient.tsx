@@ -68,7 +68,7 @@ export default function ShaderadeClient() {
   }, [user?.id]);
 
   useEffect(() => {
-    if (creatorStatus === "approved" && user?.id) refreshSaved();
+    if (user?.id) refreshSaved();
   }, [creatorStatus, user?.id, refreshSaved]);
 
   const handleSave = useCallback(async () => {
@@ -129,18 +129,6 @@ export default function ShaderadeClient() {
     );
   }
 
-  if (creatorStatus !== "approved") {
-    return (
-      <main className="min-h-[calc(100vh-73px)] bg-[#0e0b08] flex items-center justify-center">
-        <div className="text-center max-w-sm">
-          <p className="text-ink font-semibold mb-2">Creator access required</p>
-          <p className="text-dim text-sm">Apply for creator access to use Shaderade.</p>
-        </div>
-      </main>
-    );
-  }
-
-  // ── Main layout: [node canvas] | [preview + export] ──────────────────────
   return (
     <main
       className="bg-[#0e0b08] flex flex-col"

@@ -162,6 +162,7 @@ export default function MeshSculptClient() {
   const [showPrimitives, setShowPrimitives] = useState(false);
   const [clayColor, setClayColor] = useState("#ebe7e1");
   const [dynTopo, setDynTopo] = useState(false);
+  const [compressKtx2, setCompressKtx2] = useState(true);
 
   const viewerHandleRef = useRef<SculptViewerHandle | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -174,6 +175,29 @@ export default function MeshSculptClient() {
       setAssets(rows.filter((r) => r.format === "glb" || r.format === "GLB"));
     } catch { /* non-fatal */ }
   }, [user?.id]);
+
+  // Uploads a GLB, then optionally runs it through the shared server-side
+  // KTX2 compression pass. Compression failure is non-fatal — the
+  // already-uploaded uncompressed asset stays valid either way.
+  const uploadAndMaybeCompress = useCallback(async (
+    name: string,
+    bytes: ArrayBuffer,
+    polyCount?: number,
+  ): Promise<{ asset: AssetRow; compressed: boolean }> => {
+    if (!user?.id) throw new Error("Not signed in.");
+    const asset = await uploadAsset({ userId: user.id, name, bytes, visibility: "private", polyCount });
+    if (!compressKtx2) return { asset, compressed: false };
+    try {
+      const res = await fetch("/api/glb/compress-ktx2", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: user.id, assetId: asset.id }),
+      });
+      return { asset, compressed: res.ok };
+    } catch {
+      return { asset, compressed: false };
+    }
+  }, [user?.id, compressKtx2]);
 
   const handleLocalFile = useCallback(async (file: File) => {
     const ext = file.name.split(".").pop()?.toLowerCase();
@@ -213,7 +237,7 @@ export default function MeshSculptClient() {
             setUploadMsg("Converting & uploading…");
             const glbBytes = await viewerHandleRef.current.exportGlb();
             const glbName = file.name.replace(/\.drc$/i, ".glb");
-            await uploadAsset({ userId: user.id, name: glbName, bytes: glbBytes.buffer as ArrayBuffer, visibility: "private" });
+            await uploadAndMaybeCompress(glbName, glbBytes.buffer as ArrayBuffer);
             await refreshAssets();
             setUploadMsg("Added to library.");
             setTimeout(() => setUploadMsg(""), 3000);
@@ -238,7 +262,7 @@ export default function MeshSculptClient() {
             setUploadMsg("Converting & uploading…");
             const glbBytes = await viewerHandleRef.current.exportGlb();
             const glbName = file.name.replace(/\.obj$/i, ".glb");
-            await uploadAsset({ userId: user.id, name: glbName, bytes: glbBytes.buffer as ArrayBuffer, visibility: "private" });
+            await uploadAndMaybeCompress(glbName, glbBytes.buffer as ArrayBuffer);
             await refreshAssets();
             setUploadMsg("Added to library.");
             setTimeout(() => setUploadMsg(""), 3000);
@@ -255,7 +279,7 @@ export default function MeshSculptClient() {
             setUploadMsg("Converting & uploading…");
             const glbBytes = await viewerHandleRef.current.exportGlb();
             const glbName = file.name.replace(/\.stl$/i, ".glb");
-            await uploadAsset({ userId: user.id, name: glbName, bytes: glbBytes.buffer as ArrayBuffer, visibility: "private" });
+            await uploadAndMaybeCompress(glbName, glbBytes.buffer as ArrayBuffer);
             await refreshAssets();
             setUploadMsg("Added to library.");
             setTimeout(() => setUploadMsg(""), 3000);
@@ -267,7 +291,7 @@ export default function MeshSculptClient() {
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : "Failed to load file.");
     } finally { setLoadingAsset(false); }
-  }, [user?.id, refreshAssets]);
+  }, [user?.id, refreshAssets, uploadAndMaybeCompress]);
 
   const clearWorkspace = useCallback(() => {
     viewerHandleRef.current?.clearScene();
@@ -366,22 +390,20 @@ export default function MeshSculptClient() {
     if (!viewerHandleRef.current || !user?.id) return;
     setSaving(true); setSaveMsg("");
     try {
-      const bytes = exportLevel === subdivLevel 
+      const bytes = exportLevel === subdivLevel
         ? await viewerHandleRef.current.exportGlb()
         : await viewerHandleRef.current.exportAtLevel(subdivLevel - exportLevel);
-      await uploadAsset({
-        userId: user.id,
-        name: `${selectedAsset?.name ?? "sculpted-mesh"}-sculpted${exportLevel > 0 ? `-level${exportLevel}` : ""}.glb`,
-        bytes: bytes.buffer as ArrayBuffer,
-        visibility: "private",
-        polyCount: vertexCount ?? undefined,
-      });
-      setSaveMsg("Saved to library.");
+      const { compressed } = await uploadAndMaybeCompress(
+        `${selectedAsset?.name ?? "sculpted-mesh"}-sculpted${exportLevel > 0 ? `-level${exportLevel}` : ""}.glb`,
+        bytes.buffer as ArrayBuffer,
+        vertexCount ?? undefined,
+      );
+      setSaveMsg(compressKtx2 && !compressed ? "Saved (uncompressed — texture compression failed)." : "Saved to library.");
       await refreshAssets();
     } catch (e) {
       setSaveMsg(e instanceof Error ? e.message : "Save failed.");
     } finally { setSaving(false); }
-  }, [user?.id, selectedAsset, vertexCount, subdivLevel, exportLevel, refreshAssets]);
+  }, [user?.id, selectedAsset, vertexCount, subdivLevel, exportLevel, compressKtx2, uploadAndMaybeCompress, refreshAssets]);
 
   if (!isLoaded || creatorStatus === "loading") return null;
 
@@ -420,7 +442,14 @@ export default function MeshSculptClient() {
                     selectedAsset?.id === a.id ? "bg-[#c47be8]/20 text-[#c47be8]" : "text-ink hover:bg-[#1e1a17]"
                   }`}>
                   <span className="block truncate">{a.name}</span>
-                  {a.poly_count != null && <span className="text-dim">{a.poly_count.toLocaleString()} tris</span>}
+                  <span className="flex items-center gap-1.5 mt-0.5">
+                    {a.poly_count != null && <span className="text-dim">{a.poly_count.toLocaleString()} tris</span>}
+                    {a.meta?.ktx2Compressed ? (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: "rgba(196,123,232,.18)", color: PURPLE }}>KTX2</span>
+                    ) : (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: "rgba(255,255,255,.06)", color: "#6a6058" }}>Uncompressed</span>
+                    )}
+                  </span>
                 </button>
               ))}
             </div>
@@ -573,6 +602,13 @@ export default function MeshSculptClient() {
               </select>
             </label>
           )}
+          <button
+            onClick={() => setCompressKtx2((v) => !v)}
+            className="w-full mb-2 px-2.5 py-1.5 rounded text-[11px] font-medium transition-colors text-left"
+            style={{ background: compressKtx2 ? "rgba(196,123,232,.18)" : "#1e1a17", color: compressKtx2 ? PURPLE : "#8aa0b4" }}
+            title="Compress embedded textures to KTX2 (Basis Universal) on save">
+            {compressKtx2 ? "✓ " : ""}Compress textures (KTX2)
+          </button>
           <button onClick={handleSave} disabled={saving || !glbData}
             className="w-full py-2 rounded-md disabled:opacity-40 disabled:cursor-not-allowed text-white text-[12px] font-medium transition-colors"
             style={{ background: saving || !glbData ? "#3a2a50" : PURPLE }}>

@@ -11,8 +11,10 @@
 
 import createXAtlas from "xatlas-wasm";
 import sharp from "sharp";
-import { WebIO, type Texture as GltfTexture } from "@gltf-transform/core";
+import { type Texture as GltfTexture } from "@gltf-transform/core";
 import { dedup, prune } from "@gltf-transform/functions";
+import { createWebIO } from "@/lib/gltf/io";
+import { compressGlbTextures } from "@/lib/textures/ktx2";
 
 const ATLAS_SIZE = 1024;
 
@@ -109,6 +111,7 @@ export type BakeOptions = {
   bakeMaps?: string[];     // subset of ["albedo", "normal", "ao"]
   reAtlas?: boolean;       // default true; false = preserve existing UVs
   texSourceBuf?: ArrayBuffer; // optional second GLB to read textures from
+  ktx2?: boolean;          // default true; compress embedded textures to KTX2 before writing
   onProgress?: (stage: string, fraction: number) => void;
 };
 
@@ -118,9 +121,10 @@ export async function unwrapAndBake(
 ): Promise<Uint8Array> {
   const bakeMaps = opts.bakeMaps ?? ["albedo", "normal", "ao"];
   const reAtlas = opts.reAtlas ?? true;
+  const ktx2 = opts.ktx2 ?? true;
   const onProgress = opts.onProgress;
 
-  const io = new WebIO();
+  const io = createWebIO();
   const doc = await io.readBinary(new Uint8Array(inputBuf));
 
   // ---------------------------------------------------------------------------
@@ -133,7 +137,7 @@ export async function unwrapAndBake(
       // Copy embedded textures from the source GLB into this doc's materials.
       // The source is typically the original hi-res upload; the lo-res mesh
       // already has the same UV layout (decimation preserves TEXCOORD_0).
-      const srcDoc = await new WebIO().readBinary(new Uint8Array(opts.texSourceBuf));
+      const srcDoc = await createWebIO().readBinary(new Uint8Array(opts.texSourceBuf));
       const srcMats = srcDoc.getRoot().listMaterials();
       const docMats = doc.getRoot().listMaterials();
 
@@ -186,6 +190,10 @@ export async function unwrapAndBake(
 
     onProgress?.("encoding", 0.9);
     await doc.transform(dedup(), prune());
+    if (ktx2) {
+      onProgress?.("compressing textures", 0.95);
+      await compressGlbTextures(doc);
+    }
     return io.writeBinary(doc);
   }
 
@@ -200,7 +208,7 @@ export async function unwrapAndBake(
 
   // Pre-load the hi-res source document once, outside the mesh loop.
   const srcDoc = opts.texSourceBuf
-    ? await new WebIO().readBinary(new Uint8Array(opts.texSourceBuf))
+    ? await createWebIO().readBinary(new Uint8Array(opts.texSourceBuf))
     : null;
   const srcMatList = srcDoc?.getRoot().listMaterials() ?? [];
 
@@ -367,5 +375,9 @@ export async function unwrapAndBake(
   }
 
   await doc.transform(dedup(), prune());
+  if (ktx2) {
+    onProgress?.("compressing textures", 0.95);
+    await compressGlbTextures(doc);
+  }
   return io.writeBinary(doc);
 }

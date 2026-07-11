@@ -14,7 +14,7 @@
 // triangles is collapsed into a "Small parts" catch-all so minor geometry
 // (buttons, buckles, stray polys) doesn't flood the list.
 
-import { WebIO } from "@gltf-transform/core";
+import { createWebIO } from "@/lib/gltf/io";
 
 export type Segment = {
   id: number;
@@ -99,7 +99,7 @@ function isMeaningfulName(name: string): boolean {
 }
 
 export async function segmentByConnectivity(input: ArrayBuffer): Promise<SegmentationResult> {
-  const io = new WebIO();
+  const io = createWebIO();
   const doc = await io.readBinary(new Uint8Array(input));
 
   const segments: Segment[] = [];

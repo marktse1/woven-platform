@@ -95,6 +95,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
   const [lockFraction, setLockFraction] = useState(0.05);
   const [bakeMaps, setBakeMaps] = useState<string[]>(["albedo", "normal", "ao"]);
   const [reAtlas] = useState(true);
+  const [ktx2, setKtx2] = useState(true);
   const [dilationPx, setDilationPx] = useState(16);
   const [bakeProgress, setBakeProgress] = useState(0);
   const [bakeStage, setBakeStage] = useState("");
@@ -388,7 +389,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
       const res = await fetch("/api/tools/retopology/bake", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId, loResAssetId, bakeMaps, reAtlas, sourceAssetId: asset?.id }),
+        body: JSON.stringify({ userId, loResAssetId, bakeMaps, reAtlas, ktx2, sourceAssetId: asset?.id }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -430,7 +431,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
         inputAssetId: currentAssetId,
         existingOutputAssetId: outputAssetId,
         outputPolyCount: workingPolys,
-        stats: { bakeMaps, reAtlas },
+        stats: { bakeMaps, reAtlas, ktx2 },
       });
 
       const viewerBytes = await fetchAssetBytes(outputAssetId);
@@ -448,7 +449,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
       setBakeProgress(0);
       setBakeStage("");
     }
-  }, [session, workingBuf, userId, currentAssetId, bakeMaps, reAtlas, asset?.id, asset?.name, steps.length, workingPolys]);
+  }, [session, workingBuf, userId, currentAssetId, bakeMaps, reAtlas, ktx2, asset?.id, asset?.name, steps.length, workingPolys]);
 
   const pendingRetopoStep = useMemo(() => {
     const retopoSteps = steps.filter((s) => s.op === "retopo");
@@ -887,6 +888,16 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                       </button>
                     );
                   })}
+                </div>
+
+                <div className="flex flex-wrap gap-1.5 mb-3">
+                  <button
+                    onClick={() => setKtx2((v) => !v)}
+                    className="text-[12px] px-2.5 py-1 rounded-full border"
+                    style={{ borderColor: ktx2 ? ACCENT : "rgba(255,255,255,0.08)", background: ktx2 ? "rgba(214,91,54,.14)" : "#2c2926", color: ktx2 ? "#fff3ec" : "#9b9082" }}
+                  >
+                    Compress textures (KTX2)
+                  </button>
                 </div>
 
                 <button

@@ -3,7 +3,8 @@
 // edited canvases back before re-export. Same WebIO pattern as
 // lib/retopo/optimize.ts.
 
-import { WebIO, type Document, type Material, type Texture } from "@gltf-transform/core";
+import { type Document, type Material, type Texture } from "@gltf-transform/core";
+import { createWebIO } from "@/lib/gltf/io";
 
 export type EncodedImage = { bytes: Uint8Array; mimeType: string };
 
@@ -29,7 +30,7 @@ function extract(texture: Texture | null): EncodedImage | null {
 
 /** Reads a GLB into a gltf-transform Document and pulls out its existing PBR images (first material only). */
 export async function loadGlbForPainting(input: ArrayBuffer): Promise<LoadedForPainting> {
-  const io = new WebIO();
+  const io = createWebIO();
   const document = await io.readBinary(new Uint8Array(input));
   const material = document.getRoot().listMaterials()[0] ?? null;
 
@@ -94,6 +95,6 @@ export function writePaintedTextures(
 }
 
 export async function exportPaintedGlb(document: Document): Promise<Uint8Array> {
-  const io = new WebIO();
+  const io = createWebIO();
   return await io.writeBinary(document);
 }

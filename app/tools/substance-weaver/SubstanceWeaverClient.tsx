@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
 import { useUser } from "@clerk/nextjs";
 import DropZone from "@/components/tools/DropZone";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
@@ -85,14 +84,6 @@ export default function SubstanceWeaverClient() {
       </main>
     );
   }
-            <Link href="/forge" className="px-4 py-2 rounded-[8px] border border-line bg-panel2 text-[13px] font-semibold no-underline">
-              All tools
-            </Link>
-          </div>
-        </div>
-      </main>
-    );
-  }
 
   return (
     <main className="min-h-[calc(100vh-73px)] bg-[#070b11] text-ink">
@@ -137,7 +128,14 @@ export default function SubstanceWeaverClient() {
                     >
                       <button onClick={() => setOpenedAsset(a)} className="min-w-0 flex-1 text-left">
                         <div className="font-semibold text-[13px] truncate">{a.name}</div>
-                        <div className="text-[11.5px] text-dim">{fmt(a.poly_count)} tris · {bytes(a.file_bytes)}{a.clerk_user_id !== user?.id ? " · shared" : ""}</div>
+                        <div className="text-[11.5px] text-dim flex items-center gap-1.5">
+                          <span>{fmt(a.poly_count)} tris · {bytes(a.file_bytes)}{a.clerk_user_id !== user?.id ? " · shared" : ""}</span>
+                          {a.meta?.ktx2Compressed ? (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: "rgba(86,166,232,.14)", color: "#8fc6f0" }}>KTX2</span>
+                          ) : (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: "rgba(255,255,255,.06)", color: "#6b7684" }}>Uncompressed</span>
+                          )}
+                        </div>
                       </button>
                       {a.clerk_user_id === user?.id ? (
                         <>

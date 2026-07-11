@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { KTX2Loader } from "three/examples/jsm/loaders/KTX2Loader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
 export type SegmentationOverlay = {
@@ -206,6 +207,7 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
+  const ktx2LoaderRef = useRef<KTX2Loader | null>(null);
   const modelRef = useRef<THREE.Group | null>(null);
   const gridRef = useRef<THREE.GridHelper | null>(null);
   const wireMatRef = useRef<THREE.LineBasicMaterial | null>(null);
@@ -244,6 +246,11 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     rendererRef.current = renderer;
     mount.appendChild(renderer.domElement);
+
+    const ktx2Loader = new KTX2Loader();
+    ktx2Loader.setTranscoderPath("/basis/");
+    ktx2Loader.detectSupport(renderer);
+    ktx2LoaderRef.current = ktx2Loader;
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
@@ -302,6 +309,8 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
       controls.dispose();
       clayMatcapTexRef.current?.dispose();
       clayMatRef.current?.dispose();
+      ktx2LoaderRef.current?.dispose();
+      ktx2LoaderRef.current = null;
       renderer.dispose();
       if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement);
     };
@@ -330,6 +339,7 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
     if (!data) return;
 
     const loader = new GLTFLoader();
+    if (ktx2LoaderRef.current) loader.setKTX2Loader(ktx2LoaderRef.current);
     loader.parse(
       data.slice(0),
       "",
@@ -407,6 +417,7 @@ export default function ModelViewer({ data, wireframe, showGrid = true, accent =
     if (!previewData) return;
 
     const loader = new GLTFLoader();
+    if (ktx2LoaderRef.current) loader.setKTX2Loader(ktx2LoaderRef.current);
     loader.parse(
       previewData.slice(0),
       "",

@@ -6,10 +6,12 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "postinstall": "node scripts/provision-ktx.mjs"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.4.3",
+    "@gltf-transform/cli": "^4.4.0",
     "@gltf-transform/core": "^4.4.0",
     "@gltf-transform/extensions": "^4.4.0",
     "@gltf-transform/functions": "^4.4.0",

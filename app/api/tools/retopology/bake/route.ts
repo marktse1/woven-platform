@@ -14,10 +14,11 @@ export async function POST(req: NextRequest) {
       loResAssetId: string;
       bakeMaps?: string[];
       reAtlas?: boolean;
+      ktx2?: boolean;
       sourceAssetId?: string;
     };
 
-    const { userId, loResAssetId, bakeMaps, reAtlas = true, sourceAssetId } = body;
+    const { userId, loResAssetId, bakeMaps, reAtlas = true, ktx2 = true, sourceAssetId } = body;
     if (!userId || !loResAssetId) {
       return NextResponse.json({ error: "userId and loResAssetId required" }, { status: 400 });
     }
@@ -80,6 +81,7 @@ export async function POST(req: NextRequest) {
           const output = await unwrapAndBake(inputBuf, {
             bakeMaps: maps,
             reAtlas,
+            ktx2,
             texSourceBuf,
             onProgress: (stage, progress) => send({ stage, progress }),
           });
@@ -113,7 +115,7 @@ export async function POST(req: NextRequest) {
               storage_path: outputPath,
               file_bytes: output.byteLength,
               poly_count: null,
-              meta: { pipelineOp: "bake", bakeMaps: maps, reAtlas },
+              meta: { pipelineOp: "bake", bakeMaps: maps, reAtlas, ktx2, ktx2Compressed: ktx2 },
             })
             .select("id")
             .single();

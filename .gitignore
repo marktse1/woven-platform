@@ -36,6 +36,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# vendored native binaries (downloaded by scripts/provision-ktx.mjs)
+/.vendor
+
 # local-only tooling venv for the Modal worker (worker/)
 /.worker-venv
 supabase/.temp

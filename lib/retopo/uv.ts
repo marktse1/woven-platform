@@ -6,8 +6,9 @@
 // new vertex layout, then write the fresh atlas UVs into TEXCOORD_0.
 
 import createXAtlas from "xatlas-wasm";
-import { WebIO, type Mesh, type Primitive } from "@gltf-transform/core";
+import { type Mesh, type Primitive } from "@gltf-transform/core";
 import { dedup, prune } from "@gltf-transform/functions";
+import { createWebIO } from "@/lib/gltf/io";
 
 export type UVUnwrapResult = {
   output: Uint8Array;
@@ -20,7 +21,7 @@ export type UVUnwrapResult = {
 
 export async function unwrapUVs(input: ArrayBuffer): Promise<UVUnwrapResult> {
   const xatlasModule = await createXAtlas();
-  const io = new WebIO();
+  const io = createWebIO();
   const doc = await io.readBinary(new Uint8Array(input));
 
   // Collect all indexed triangle primitives

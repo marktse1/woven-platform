@@ -162,7 +162,14 @@ export default function RetopologyClient() {
                     >
                       <button onClick={() => setOpenedAsset(a)} className="min-w-0 flex-1 text-left">
                         <div className="font-semibold text-[13px] truncate" style={{ color: openedAsset?.id === a.id ? "#f7e9df" : "#e2dbcf" }}>{a.name}</div>
-                        <div className="text-[11px] mt-0.5" style={{ color: "#6b6460" }}>{fmt(a.poly_count)} tris · {bytes(a.file_bytes)}{a.clerk_user_id !== user?.id ? " · shared" : ""}</div>
+                        <div className="text-[11px] mt-0.5 flex items-center gap-1.5" style={{ color: "#6b6460" }}>
+                          <span>{fmt(a.poly_count)} tris · {bytes(a.file_bytes)}{a.clerk_user_id !== user?.id ? " · shared" : ""}</span>
+                          {a.meta?.ktx2Compressed ? (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: "rgba(214,91,54,.14)", color: "#f3946a" }}>KTX2</span>
+                          ) : (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: "rgba(255,255,255,.06)", color: "#8a8078" }}>Uncompressed</span>
+                          )}
+                        </div>
                       </button>
                       {a.clerk_user_id === user?.id ? (
                         <>

@@ -69,6 +69,7 @@ export default function PaintStudio({ asset, userId, onBack, onAssetCreated }: P
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+  const [compressKtx2, setCompressKtx2] = useState(true);
 
   useEffect(() => {
     if (!asset) {
@@ -89,12 +90,33 @@ export default function PaintStudio({ asset, userId, onBack, onAssetCreated }: P
       setStatus("Loading model…");
       try {
         const url = await signedAssetUrl(asset.storage_path);
-        const buf = await (await fetch(url)).arrayBuffer();
+        let buf = await (await fetch(url)).arrayBuffer();
         if (!active) return;
-        setSourceBuf(buf);
 
-        const loaded = await loadGlbForPainting(buf);
+        // createWebIO() registers KHR_texture_basisu, so this read succeeds
+        // structurally even on a KTX2-compressed asset — but the textures'
+        // bytes are still Basis-compressed, not decodable pixels.
+        let loaded = await loadGlbForPainting(buf);
         if (!active) return;
+
+        const isKtx2 = loaded.document.getRoot().listTextures().some((t) => t.getMimeType() === "image/ktx2");
+        if (isKtx2) {
+          setStatus("Decompressing textures for editing…");
+          const res = await fetch("/api/glb/decompress-ktx2", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ userId, assetId: asset.id }),
+          });
+          if (!res.ok) throw new Error("Failed to decompress KTX2 textures for editing.");
+          const freshUrl = await signedAssetUrl(asset.storage_path);
+          buf = await (await fetch(freshUrl)).arrayBuffer();
+          if (!active) return;
+          loaded = await loadGlbForPainting(buf);
+          if (!active) return;
+          setStatus("Loading model…");
+        }
+
+        setSourceBuf(buf);
 
         const size = loaded.material?.getBaseColorTexture()?.getSize()?.[0] ?? DEFAULT_TEXTURE_SIZE;
         setTextureSize(size);
@@ -136,7 +158,7 @@ export default function PaintStudio({ asset, userId, onBack, onAssetCreated }: P
     return () => {
       active = false;
     };
-  }, [asset?.id, asset?.storage_path]);
+  }, [asset?.id, asset?.storage_path, userId]);
 
   const handleSave = useCallback(async () => {
     if (!asset || !sourceBuf) return;
@@ -170,14 +192,25 @@ export default function PaintStudio({ asset, userId, onBack, onAssetCreated }: P
         visibility: "private",
         meta: { sourceAssetId: asset.id, tool: "substance-weaver" },
       });
-      setStatus(`Saved as "${saved.name}".`);
+
+      if (compressKtx2) {
+        setStatus("Compressing textures…");
+        const res = await fetch("/api/glb/compress-ktx2", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId, assetId: saved.id }),
+        });
+        setStatus(res.ok ? `Saved as "${saved.name}".` : `Saved as "${saved.name}" (uncompressed — texture compression failed).`);
+      } else {
+        setStatus(`Saved as "${saved.name}".`);
+      }
       onAssetCreated?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Save failed.");
     } finally {
       setBusy(false);
     }
-  }, [sourceBuf, userId, asset?.id, asset?.name, asset?.poly_count]);
+  }, [sourceBuf, userId, asset?.id, asset?.name, asset?.poly_count, compressKtx2]);
 
   return (
     <div className="flex flex-col gap-5">
@@ -258,6 +291,18 @@ export default function PaintStudio({ asset, userId, onBack, onAssetCreated }: P
             </div>
             <div className="flex-1" />
             {status && <span className="text-[12px] text-dim truncate max-w-[28ch]">{status}</span>}
+            <button
+              onClick={() => setCompressKtx2((v) => !v)}
+              className="text-[12px] px-2.5 py-1 rounded-full border"
+              style={{
+                borderColor: compressKtx2 ? ACCENT : "#26384a",
+                background: compressKtx2 ? "rgba(86,166,232,.14)" : "#0d141c",
+                color: compressKtx2 ? "#cfe6fb" : "#8aa0b4",
+              }}
+              title="Compress embedded textures to KTX2 (Basis Universal) on save"
+            >
+              Compress (KTX2)
+            </button>
             <button
               onClick={handleSave}
               disabled={busy || !asset || !sourceBuf}

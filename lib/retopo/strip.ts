@@ -1,5 +1,5 @@
-import { WebIO } from "@gltf-transform/core";
 import { dedup, prune } from "@gltf-transform/functions";
+import { createWebIO } from "@/lib/gltf/io";
 
 /**
  * Remove triangles belonging to `excludeIds` from the GLB.
@@ -13,7 +13,7 @@ export async function stripSegments(
 ): Promise<ArrayBuffer> {
   if (excludeIds.size === 0) return input;
 
-  const io = new WebIO();
+  const io = createWebIO();
   const doc = await io.readBinary(new Uint8Array(input));
 
   let globalTriOffset = 0;

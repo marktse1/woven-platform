@@ -3,6 +3,7 @@
 import { useEffect, useRef, useCallback } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { KTX2Loader } from "three/examples/jsm/loaders/KTX2Loader.js";
 import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { MeshBVH, acceleratedRaycast } from "three-mesh-bvh";
@@ -188,6 +189,7 @@ export default function SculptViewer({
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
+  const ktx2LoaderRef = useRef<KTX2Loader | null>(null);
   const modelRef = useRef<THREE.Group | null>(null);
   const meshEntriesRef = useRef<SculptMeshEntry[]>([]);
   const undoRef = useRef(new SculptUndoStack());
@@ -329,6 +331,11 @@ export default function SculptViewer({
     rendererRef.current = renderer;
     mount.appendChild(renderer.domElement);
 
+    const ktx2Loader = new KTX2Loader();
+    ktx2Loader.setTranscoderPath("/basis/");
+    ktx2Loader.detectSupport(renderer);
+    ktx2LoaderRef.current = ktx2Loader;
+
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
@@ -391,6 +398,8 @@ export default function SculptViewer({
       clayMatRef.current?.dispose();
       channelMatsRef.current.forEach(m => m.dispose());
       wireMatRef.current?.dispose();
+      ktx2LoaderRef.current?.dispose();
+      ktx2LoaderRef.current = null;
       renderer.dispose();
       if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement);
     };
@@ -417,6 +426,7 @@ export default function SculptViewer({
     if (!glbData) return;
 
     const loader = new GLTFLoader();
+    if (ktx2LoaderRef.current) loader.setKTX2Loader(ktx2LoaderRef.current);
     loader.parse(glbData.slice(0), "", (gltf) => {
       const group = gltf.scene;
       let totalVerts = 0;

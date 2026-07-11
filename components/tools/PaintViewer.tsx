@@ -3,6 +3,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { KTX2Loader } from "three/examples/jsm/loaders/KTX2Loader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
@@ -179,6 +180,7 @@ const PaintViewer = forwardRef<PaintViewerHandle, Props>(function PaintViewer(
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  const ktx2LoaderRef = useRef<KTX2Loader | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
   const transformControlsRef = useRef<TransformControls | null>(null);
   const groupRef = useRef<THREE.Group | null>(null);
@@ -290,6 +292,11 @@ const PaintViewer = forwardRef<PaintViewerHandle, Props>(function PaintViewer(
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     mount.appendChild(renderer.domElement);
     rendererRef.current = renderer;
+
+    const ktx2Loader = new KTX2Loader();
+    ktx2Loader.setTranscoderPath("/basis/");
+    ktx2Loader.detectSupport(renderer);
+    ktx2LoaderRef.current = ktx2Loader;
 
     const pmremGenerator = new THREE.PMREMGenerator(renderer);
     scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
@@ -441,6 +448,8 @@ const PaintViewer = forwardRef<PaintViewerHandle, Props>(function PaintViewer(
       finalComposer.dispose();
       darkMaterial.dispose();
       controls.dispose();
+      ktx2LoaderRef.current?.dispose();
+      ktx2LoaderRef.current = null;
       renderer.dispose();
       if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement);
     };
@@ -466,6 +475,7 @@ const PaintViewer = forwardRef<PaintViewerHandle, Props>(function PaintViewer(
     if (!data) return;
 
     const loader = new GLTFLoader();
+    if (ktx2LoaderRef.current) loader.setKTX2Loader(ktx2LoaderRef.current);
     loader.parse(
       data.slice(0),
       "",

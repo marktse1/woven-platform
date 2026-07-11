@@ -7,9 +7,10 @@
 // Tier-2 (true quad retopology, new UVs, and hi->lo map baking for characters)
 // is heavier and runs on the Forge worker via a queued retopo_jobs row.
 
-import { WebIO, type Document } from "@gltf-transform/core";
+import { type Document } from "@gltf-transform/core";
 import { weld, dedup, prune } from "@gltf-transform/functions";
 import { MeshoptSimplifier } from "meshoptimizer";
+import { createWebIO } from "@/lib/gltf/io";
 
 export type OptimizeOptions = {
   /** Absolute triangle target — ratio is computed inside from the actual mesh count. */
@@ -40,7 +41,7 @@ function countTriangles(doc: Document): number {
 
 /** Count triangles in a GLB without modifying it (drives the target slider). */
 export async function countGlbTriangles(input: ArrayBuffer): Promise<number> {
-  const io = new WebIO();
+  const io = createWebIO();
   const doc = await io.readBinary(new Uint8Array(input));
   return countTriangles(doc);
 }
@@ -128,7 +129,7 @@ export async function optimizeGlb(
 
   await MeshoptSimplifier.ready;
 
-  const io = new WebIO();
+  const io = createWebIO();
   const doc = await io.readBinary(new Uint8Array(input));
 
   const sourcePolys = countTriangles(doc);
@@ -273,7 +274,7 @@ export async function optimizeGlbAdaptive(
 ): Promise<OptimizeResult> {
   await MeshoptSimplifier.ready;
 
-  const io = new WebIO();
+  const io = createWebIO();
   const doc = await io.readBinary(new Uint8Array(input));
 
   const sourcePolys = countTriangles(doc);

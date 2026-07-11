@@ -133,6 +133,12 @@ const PRIMITIVES: { type: PrimitiveType; label: string; icon: string }[] = [
 
 const PURPLE = "#c47be8";
 
+function bytes(n: number) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
 export default function MeshSculptClient() {
   const { user, isLoaded } = useUser();
   const creatorStatus = useCreatorStatus();
@@ -444,6 +450,7 @@ export default function MeshSculptClient() {
                   <span className="block truncate">{a.name}</span>
                   <span className="flex items-center gap-1.5 mt-0.5">
                     {a.poly_count != null && <span className="text-dim">{a.poly_count.toLocaleString()} tris</span>}
+                    <span className="text-dim">{bytes(a.file_bytes)}</span>
                     {a.meta?.ktx2Compressed ? (
                       <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: "rgba(196,123,232,.18)", color: PURPLE }}>KTX2</span>
                     ) : (

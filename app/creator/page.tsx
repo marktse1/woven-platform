@@ -177,8 +177,8 @@ export default function BecomeCreatorPage() {
               ))}
             </div>
           </div>
-          <div className="relative h-[300px] rounded-[14px] border border-line overflow-hidden">
-            <Image src="/creator_hero.png" alt="" fill className="object-cover" priority />
+          <div className="relative h-[300px] rounded-[14px] overflow-hidden">
+            <Image src="/creator_hero.png" alt="" fill className="object-contain" priority />
           </div>
         </section>
 

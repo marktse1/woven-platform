@@ -48,9 +48,9 @@ export default function RetopologyClient() {
     }
   }, [user?.id]);
 
-  // Library is always visible now, not just on a separate landing screen, so it loads as soon as we're approved.
+  // Library is always visible now, not just on a separate landing screen, so it loads as soon as we're signed in.
   useEffect(() => {
-    if (creatorStatus === "approved" && user?.id) refreshLibrary();
+    if (user?.id) refreshLibrary();
   }, [creatorStatus, user?.id, refreshLibrary]);
 
   // Drag in a hi-res GLB: stored privately in the library immediately, then opened in the Studio.
@@ -88,20 +88,17 @@ export default function RetopologyClient() {
       </motion.main>
     );
   }
-  if (creatorStatus !== "approved") {
+  if (!user) {
     return (
       <motion.main className="min-h-[calc(100vh-73px)] bg-[#1b1815] text-ink flex items-center justify-center px-6" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.35 }}>
         <div className="max-w-[520px] w-full bg-panel border border-line rounded-[10px] p-6">
           <div className="text-[20px] font-extrabold tracking-[-0.02em] mb-2">Mesh Loom</div>
           <p className="text-[13px] leading-relaxed" style={{ color: "#c7bfb2" }}>
-            Forge tools are available once your creator profile is approved.
+            Sign in to use Mesh Loom.
           </p>
           <div className="flex gap-2 mt-5">
-            <Link href="/creator" className="px-4 py-2 rounded-[8px] font-bold text-[13px] no-underline" style={{ background: "linear-gradient(180deg,#d65b36,#2c6aa0)", color: "#06121d" }}>
-              Become a creator
-            </Link>
-            <Link href="/forge" className="px-4 py-2 rounded-[8px] border border-line bg-panel2 text-[13px] font-semibold no-underline">
-              All tools
+            <Link href="/sign-in" className="px-4 py-2 rounded-[8px] font-bold text-[13px] no-underline" style={{ background: "linear-gradient(180deg,#d65b36,#2c6aa0)", color: "#06121d" }}>
+              Sign in
             </Link>
           </div>
         </div>

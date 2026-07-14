@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useUser } from "@clerk/nextjs";
 import { getSupabaseClient, getSupabaseEnvStatus } from "@/lib/supabase";
 
-const BOOTSTRAP_ADMIN_EMAIL = "starfox.and.mark@gmail.com";
+type StaffRole = "auditor" | "reviewer" | "senior_reviewer" | "admin";
 
 type Submission = {
   id: string;
@@ -38,16 +38,27 @@ function badge(status: Submission["status"]) {
 }
 
 export default function AdminToolsPage() {
-  const { user, isLoaded } = useUser();
+  const { isLoaded } = useUser();
   const [rows, setRows] = useState<Submission[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("pending");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [staffRole, setStaffRole] = useState<StaffRole | null>(null);
+  const [staffChecked, setStaffChecked] = useState(false);
 
-  const email = user?.primaryEmailAddress?.emailAddress ?? user?.emailAddresses?.[0]?.emailAddress ?? "";
-  const isAdmin = email.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL;
+  const isAdmin = staffRole !== null;
+  const canDecide = staffRole === "admin" || staffRole === "senior_reviewer";
+
+  useEffect(() => {
+    if (!isLoaded) return;
+    fetch("/api/staff/me")
+      .then((r) => r.json())
+      .then((body: { staff: { role: StaffRole } | null }) => setStaffRole(body.staff?.role ?? null))
+      .catch(() => setStaffRole(null))
+      .finally(() => setStaffChecked(true));
+  }, [isLoaded]);
 
   async function load() {
     setLoading(true);
@@ -65,9 +76,9 @@ export default function AdminToolsPage() {
   }
 
   useEffect(() => {
-    if (isLoaded && isAdmin) load();
-    else if (isLoaded && !isAdmin) setLoading(false);
-  }, [isLoaded, isAdmin]);
+    if (staffChecked && isAdmin) load();
+    else if (staffChecked && !isAdmin) setLoading(false);
+  }, [staffChecked, isAdmin]);
 
   const filtered = useMemo(
     () => rows.filter((r) => (filter === "all" ? true : r.status === filter)),
@@ -77,13 +88,13 @@ export default function AdminToolsPage() {
 
   async function decide(status: Submission["status"]) {
     if (!selected) return;
-    const supabase = getSupabaseClient();
-    if (!supabase) return;
-    const { error: e } = await supabase
-      .from("tool_submissions")
-      .update({ status, review_notes: notes || selected.review_notes, reviewed_by: email, updated_at: new Date().toISOString() })
-      .eq("id", selected.id);
-    if (e) { setError(e.message); return; }
+    const res = await fetch(`/api/admin/tool-submissions/${selected.id}/decide`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status, reviewNotes: notes || selected.review_notes }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { setError(body.error ?? "Could not save this decision."); return; }
     setNotes("");
     setRows((prev) => prev.map((r) => (r.id === selected.id ? { ...r, status, review_notes: notes || r.review_notes } : r)));
   }
@@ -169,9 +180,9 @@ export default function AdminToolsPage() {
                 <div className="text-[11px] font-bold tracking-[.12em] uppercase text-muted mb-3">Decision</div>
                 <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Review notes (sent with the decision)…" className="w-full min-h-[90px] bg-[#0a0e13] border border-line rounded-[10px] px-3.5 py-3 text-[13px] outline-none mb-3" />
                 <div className="flex flex-wrap gap-2">
-                  <button onClick={() => decide("approved")} className="px-4 py-2 rounded-[8px] font-bold text-[13px]" style={{ background: "linear-gradient(180deg,#8bc34a,#5c8a1e)", color: "#0e1a06" }}>Approve & publish</button>
+                  <button onClick={() => decide("approved")} disabled={!canDecide} className="px-4 py-2 rounded-[8px] font-bold text-[13px] disabled:opacity-50 disabled:cursor-not-allowed" style={{ background: "linear-gradient(180deg,#8bc34a,#5c8a1e)", color: "#0e1a06" }} title={canDecide ? "" : "Your role cannot approve or reject"}>Approve & publish</button>
                   <button onClick={() => decide("changes_requested")} className="px-4 py-2 rounded-[8px] border border-line bg-panel2 text-[13px] font-semibold">Request changes</button>
-                  <button onClick={() => decide("rejected")} className="px-4 py-2 rounded-[8px] border text-[13px] font-semibold" style={{ borderColor: "rgba(232,136,136,.45)", color: "#e88" }}>Reject</button>
+                  <button onClick={() => decide("rejected")} disabled={!canDecide} className="px-4 py-2 rounded-[8px] border text-[13px] font-semibold disabled:opacity-50 disabled:cursor-not-allowed" style={{ borderColor: "rgba(232,136,136,.45)", color: "#e88" }} title={canDecide ? "" : "Your role cannot approve or reject"}>Reject</button>
                 </div>
                 {selected.review_notes && <p className="text-[12.5px] text-dim mt-3">Last note: {selected.review_notes}</p>}
               </div>

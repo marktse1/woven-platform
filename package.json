@@ -10,18 +10,23 @@
     "postinstall": "node scripts/provision-ktx.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.111.0",
     "@clerk/nextjs": "^7.4.3",
     "@gltf-transform/cli": "^4.4.0",
     "@gltf-transform/core": "^4.4.0",
     "@gltf-transform/extensions": "^4.4.0",
     "@gltf-transform/functions": "^4.4.0",
+    "@google/genai": "^2.11.0",
+    "@monaco-editor/react": "^4.7.0",
     "@stripe/react-stripe-js": "^6.6.0",
     "@stripe/stripe-js": "^9.8.0",
     "@supabase/supabase-js": "^2.108.1",
+    "@vercel/sandbox": "^2.6.0",
     "@xyflow/react": "^12.11.1",
     "framer-motion": "^12.42.0",
     "meshoptimizer": "^1.1.1",
     "next": "16.2.7",
+    "openai": "^6.46.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "sharp": "^0.35.2",
@@ -29,7 +34,8 @@
     "three": "^0.184.0",
     "three-mesh-bvh": "^0.9.10",
     "three-subdivide": "^1.1.5",
-    "xatlas-wasm": "^0.1.3"
+    "xatlas-wasm": "^0.1.3",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

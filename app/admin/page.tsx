@@ -16,19 +16,19 @@ type CreatorProfile = {
   [key: string]: unknown;
 };
 
+type StaffRole = "auditor" | "reviewer" | "senior_reviewer" | "admin";
+
 type TeamMember = {
   id: string;
   name: string;
   email: string;
-  role: "auditor" | "reviewer" | "senior_reviewer" | "admin";
+  role: StaffRole;
   status: "active" | "disabled";
   bootstrap?: boolean;
   color: string;
 };
 
-const BOOTSTRAP_ADMIN_EMAIL = "starfox.and.mark@gmail.com";
 const REVIEW_STORAGE_KEY = "woven_creator_review_v1";
-const TEAM_STORAGE_KEY = "woven_creator_team_v1";
 
 const ROLE_LABEL: Record<TeamMember["role"], string> = {
   auditor: "Auditor",
@@ -37,12 +37,7 @@ const ROLE_LABEL: Record<TeamMember["role"], string> = {
   admin: "T&S Admin",
 };
 
-const DEFAULT_TEAM: TeamMember[] = [
-  { id: "u_mark", name: "Mark (Starfox)", email: BOOTSTRAP_ADMIN_EMAIL, role: "admin", status: "active", bootstrap: true, color: "#e8a93a" },
-  { id: "u_reina", name: "Reina T.", email: "reina.t@woven.gg", role: "senior_reviewer", status: "active", color: "#56a6e8" },
-  { id: "u_devon", name: "Devon K.", email: "devon.k@woven.gg", role: "reviewer", status: "active", color: "#7bc24a" },
-  { id: "u_priya", name: "Priya N.", email: "priya.n@woven.gg", role: "auditor", status: "active", color: "#c089e0" },
-];
+const TEAM_COLORS = ["#e8a93a", "#56a6e8", "#7bc24a", "#c089e0", "#e07b7b", "#7be0c0"];
 
 function initials(name: string) {
   return name
@@ -83,13 +78,45 @@ export default function AdminReviewPage() {
   const [notesById, setNotesById] = useState<Record<string, Array<{ text: string; at: string }>>>({});
   const [activityById, setActivityById] = useState<Record<string, Array<{ text: string; at: string }>>>({});
   const [previewRole, setPreviewRole] = useState<TeamMember["role"]>("admin");
-  const [team, setTeam] = useState<TeamMember[]>(DEFAULT_TEAM);
+  const [team, setTeam] = useState<TeamMember[]>([]);
   const [teamOpen, setTeamOpen] = useState(false);
   const [autoApprove, setAutoApprove] = useState(false);
   const [autoApproveBusy, setAutoApproveBusy] = useState(false);
+  const [staffRole, setStaffRole] = useState<StaffRole | null>(null);
+  const [staffChecked, setStaffChecked] = useState(false);
 
   const currentEmail = user?.primaryEmailAddress?.emailAddress ?? user?.emailAddresses?.[0]?.emailAddress ?? "";
-  const isBootstrapAdmin = currentEmail.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL;
+  const isBootstrapAdmin = staffRole !== null;
+
+  useEffect(() => {
+    if (!isLoaded) return;
+    fetch("/api/staff/me")
+      .then((r) => r.json())
+      .then((body: { staff: { role: StaffRole } | null }) => setStaffRole(body.staff?.role ?? null))
+      .catch(() => setStaffRole(null))
+      .finally(() => setStaffChecked(true));
+  }, [isLoaded]);
+
+  useEffect(() => {
+    if (!isBootstrapAdmin) return;
+    fetch("/api/admin/staff")
+      .then((r) => r.json())
+      .then((body: { staff?: Array<{ id: string; clerk_user_id: string | null; email: string; role: StaffRole }> }) => {
+        const rows = body.staff ?? [];
+        setTeam(
+          rows.map((r, i) => ({
+            id: r.id,
+            name: r.email.split("@")[0],
+            email: r.email,
+            role: r.role,
+            status: "active",
+            bootstrap: r.email.toLowerCase() === currentEmail.toLowerCase() && r.role === "admin",
+            color: TEAM_COLORS[i % TEAM_COLORS.length],
+          })),
+        );
+      })
+      .catch(() => setTeam([]));
+  }, [isBootstrapAdmin, currentEmail]);
 
   useEffect(() => {
     try {
@@ -97,11 +124,6 @@ export default function AdminReviewPage() {
       if (rawNotes) {
         const parsed = JSON.parse(rawNotes) as typeof notesById;
         setNotesById(parsed || {});
-      }
-      const rawTeam = localStorage.getItem(TEAM_STORAGE_KEY);
-      if (rawTeam) {
-        const parsed = JSON.parse(rawTeam) as TeamMember[];
-        if (Array.isArray(parsed) && parsed.length) setTeam(parsed);
       }
     } catch {
       // ignore local storage issues
@@ -117,21 +139,13 @@ export default function AdminReviewPage() {
   }, [notesById]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(TEAM_STORAGE_KEY, JSON.stringify(team));
-    } catch {
-      // ignore
-    }
-  }, [team]);
-
-  useEffect(() => {
     let active = true;
 
     async function loadProfiles() {
       setLoading(true);
       setError("");
 
-      if (!isLoaded) return;
+      if (!isLoaded || !staffChecked) return;
       if (!user?.id) {
         if (active) {
           setError("Sign in to open the staff console.");
@@ -142,7 +156,7 @@ export default function AdminReviewPage() {
 
       if (!isBootstrapAdmin) {
         if (active) {
-          setError("Access denied. Use the bootstrap admin account to review creator applications.");
+          setError("Access denied. Use a staff account to review creator applications.");
           setLoading(false);
         }
         return;
@@ -190,7 +204,7 @@ export default function AdminReviewPage() {
     return () => {
       active = false;
     };
-   }, [isBootstrapAdmin, isLoaded, user?.id]);
+   }, [isBootstrapAdmin, isLoaded, staffChecked, user?.id]);
 
   useEffect(() => {
     if (!isBootstrapAdmin) return;
@@ -290,23 +304,6 @@ export default function AdminReviewPage() {
       [selected.id]: [{ text: "Added an internal note", at: new Date().toLocaleString() }, ...(prev[selected.id] ?? [])],
     }));
     setNote("");
-  }
-
-  function activeAdminsCount(nextTeam = team) {
-    return nextTeam.filter((member) => member.role === "admin" && member.status === "active").length;
-  }
-
-  function updateTeamMember(id: string, patch: Partial<TeamMember>) {
-    setTeam((prev) => {
-      const next = prev.map((member) => (member.id === id ? { ...member, ...patch } : member));
-      const target = next.find((member) => member.id === id);
-      if (!target) return prev;
-      if (target.bootstrap && (patch.role && patch.role !== "admin")) return prev;
-      if (target.bootstrap && patch.status === "disabled") return prev;
-      if (target.role === "admin" && patch.role && patch.role !== "admin" && activeAdminsCount(next) < 1) return prev;
-      if (target.role === "admin" && patch.status === "disabled" && activeAdminsCount(next) < 1) return prev;
-      return next;
-    });
   }
 
   if (!isLoaded) {
@@ -634,7 +631,7 @@ export default function AdminReviewPage() {
                 <div className="px-6 py-5 border-b border-line flex items-start gap-3">
                   <div>
                     <div className="text-[18px] font-extrabold tracking-[-0.02em]">Team & roles</div>
-                    <div className="text-[13px] text-dim mt-1">Preview team access and basic role assignments.</div>
+                    <div className="text-[13px] text-dim mt-1">Read-only — sourced from the staff_roles table. Add or edit staff directly in Supabase.</div>
                   </div>
                   <div className="flex-1" />
                   <button type="button" onClick={() => setTeamOpen(false)} className="px-3 py-2 rounded-[8px] border border-line bg-panel2 text-[13px] font-semibold">
@@ -656,28 +653,10 @@ export default function AdminReviewPage() {
                         </div>
                         <div className="text-[12px] text-dim">{member.email}</div>
                       </div>
-                      <select
-                        value={member.role}
-                        onChange={(event) => updateTeamMember(member.id, { role: event.target.value as TeamMember["role"] })}
-                        disabled={member.bootstrap}
-                        className="bg-[#0a0e13] border border-line rounded-lg px-3 py-2 text-ink text-[12px] disabled:opacity-50"
-                      >
-                        {(Object.keys(ROLE_LABEL) as TeamMember["role"][]).map((role) => (
-                          <option key={role} value={role}>
-                            {ROLE_LABEL[role]}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        onClick={() => updateTeamMember(member.id, { status: member.status === "active" ? "disabled" : "active" })}
-                        disabled={member.bootstrap}
-                        className="px-3 py-2 rounded-[8px] border border-line bg-panel2 text-[12px] font-semibold disabled:opacity-50"
-                      >
-                        {member.status === "active" ? "Active" : "Disabled"}
-                      </button>
+                      <span className="px-3 py-2 rounded-lg border border-line bg-[#0a0e13] text-[12px] text-dim">{ROLE_LABEL[member.role]}</span>
                     </div>
                   ))}
+                  {team.length === 0 && <div className="p-6 text-dim text-[13px]">No staff rows found (or you don&apos;t have access to the roster).</div>}
                 </div>
               </div>
             </div>

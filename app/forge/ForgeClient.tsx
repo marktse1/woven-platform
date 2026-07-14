@@ -37,7 +37,7 @@ type CreatorProfileRow = {
 };
 
 const ENGINE_OPTIONS = [
-  { label: "PlayCanvas",   slug: "weave-forge",    dot: "#e5732b", desc: "Weave Forge — browser world editor" },
+  { label: "Three.js",    slug: "weave-forge",    dot: "#e5732b", desc: "Weave Forge — browser world editor" },
   { label: "Babylon.js",  slug: "babylon-forge",   dot: "#bb464b", desc: "Scene editor" },
   { label: "Three.js",    slug: "three-forge",     dot: "#ffffff", desc: "Scene editor" },
   { label: "Phaser",      slug: "phaser-forge",    dot: "#8e44ad", desc: "2D game editor" },
@@ -111,6 +111,11 @@ export default function ForgeClient() {
         return;
       }
 
+      // Forge tools are open to any signed-in member (creator approval only
+      // gates game publishing — app/upload/app/dashboard — not tool access;
+      // see the same change already made to Mesh Sculptor/Loom/Painter/Shaderade).
+      // Still read the profile, when one exists, purely to highlight the
+      // creator's preferred engines in the picker — never to block access.
       const { data: profile, error: profileErr } = await supabase
         .from("creator_profiles")
         .select("status, studio_name, handle, engines")
@@ -119,13 +124,8 @@ export default function ForgeClient() {
 
       if (!active) return;
       if (profileErr) { setPhase("error"); setMessage(profileErr.message); return; }
-      if (!profile || profile.status !== "approved") {
-        setPhase("no-access");
-        setMessage(profile ? "Forge is available after creator approval." : "No creator profile found.");
-        return;
-      }
 
-      setCreatorEngines(profile.engines ?? []);
+      setCreatorEngines(profile?.engines ?? []);
 
       const { data: toolsData } = await supabase
         .from("platform_tools")
@@ -171,13 +171,28 @@ export default function ForgeClient() {
     return () => { active = false; };
   }, [isLoaded, user?.id]);
 
-  function launchEngine(slug: string) {
+  async function launchEngine(slug: string) {
     const entry = availableTools[slug];
     if (!entry) return;
     const { tool, build } = entry;
     const url = new URL(joinUrl(build.build_url, build.entry_file));
     handoffParams.forEach((value, key) => url.searchParams.set(key, value));
     url.searchParams.set("engine", tool.engine || slug);
+
+    // Mint a short-lived save token (lib/forge/save-token.ts) so the tool
+    // — running cross-origin inside the sandboxed iframe below, with no
+    // access to this page's Clerk session — can authenticate calls to
+    // app/api/forge/levels/save on its own.
+    try {
+      const res = await fetch("/api/forge/levels/mint-save-token", { method: "POST" });
+      if (res.ok) {
+        const { token } = (await res.json()) as { token?: string };
+        if (token) url.searchParams.set("saveToken", token);
+      }
+    } catch {
+      // Non-fatal — the tool just won't be able to save levels back to Woven this session.
+    }
+
     setActiveTool(tool);
     setIframeSrc(url.toString());
     setPhase("running");
@@ -231,9 +246,9 @@ export default function ForgeClient() {
           <div className="text-[20px] font-extrabold tracking-[-0.02em] mb-2">Weave Forge</div>
           <p className="text-[13px] text-dim leading-relaxed">{message}</p>
           <div className="flex gap-2 mt-5">
-            <Link href="/creator" className="px-4 py-2 rounded-[8px] font-bold text-[13px] no-underline"
+            <Link href="/sign-in" className="px-4 py-2 rounded-[8px] font-bold text-[13px] no-underline"
               style={{ background: "linear-gradient(180deg,#56a6e8,#2c6aa0)", color: "#06121d" }}>
-              Become a creator
+              Sign in
             </Link>
             <Link href="/dashboard" className="px-4 py-2 rounded-[8px] border border-line bg-panel2 text-[13px] font-semibold no-underline">
               Dashboard

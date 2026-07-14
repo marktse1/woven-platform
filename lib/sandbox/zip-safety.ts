@@ -42,9 +42,13 @@ export function validateZipEntries(entryListOutput: string): {
       violations.push({ entry, reason: "parent-traversal" });
       continue;
     }
-    if (segments.some((seg) => seg.length === 0 && segments.length > 1)) {
-      // Defends against oddities like "a//../b" collapsing unexpectedly in
-      // some extractors — treat any empty path segment as suspicious.
+    // A single trailing empty segment just means this entry is a directory
+    // (zip archives conventionally write folder entries as "path/") — normal
+    // and expected, not suspicious. Only an empty segment *before* the end
+    // (e.g. "a//../b" collapsing unexpectedly in some extractors) is worth
+    // flagging.
+    const nonTrailing = segments[segments.length - 1] === "" ? segments.slice(0, -1) : segments;
+    if (nonTrailing.some((seg) => seg.length === 0)) {
       violations.push({ entry, reason: "empty-entry" });
     }
   }

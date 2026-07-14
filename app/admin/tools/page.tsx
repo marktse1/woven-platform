@@ -116,6 +116,7 @@ export default function AdminToolsPage() {
       <div className="flex items-center gap-3 mb-6">
         <h1 className="text-[26px] font-extrabold tracking-[-0.02em]">Tool submissions</h1>
         <div className="flex-1" />
+        <Link href="/admin/games" className="px-3 py-2 rounded-[8px] border border-line bg-panel2 text-[13px] font-semibold no-underline">Game submissions</Link>
         <Link href="/admin" className="px-3 py-2 rounded-[8px] border border-line bg-panel2 text-[13px] font-semibold no-underline">Creator review</Link>
       </div>
 

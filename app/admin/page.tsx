@@ -348,6 +348,12 @@ export default function AdminReviewPage() {
         <div className="px-3 py-1.5 rounded-full text-[12px] font-bold" style={{ background: "rgba(86,166,232,.14)", color: "#cfe6fb" }}>
           {ROLE_LABEL.admin}
         </div>
+        <Link href="/admin/games" className="px-3 py-2 rounded-[8px] border border-line bg-panel2 text-[13px] font-semibold no-underline">
+          Game submissions
+        </Link>
+        <Link href="/admin/tools" className="px-3 py-2 rounded-[8px] border border-line bg-panel2 text-[13px] font-semibold no-underline">
+          Tool submissions
+        </Link>
         <Link href="/dashboard" className="px-3 py-2 rounded-[8px] border border-line bg-panel2 text-[13px] font-semibold no-underline">
           Dashboard
         </Link>

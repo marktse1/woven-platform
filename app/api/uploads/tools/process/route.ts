@@ -6,7 +6,7 @@ import { runBuildPipeline } from "@/lib/sandbox/run-build-pipeline";
 // platform_tools/platform_tool_builds instead of games/game_builds. Lands
 // as a new, non-current build — publishing (is_current) is a separate
 // staff action (app/api/admin/tools/[toolId]/builds/[buildId]/publish).
-export const maxDuration = 600;
+export const maxDuration = 300;
 
 const BUCKET = "game-builds";
 

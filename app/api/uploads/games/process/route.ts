@@ -10,7 +10,7 @@ import { runBuildPipeline } from "@/lib/sandbox/run-build-pipeline";
 //
 // Ownership: real Clerk auth() (not a client-supplied userId) since this
 // gates publishing of arbitrary uploaded code, not just processing a GLB.
-export const maxDuration = 600; // Sandbox npm install + build can run long on larger projects
+export const maxDuration = 300; // Sandbox npm install + build can run long on larger projects
 
 const BUCKET = "game-builds";
 

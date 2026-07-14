@@ -7,7 +7,7 @@ import { runBuildPipeline } from "@/lib/sandbox/run-build-pipeline";
 // lands as a NEW, non-current game_builds row — never overwrites the live
 // build — so it flows through the normal review/publish path (Part 7) even
 // though the edit came from the AI editor.
-export const maxDuration = 600;
+export const maxDuration = 300;
 
 const BUCKET = "game-builds";
 

@@ -62,6 +62,7 @@ export default function AdminGamesPage() {
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   const [liveGames, setLiveGames] = useState<LiveGame[]>([]);
   const [suspendReason, setSuspendReason] = useState<Record<string, string>>({});
@@ -195,7 +196,7 @@ export default function AdminGamesPage() {
                 <div className="p-6 text-dim">Loading…</div>
               ) : filtered.length ? (
                 filtered.map((r) => (
-                  <button key={r.id} onClick={() => setSelectedId(r.id)} className="w-full text-left px-5 py-4 border-b border-line last:border-none hover:bg-white/[.025]" style={{ background: r.id === selected?.id ? "rgba(86,166,232,.08)" : undefined }}>
+                  <button key={r.id} onClick={() => { setSelectedId(r.id); setPreviewOpen(false); }} className="w-full text-left px-5 py-4 border-b border-line last:border-none hover:bg-white/[.025]" style={{ background: r.id === selected?.id ? "rgba(86,166,232,.08)" : undefined }}>
                     <div className="flex items-center gap-3">
                       <div className="min-w-0 flex-1">
                         <div className="font-bold text-[14px] truncate">{r.title || "Untitled game"}</div>
@@ -241,6 +242,37 @@ export default function AdminGamesPage() {
                       </div>
                     ) : null}
                   </div>
+
+                  {selected.build_id && selected.validation_result?.entryFile && (
+                    <div className="p-6 border-b border-line">
+                      <div className="flex items-center gap-3 mb-3">
+                        <div className="text-[11px] font-bold tracking-[.12em] uppercase text-muted">Preview</div>
+                        <button onClick={() => setPreviewOpen((v) => !v)} className="px-3 py-1.5 rounded-[8px] border border-line bg-panel2 text-[12.5px] font-semibold">
+                          {previewOpen ? "Hide preview" : "Play build"}
+                        </button>
+                        <a
+                          href={`/api/admin/games/preview/${selected.build_id}/${selected.validation_result.entryFile}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="px-3 py-1.5 rounded-[8px] border border-line bg-panel2 text-[12.5px] font-semibold no-underline"
+                        >
+                          Open in new tab
+                        </a>
+                      </div>
+                      {previewOpen && (
+                        <iframe
+                          key={selected.id}
+                          src={`/api/admin/games/preview/${selected.build_id}/${selected.validation_result.entryFile}`}
+                          className="w-full border-0 rounded-[10px]"
+                          style={{ height: "70vh", background: "#0a0e13" }}
+                          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
+                          allow="fullscreen; clipboard-read; clipboard-write; gamepad"
+                          referrerPolicy="no-referrer"
+                          title="Submission preview"
+                        />
+                      )}
+                    </div>
+                  )}
 
                   <div className="p-6">
                     <div className="text-[11px] font-bold tracking-[.12em] uppercase text-muted mb-3">Decision</div>

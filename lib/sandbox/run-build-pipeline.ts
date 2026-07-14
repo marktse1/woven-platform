@@ -27,7 +27,7 @@ const MIME_BY_EXT: Record<string, string> = {
   txt: "text/plain", xml: "application/xml",
 };
 
-function mimeFor(path: string): string {
+export function mimeFor(path: string): string {
   const ext = path.split(".").pop()?.toLowerCase() ?? "";
   return MIME_BY_EXT[ext] ?? "application/octet-stream";
 }

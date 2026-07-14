@@ -14,6 +14,20 @@ export const maxDuration = 300; // Sandbox npm install + build can run long on l
 
 const BUCKET = "game-builds";
 
+// games.slug is NOT NULL + UNIQUE in the live schema. Slugify the title and
+// append a short random suffix rather than querying for collisions — cheap,
+// no extra round trip, and effectively collision-free at this scale.
+function slugify(title: string): string {
+  const base = title
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+  const suffix = crypto.randomUUID().slice(0, 6);
+  return `${base || "game"}-${suffix}`;
+}
+
 export async function POST(req: Request) {
   const { userId } = await auth();
   if (!userId) {
@@ -62,7 +76,7 @@ export async function POST(req: Request) {
   } else {
     const { data: created, error: createErr } = await admin
       .from("games")
-      .insert({ creator_id: profile.id, title, engine: engine ?? null, status: "draft" })
+      .insert({ creator_id: profile.id, title, slug: slugify(title), engine: engine ?? null, status: "draft" })
       .select("id")
       .single<{ id: string }>();
     if (createErr || !created) {

@@ -117,7 +117,7 @@ export default function AdminGamesPage() {
 
   async function decide(status: "approved" | "rejected" | "changes_requested") {
     if (!selected) return;
-    const res = await fetch(`/api/admin/games/${selected.id}/decide`, {
+    const res = await fetch(`/api/admin/games/submissions/${selected.id}/decide`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ decision: status, reviewNotes: notes || selected.review_notes }),

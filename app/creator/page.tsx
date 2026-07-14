@@ -2,6 +2,7 @@
 export const dynamic = "force-dynamic";
 
 import { FormEvent, useMemo, useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
@@ -176,14 +177,8 @@ export default function BecomeCreatorPage() {
               ))}
             </div>
           </div>
-          <div
-            className="relative h-[300px] rounded-[14px] border border-line overflow-hidden"
-            style={{ background: "linear-gradient(140deg, #2a6aa0, #7d4bd0)" }}
-          >
-            <div className="absolute inset-0 opacity-[.12] mix-blend-overlay" style={{ backgroundImage: "repeating-linear-gradient(135deg, #fff 0 2px, transparent 2px 10px)" }} />
-            <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 font-mono text-[12px] text-white/85 bg-black/35 px-2.5 py-1.5 rounded-[7px] whitespace-nowrap">
-              creator hero · drop art here
-            </span>
+          <div className="relative h-[300px] rounded-[14px] border border-line overflow-hidden">
+            <Image src="/creator_hero.png" alt="" fill className="object-cover" priority />
           </div>
         </section>
 

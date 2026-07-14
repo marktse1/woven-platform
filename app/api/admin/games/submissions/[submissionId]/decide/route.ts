@@ -6,6 +6,11 @@ import { requireStaff, canApprove } from "@/lib/staff";
 // uses today (see 0001's header note: RLS is wide open, so that pattern has
 // no real server-side authorization). On approval, this is also what
 // actually makes the linked game_builds row is_current and the game live.
+//
+// Lives under a "submissions/" segment (not directly under games/[X]/) because
+// Next.js requires every dynamic segment at the same route position to share
+// one param name — this sits alongside app/api/admin/games/[gameId]/suspend
+// and .../reinstate, which use [gameId], not [submissionId].
 export async function POST(req: Request, { params }: { params: Promise<{ submissionId: string }> }) {
   const staff = await requireStaff();
   if (!staff) return Response.json({ error: "Unauthorized" }, { status: 401 });

@@ -6,7 +6,7 @@
 
 import { getSupabaseClient } from "@/lib/supabase";
 
-export type Visibility = "private" | "shared" | "public";
+export type Visibility = "private" | "shared" | "public" | "sellable";
 
 export type AssetRow = {
   id: string;
@@ -20,6 +20,7 @@ export type AssetRow = {
   thumbnail_url: string | null;
   file_bytes: number;
   poly_count: number | null;
+  price_cents: number;
   meta: Record<string, unknown>;
   created_at: string;
 };
@@ -101,8 +102,26 @@ export async function listVisibleAssets(userId: string): Promise<AssetRow[]> {
     .from("creator_assets")
     .select("*")
     .or(
-      `clerk_user_id.eq.${userId},visibility.eq.public,shared_with.cs.{${userId}}`,
+      `clerk_user_id.eq.${userId},visibility.eq.public,visibility.eq.sellable,shared_with.cs.{${userId}}`,
     )
+    .order("created_at", { ascending: false })
+    .returns<AssetRow[]>();
+  if (error) throw error;
+  return data ?? [];
+}
+
+/**
+ * Assets the user owns, in any visibility state — the "my assets" library
+ * panel's list. Distinct from listVisibleAssets, which also mixes in other
+ * users' public/sellable assets and would be wrong for a panel that's meant
+ * to show (and let you manage) only what you own.
+ */
+export async function listMyAssets(userId: string): Promise<AssetRow[]> {
+  const supabase = client();
+  const { data, error } = await supabase
+    .from("creator_assets")
+    .select("*")
+    .eq("clerk_user_id", userId)
     .order("created_at", { ascending: false })
     .returns<AssetRow[]>();
   if (error) throw error;
@@ -112,12 +131,17 @@ export async function listVisibleAssets(userId: string): Promise<AssetRow[]> {
 export async function setAssetVisibility(
   id: string,
   visibility: Visibility,
-  sharedWith: string[] = [],
+  opts: { sharedWith?: string[]; priceCents?: number } = {},
 ): Promise<void> {
   const supabase = client();
   const { error } = await supabase
     .from("creator_assets")
-    .update({ visibility, shared_with: sharedWith, updated_at: new Date().toISOString() })
+    .update({
+      visibility,
+      shared_with: opts.sharedWith ?? [],
+      price_cents: opts.priceCents ?? 0,
+      updated_at: new Date().toISOString(),
+    })
     .eq("id", id);
   if (error) throw error;
 }

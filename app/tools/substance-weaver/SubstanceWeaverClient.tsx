@@ -141,12 +141,13 @@ export default function SubstanceWeaverClient() {
                         <>
                           <select
                             value={a.visibility}
-                            onChange={(e) => setAssetVisibility(a.id, e.target.value as Visibility, a.shared_with).then(refreshLibrary)}
+                            onChange={(e) => setAssetVisibility(a.id, e.target.value as Visibility, { sharedWith: a.shared_with, priceCents: a.price_cents }).then(refreshLibrary)}
                             className="bg-panel2 border border-line rounded-md px-1.5 py-1 text-[11.5px]"
                           >
                             <option value="private">Private</option>
                             <option value="shared">Shared</option>
                             <option value="public">Public</option>
+                            <option value="sellable">Sellable</option>
                           </select>
                           <button onClick={() => setConfirmDelete(a)} className="text-[12px] text-dim hover:text-[#e88]">✕</button>
                         </>

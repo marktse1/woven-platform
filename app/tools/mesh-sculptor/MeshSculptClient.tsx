@@ -616,9 +616,9 @@ export default function MeshSculptClient() {
             title="Compress embedded textures to KTX2 (Basis Universal) on save">
             {compressKtx2 ? "✓ " : ""}Compress textures (KTX2)
           </button>
-          <button onClick={handleSave} disabled={saving || !glbData}
+          <button onClick={handleSave} disabled={saving || vertexCount === null}
             className="w-full py-2 rounded-md disabled:opacity-40 disabled:cursor-not-allowed text-white text-[12px] font-medium transition-colors"
-            style={{ background: saving || !glbData ? "#3a2a50" : PURPLE }}>
+            style={{ background: saving || vertexCount === null ? "#3a2a50" : PURPLE }}>
             {saving ? "Saving…" : `Save to Library${exportLevel > 0 ? ` (level ${exportLevel})` : ""}`}
           </button>
           {saveMsg && (

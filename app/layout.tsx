@@ -4,6 +4,7 @@ import { ClerkProvider } from "@clerk/nextjs";
 import "./globals.css";
 import AccountStrip from "@/components/shell/AccountStrip";
 import MainNav from "@/components/shell/MainNav";
+import AssetLibraryPanel from "@/components/assets/AssetLibraryPanel";
 
 const inter = Inter({ subsets: ["latin"], weight: ["400", "500", "600", "700", "800"] });
 
@@ -26,6 +27,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <AccountStrip />
           <MainNav />
           {children}
+          <AssetLibraryPanel />
         </body>
       </html>
     </ClerkProvider>

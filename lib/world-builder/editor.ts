@@ -227,7 +227,13 @@ camera.position.set(54, 42, 54);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.target.set(0, 0, 0);
-controls.maxPolarAngle = Math.PI * 0.48;
+// 0.48*PI kept the camera just shy of level (~86deg) so it could never
+// pitch upward past horizontal at all — the sky/lighting controls exist,
+// but there was no way to actually look up and see them. Allow nearly a
+// full look up; stop just short of the exact pole (PI) to avoid
+// OrbitControls' gimbal-lock jitter when the view direction lines up
+// exactly with the up vector.
+controls.maxPolarAngle = Math.PI * 0.98;
 controls.minDistance = 8;
 controls.maxDistance = 500;
 

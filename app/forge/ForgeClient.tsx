@@ -52,6 +52,7 @@ const DEV_TOOL_DOTS: Record<string, string> = {
   "substance-weaver": "#e8a056",
   "mesh-sculptor": "#c47be8",
   shaderade: "#e8875a",
+  "world-builder": "#4ac28a",
 };
 
 const DEV_TOOL_LOGOS: Record<string, string> = {
@@ -59,6 +60,7 @@ const DEV_TOOL_LOGOS: Record<string, string> = {
   "substance-weaver": "/substance_weaver.png",
   "mesh-sculptor": "/mesh_sculptor.png",
   shaderade: "/shaderade.png",
+  "world-builder": "/worldbuilder.png",
 };
 
 function joinUrl(base: string, entryFile: string) {

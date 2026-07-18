@@ -54,6 +54,18 @@ export const NATIVE_TOOLS: ToolDef[] = [
     accent: "#c47be8",
     badge: "New",
   },
+  {
+    slug: "world-builder",
+    name: "Three.js World Builder",
+    summary: "Sculpt terrain, lay roads, and place assets to build a game world — export a level straight into your own game project.",
+    icon: "🪐",
+    category: "modeling",
+    kind: "native",
+    access: "creators",
+    href: "/tools/world-builder",
+    accent: "#4ac28a",
+    badge: "New",
+  },
 ];
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,598 @@
+/* Ported from ~/threejs-world-builder/src/style.css. The original targeted
+   html/body/* directly (a full-page takeover, correct for a standalone Vite
+   app that owned the whole document). Every selector here is scoped under
+   .wb-root instead, and the html/body/* rules are re-targeted at .wb-root
+   itself — importing this unscoped would leak dark-theme resets and fairly
+   generic class names (.panel, .status, .body, .split, .stack) into the
+   rest of Woven. The #app rule from the source is dropped entirely: this
+   tool no longer owns position:fixed on its own root — WorldBuilderViewer's
+   container is positioned by its parent page instead. */
+
+.wb-root,
+.wb-root * {
+  box-sizing: border-box;
+}
+
+.wb-root {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #050711;
+  color: #f8fafc;
+  font-family: Inter, Arial, Helvetica, sans-serif;
+}
+
+.wb-root button,
+.wb-root input,
+.wb-root select {
+  font: inherit;
+}
+
+.wb-root .viewport {
+  position: absolute;
+  inset: 0;
+  isolation: isolate;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(8, 12, 20, 0.95), rgba(5, 7, 17, 0.98)),
+    radial-gradient(circle at top, rgba(42, 61, 89, 0.24), transparent 48%);
+}
+
+.wb-root .topbar {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  top: 16px;
+  z-index: 40;
+  display: grid;
+  grid-template-columns: auto minmax(360px, 760px);
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 8px;
+  background: rgb(7 10 16 / 0.9);
+  backdrop-filter: blur(8px);
+}
+
+.wb-root .topbar strong {
+  font-size: 13px;
+}
+
+.wb-root .toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.wb-root .toolbar input,
+.wb-root .toolbar button,
+.wb-root .toolbar select {
+  min-height: 32px;
+  border: 1px solid rgb(255 255 255 / 0.14);
+  border-radius: 6px;
+  background: rgb(18 24 35 / 0.96);
+  color: #eef2f7;
+}
+
+.wb-root .toolbar input {
+  padding: 0 10px;
+}
+
+.wb-root .shell {
+  position: absolute;
+  left: 16px;
+  top: 92px;
+  bottom: 16px;
+  right: 16px;
+  display: block;
+  z-index: 30;
+  pointer-events: none;
+}
+
+.wb-root .panel {
+  position: absolute;
+  pointer-events: auto;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  width: 320px;
+  height: 480px;
+  max-height: calc(100vh - 124px);
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 8px;
+  background: rgb(7 10 16 / 0.82);
+  backdrop-filter: blur(8px);
+  overflow: hidden;
+}
+
+.wb-root .panel-assets {
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 380px;
+  min-width: 300px;
+  max-width: min(42vw, 560px);
+  height: calc(100vh - 124px);
+}
+
+.wb-root .panel-inspector {
+  right: 0;
+  top: 0;
+  width: 340px;
+  min-width: 280px;
+  max-width: min(52vw, 620px);
+  height: min(62vh, 700px);
+  max-height: min(78vh, 820px);
+}
+
+.wb-root .panel-world {
+  right: 0;
+  bottom: 0;
+  width: 340px;
+  min-width: 280px;
+  max-width: min(52vw, 620px);
+  height: calc(100vh - 92px);
+  max-height: calc(100vh - 92px);
+}
+
+.wb-root .panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.wb-root .panel h2 {
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #d3dbe8;
+}
+
+.wb-root .panel-toggle {
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  background: rgb(18 24 35 / 0.96);
+  color: #b7c3d5;
+}
+
+.wb-root .panel-toggle:hover {
+  color: #eef2f7;
+  border-color: rgb(255 255 255 / 0.22);
+}
+
+.wb-root .panel .body {
+  display: grid;
+  gap: 8px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.wb-root .panel.is-collapsed {
+  width: 132px;
+  height: auto;
+  min-height: 0;
+}
+
+.wb-root .panel.is-collapsed .body {
+  display: none;
+}
+
+.wb-root .panel-resize-handle {
+  position: absolute;
+  z-index: 2;
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+  opacity: 0.85;
+}
+
+.wb-root .panel-resize-x {
+  top: 0;
+  right: 0;
+  width: 20px;
+  height: 100%;
+  cursor: ew-resize;
+  background: linear-gradient(to left, rgb(255 255 255 / 0.12), rgb(255 255 255 / 0.02));
+}
+
+.wb-root .panel-resize-corner {
+  right: 0;
+  bottom: 0;
+  width: 28px;
+  height: 28px;
+  cursor: nwse-resize;
+  background: linear-gradient(225deg, rgb(255 255 255 / 0.15), rgb(255 255 255 / 0.03));
+  border-right: 2px solid rgb(255 255 255 / 0.24);
+  border-bottom: 2px solid rgb(255 255 255 / 0.24);
+  border-bottom-right-radius: 6px;
+}
+
+.wb-root .asset-list {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  min-height: 0;
+  max-height: none;
+  flex: 1;
+  overflow: auto;
+}
+
+.wb-root .asset-folder-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 5px 7px;
+  border-radius: 5px;
+  background: rgb(7 10 16 / 0.96);
+  color: #9aa8bb;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.wb-root .panel-subhead {
+  color: #9aa8bb;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.wb-root .scene-outliner {
+  display: grid;
+  gap: 4px;
+  max-height: 32vh;
+  overflow: auto;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgb(255 255 255 / 0.08);
+}
+
+.wb-root .outliner-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  min-height: 28px;
+  padding: 5px 7px 5px calc(7px + var(--depth, 0) * 14px);
+  border: 1px solid rgb(255 255 255 / 0.08);
+  border-radius: 5px;
+  background: rgb(16 22 32 / 0.84);
+  color: #dbe6f4;
+  text-align: left;
+}
+
+.wb-root .outliner-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-root .outliner-row span:last-child {
+  color: #8ea0b8;
+  font-size: 10px;
+}
+
+.wb-root .outliner-row.is-group {
+  background: rgb(22 28 40 / 0.9);
+  color: #ffffff;
+}
+
+.wb-root .outliner-row.is-active {
+  border-color: #56a6e8;
+  background: rgb(20 38 56 / 0.96);
+}
+
+.wb-root .asset-card {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid rgb(255 255 255 / 0.1);
+  border-radius: 6px;
+  background: rgb(16 22 32 / 0.96);
+  text-align: left;
+  color: #e7edf5;
+  cursor: pointer;
+}
+
+.wb-root .asset-card.is-active {
+  border-color: #56a6e8;
+  box-shadow: 0 0 0 1px rgb(86 166 232 / 0.22) inset;
+  background: rgb(20 38 56 / 0.96);
+}
+
+.wb-root .asset-card span {
+  overflow-wrap: anywhere;
+  color: #9aa8bb;
+  font-size: 11px;
+}
+
+.wb-root .stack {
+  display: grid;
+  gap: 8px;
+}
+
+.wb-root .stack label {
+  display: grid;
+  gap: 4px;
+  color: #d3dbe8;
+  font-size: 12px;
+}
+
+.wb-root .stack input,
+.wb-root .stack select {
+  min-height: 30px;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 5px;
+  background: rgb(18 24 35 / 0.96);
+  color: #eef2f7;
+}
+
+.wb-root .panel .body > input,
+.wb-root .panel .body > select {
+  min-height: 30px;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 5px;
+  background: rgb(18 24 35 / 0.96);
+  color: #eef2f7;
+}
+
+.wb-root .split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.wb-root .status {
+  color: #9aa8bb;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.wb-root .btn-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.wb-root .btn-row button {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 5px;
+  background: rgb(18 24 35 / 0.96);
+  color: #eef2f7;
+}
+
+.wb-root .btn-row button.is-active {
+  border-color: #56a6e8;
+  background: rgb(20 38 56 / 0.96);
+  color: #ffffff;
+}
+
+.wb-root .canvas-hint {
+  position: absolute;
+  left: 18px;
+  bottom: 18px;
+  z-index: 45;
+  padding: 8px 10px;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 6px;
+  background: rgb(7 10 16 / 0.82);
+  color: #d3dbe8;
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.wb-root .sky-modal {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(0 0 0 / 0.42);
+  pointer-events: auto;
+}
+
+.wb-root .sky-modal.is-hidden {
+  display: none;
+}
+
+.wb-root .sky-dialog {
+  width: min(920px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgb(255 255 255 / 0.14);
+  border-radius: 8px;
+  background: rgb(7 10 16 / 0.94);
+  overflow: auto;
+}
+
+.wb-root .sky-dialog-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: start;
+}
+
+.wb-root .sky-dialog-header strong,
+.wb-root .sky-dialog-header span {
+  display: block;
+}
+
+.wb-root .sky-dialog-header span {
+  margin-top: 3px;
+  color: #9aa8bb;
+  font-size: 12px;
+}
+
+.wb-root .sky-preview {
+  width: 100%;
+  height: 150px;
+  border: 1px solid rgb(255 255 255 / 0.1);
+  border-radius: 6px;
+}
+
+.wb-root .shader-shelf {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid rgb(255 255 255 / 0.1);
+  border-radius: 8px;
+  background: rgb(8 12 18 / 0.95);
+}
+
+.wb-root .shader-shelf.is-hidden {
+  display: none;
+}
+
+.wb-root .shader-shelf .sky-preview {
+  height: 220px;
+}
+
+.wb-root .terrain-shader-shelf {
+  margin-top: 4px;
+  padding: 10px;
+  gap: 8px;
+}
+
+.wb-root .sky-stop-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wb-root .sky-stop {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0 9px;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 5px;
+  background: rgb(18 24 35 / 0.96);
+  color: #e7edf5;
+}
+
+.wb-root .sky-stop.is-active {
+  border-color: #56a6e8;
+  background: rgb(20 38 56 / 0.96);
+}
+
+.wb-root .sky-stop i {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid rgb(255 255 255 / 0.28);
+}
+
+.wb-root .sky-form {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.wb-root .water-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+
+.wb-root .sky-form label {
+  display: grid;
+  gap: 4px;
+  color: #d3dbe8;
+  font-size: 12px;
+}
+
+.wb-root .sky-form input {
+  min-height: 30px;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 5px;
+  background: rgb(18 24 35 / 0.96);
+  color: #eef2f7;
+}
+
+.wb-root .water-form label {
+  display: grid;
+  gap: 4px;
+  color: #d3dbe8;
+  font-size: 12px;
+}
+
+.wb-root .water-form input {
+  min-height: 30px;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 5px;
+  background: rgb(18 24 35 / 0.96);
+  color: #eef2f7;
+}
+
+.wb-root .shader-stack {
+  display: grid;
+  gap: 8px;
+}
+
+.wb-root .terrain-shader-shelf .shader-stack {
+  gap: 6px;
+}
+
+.wb-root .shader-node {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid rgb(255 255 255 / 0.1);
+  border-radius: 6px;
+  background: rgb(18 24 35 / 0.96);
+}
+
+.wb-root .shader-node strong {
+  display: block;
+  font-size: 12px;
+}
+
+.wb-root .shader-node span {
+  color: #9aa8bb;
+  font-size: 11px;
+}
+
+@media (max-width: 900px) {
+  .wb-root .topbar {
+    grid-template-columns: 1fr;
+    right: 12px;
+    left: 12px;
+  }
+
+  .wb-root .toolbar {
+    grid-template-columns: 1fr auto auto;
+  }
+
+  .wb-root .shell {
+    left: 12px;
+    right: 12px;
+    top: 124px;
+  }
+
+  .wb-root .panel-assets,
+  .wb-root .panel-inspector,
+  .wb-root .panel-world {
+    width: min(280px, calc(100vw - 24px));
+  }
+
+  .wb-root .sky-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

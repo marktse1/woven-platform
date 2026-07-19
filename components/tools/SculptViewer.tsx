@@ -12,9 +12,11 @@ import "three-mesh-bvh"; // pulls in BufferGeometry.boundsTree augmentation
 import { buildSeamData, type SeamData } from "@/lib/sculpt/seams";
 import { applyBrush, gatherVertices, expandSeams, type BrushMode, type BrushHit } from "@/lib/sculpt/brushes";
 import { SculptUndoStack } from "@/lib/sculpt/undo";
+import { TopoUndoStack, type TopoMeshSnapshot } from "@/lib/sculpt/topoUndo";
 import { computeAvgEdgeLen, dynTopoRefine } from "@/lib/sculpt/dyntopo";
 import { detectQuads, catmullClarkSubdivide } from "@/lib/sculpt/catmullclark";
-import { buildTopology, type MeshTopology } from "@/lib/sculpt/topology";
+import { buildTopology, walkEdgeLoop, type MeshTopology, type EdgeLoop } from "@/lib/sculpt/topology";
+import { extrudeFaces as extrudeFacesLib, extrudeEdgeLoop as extrudeEdgeLoopLib, findGeometryIssues, type ExtrudeFace } from "@/lib/sculpt/extrude";
 import * as BufferGeometryUtils from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
 // Patch Three.js raycaster to use BVH acceleration
@@ -88,6 +90,46 @@ function keyForHit(hit: PolyEditHit, mode: SelectMode): string {
   return hit.face.kind === "quad" ? `q${hit.face.quadIndex}` : `t${hit.face.triIndex}`;
 }
 
+/** Resolves the current face-mode selection into extrudeFaces() inputs. */
+function resolveSelectedFaces(entry: SculptMeshEntry, selection: Set<string>): ExtrudeFace[] {
+  const topo = entry.topology;
+  let quadToTris: Map<number, number[]> | null = null;
+  if (topo) {
+    quadToTris = new Map();
+    for (const [t, q] of topo.triToQuad) {
+      const list = quadToTris.get(q);
+      if (list) list.push(t); else quadToTris.set(q, [t]);
+    }
+  }
+  const faces: ExtrudeFace[] = [];
+  for (const key of selection) {
+    if (key.startsWith("q") && topo && quadToTris) {
+      const qi = Number(key.slice(1));
+      const ring = topo.quadCorners[qi];
+      const triIndices = quadToTris.get(qi);
+      if (ring && triIndices) faces.push({ ring, triIndices, quadIndex: qi });
+    } else if (key.startsWith("t")) {
+      const ti = Number(key.slice(1));
+      const idx = entry.mesh.geometry.index;
+      if (idx) faces.push({ ring: [idx.getX(ti * 3), idx.getX(ti * 3 + 1), idx.getX(ti * 3 + 2)], triIndices: [ti] });
+    }
+  }
+  return faces;
+}
+
+/** Walks the boundary loop starting from the first selected edge — the seed
+ * for edge-loop extrude. Returns null if nothing's selected or topology
+ * hasn't been built for this entry yet. */
+function resolveSeedLoop(entry: SculptMeshEntry, selection: Set<string>): EdgeLoop | null {
+  const topo = entry.topology;
+  if (!topo) return null;
+  const first = selection.values().next().value;
+  if (!first) return null;
+  const [v0, v1] = first.split("_").map(Number);
+  if (!Number.isFinite(v0) || !Number.isFinite(v1)) return null;
+  return walkEdgeLoop(topo, v0, v1);
+}
+
 const PAINT_TEX_SIZE = 1024;
 export type SculptViewerHandle = {
   exportGlb: () => Promise<Uint8Array>;
@@ -101,6 +143,15 @@ export type SculptViewerHandle = {
   remesh: () => void;
   loadGeometry: (geo: THREE.BufferGeometry, name?: string) => void;
   clearScene: () => void;
+  /** Extrudes the current poly-edit selection — face-mode extrudes every
+   * selected face independently; edge-mode walks the loop from the first
+   * selected edge and extrudes it (boundary loops only). */
+  extrudeSelection: (distance: number) => { ok: boolean; reason?: string };
+  /** Live "N edges in loop" preview for the current edge-mode selection, or
+   * null when not applicable (not in edge mode, nothing selected, etc). */
+  getLoopPreview: () => { edgeCount: number; boundary: boolean; closed: boolean } | null;
+  /** A reasonable default extrude distance, scaled to the loaded mesh's density. */
+  getRecommendedExtrudeDistance: () => number;
 };
 
 export type ViewMode = "combined" | "clay" | "wireframe" | "albedo" | "ao";
@@ -222,6 +273,11 @@ type Props = {
   onModelLoaded?: (vertexCount: number) => void;
   onLoadError?: (msg: string) => void;
   onSelectionChange?: (count: number) => void;
+  /** Fired alongside onSelectionChange whenever edge-mode selection changes
+   * — lets the UI show a live "N edges in loop" readout without polling a
+   * ref during render (reading ref.current at render time isn't allowed
+   * under this project's stricter React Compiler lint rules). */
+  onLoopPreview?: (info: { edgeCount: number; boundary: boolean; closed: boolean } | null) => void;
   handleRef?: React.RefObject<SculptViewerHandle | null>;
 };
 
@@ -241,6 +297,7 @@ export default function SculptViewer({
   onModelLoaded,
   onLoadError,
   onSelectionChange,
+  onLoopPreview,
   handleRef,
 }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null);
@@ -252,6 +309,10 @@ export default function SculptViewer({
   const modelRef = useRef<THREE.Group | null>(null);
   const meshEntriesRef = useRef<SculptMeshEntry[]>([]);
   const undoRef = useRef(new SculptUndoStack());
+  // Only extrude operations push here — brush strokes and the poly-edit
+  // transform gizmo keep using undoRef (position-only) since they never
+  // change vertex/triangle count.
+  const topoUndoRef = useRef(new TopoUndoStack());
   const brushIndicatorRef = useRef<THREE.Mesh | null>(null);
   const brushInnerIndicatorRef = useRef<THREE.Mesh | null>(null);
   // Shared with poly-edit selection highlighting (added later) — repointed
@@ -279,9 +340,11 @@ export default function SculptViewer({
   const onModelLoadedRef = useRef(onModelLoaded);
   const onLoadErrorRef = useRef(onLoadError);
   const onSelectionChangeRef = useRef(onSelectionChange);
+  const onLoopPreviewRef = useRef(onLoopPreview);
   useEffect(() => { onModelLoadedRef.current = onModelLoaded; }, [onModelLoaded]);
   useEffect(() => { onLoadErrorRef.current = onLoadError; }, [onLoadError]);
   useEffect(() => { onSelectionChangeRef.current = onSelectionChange; }, [onSelectionChange]);
+  useEffect(() => { onLoopPreviewRef.current = onLoopPreview; }, [onLoopPreview]);
 
   // ── poly-edit mode: selection state + transform gizmo ─────────────────────
   const editModeRef = useRef<EditMode>(editMode);
@@ -305,6 +368,9 @@ export default function SculptViewer({
   // without duplicating selection-resolution logic in three places.
   const clearPolyEditSelectionRef = useRef<() => void>(() => {});
   const updateSelectionHighlightPointsRef = useRef<() => void>(() => {});
+  // Directly sets the selection to a specific key set (e.g. the new cap
+  // face(s) after an extrude) rather than resolving it from a pointer hit.
+  const setPolyEditSelectionRef = useRef<(entry: SculptMeshEntry, keys: string[]) => void>(() => {});
 
   useEffect(() => {
     editModeRef.current = editMode;
@@ -619,6 +685,7 @@ export default function SculptViewer({
     }
     meshEntriesRef.current = [];
     undoRef.current.clear();
+    topoUndoRef.current.clear();
     clearPolyEditSelectionRef.current();
 
     if (!glbData) return;
@@ -956,14 +1023,38 @@ export default function SculptViewer({
       if (helper) helper.visible = true;
     }
 
+    // Fires both selection-count and (when in edge mode) loop-preview
+    // callbacks from the one place selection actually changes — keeps the
+    // parent's loop-preview UI event-sourced instead of needing to poll a
+    // ref during render (disallowed under this project's lint rules).
+    function notifySelectionChange() {
+      onSelectionChangeRef.current?.(selectionRef.current.size);
+      const entry = selectedEntryRef.current;
+      if (selectModeRef.current === "edge" && entry && selectionRef.current.size > 0) {
+        const loop = resolveSeedLoop(entry, selectionRef.current);
+        onLoopPreviewRef.current?.(loop ? { edgeCount: loop.edges.length, boundary: loop.boundary, closed: loop.closed } : null);
+      } else {
+        onLoopPreviewRef.current?.(null);
+      }
+    }
+
     function clearPolyEditSelection() {
       selectionRef.current.clear();
       selectedEntryRef.current = null;
       updateSelectionHighlightPoints();
       repositionGizmoToSelection();
-      onSelectionChangeRef.current?.(0);
+      notifySelectionChange();
     }
     clearPolyEditSelectionRef.current = clearPolyEditSelection;
+
+    function setPolyEditSelection(entry: SculptMeshEntry, keys: string[]) {
+      selectedEntryRef.current = entry;
+      selectionRef.current = new Set(keys);
+      updateSelectionHighlightPoints();
+      repositionGizmoToSelection();
+      notifySelectionChange();
+    }
+    setPolyEditSelectionRef.current = setPolyEditSelection;
 
     // Click replaces the selection; shift-click toggles a single element in
     // or out. Clicking a different mesh entry starts a fresh selection on it
@@ -984,7 +1075,7 @@ export default function SculptViewer({
       }
       updateSelectionHighlightPoints();
       repositionGizmoToSelection();
-      onSelectionChangeRef.current?.(selectionRef.current.size);
+      notifySelectionChange();
     }
 
     // ── UV texture painting ──────────────────────────────────────────────────
@@ -1135,9 +1226,12 @@ export default function SculptViewer({
           }
           totalVerts += entry.mesh.geometry.attributes.position.count;
         }
-        // Topology changed — old position snapshots are now invalid
+        // Topology changed — old position snapshots (and any pre-change topo
+        // undo snapshots, which would now restore a mismatched vertex count
+        // against the current subdivStack/quadIndices state) are invalid
         if (anyChanged) {
           undoRef.current.clear();
+          topoUndoRef.current.clear();
           clearPolyEditSelectionRef.current();
           onModelLoadedRef.current?.(totalVerts);
         }
@@ -1172,8 +1266,53 @@ export default function SculptViewer({
 
   // ── keyboard undo/redo ────────────────────────────────────────────────────
   useEffect(() => {
+    function applyTopoSnapshots(snaps: TopoMeshSnapshot[]) {
+      for (const snap of snaps) {
+        const entry = meshEntriesRef.current.find((e) => e.mesh === snap.mesh);
+        if (!entry) continue;
+        entry.mesh.geometry.dispose();
+        entry.mesh.geometry = snap.geometry;
+        entry.mesh.geometry.boundsTree = new MeshBVH(entry.mesh.geometry);
+        entry.quadIndices = snap.quadIndices;
+        entry.topology = undefined;
+        entry.seams = buildSeamData(entry.mesh.geometry.attributes.position.array as Float32Array);
+        const wire = entry.mesh.children.find((c) => c.name === "__wire");
+        if (wire) {
+          entry.mesh.remove(wire);
+          const newWire = new THREE.LineSegments(
+            new THREE.WireframeGeometry(entry.mesh.geometry),
+            (wire as THREE.LineSegments).material as THREE.Material,
+          );
+          newWire.name = "__wire";
+          newWire.visible = (wire as THREE.Object3D).visible;
+          newWire.renderOrder = 999;
+          entry.mesh.add(newWire);
+        }
+      }
+      clearPolyEditSelectionRef.current();
+      undoRef.current.clear(); // vertex count may have changed — position snapshots are now invalid
+      onModelLoadedRef.current?.(meshEntriesRef.current.reduce((s, e) => s + e.mesh.geometry.attributes.position.count, 0));
+    }
+
     function onKey(e: KeyboardEvent) {
       if (!e.ctrlKey && !e.metaKey) return;
+      const isRedo = (e.key === "z" && e.shiftKey) || e.key === "y";
+      const isUndo = e.key === "z" && !e.shiftKey;
+      if (!isUndo && !isRedo) return;
+      e.preventDefault();
+
+      // In poly-edit mode, try the topology stack (extrude) first, falling
+      // back to the position stack (transform-gizmo drags use that one).
+      // Not perfectly chronological across the two stacks if you extrude,
+      // then transform, then undo twice — a disclosed V1 simplification —
+      // but covers the common case correctly.
+      if (editModeRef.current === "poly_edit") {
+        const topo = topoUndoRef.current;
+        const currentTopoEntries = meshEntriesRef.current.map((e) => ({ mesh: e.mesh, quadIndices: e.quadIndices ?? new Uint32Array(0) }));
+        if (isUndo && topo.canUndo) { applyTopoSnapshots(topo.undo(currentTopoEntries)!); return; }
+        if (isRedo && topo.canRedo) { applyTopoSnapshots(topo.redo(currentTopoEntries)!); return; }
+      }
+
       const stack = undoRef.current;
       const applySnap = (snaps: ReturnType<typeof stack.undo>) => {
         if (!snaps) return;
@@ -1183,8 +1322,8 @@ export default function SculptViewer({
           mesh.geometry.computeVertexNormals();
         }
       };
-      if (e.key === "z" && !e.shiftKey) { e.preventDefault(); applySnap(stack.undo()); }
-      if ((e.key === "z" && e.shiftKey) || e.key === "y") { e.preventDefault(); applySnap(stack.redo()); }
+      if (isUndo) applySnap(stack.undo());
+      if (isRedo) applySnap(stack.redo());
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -1298,6 +1437,93 @@ export default function SculptViewer({
     }
   }, []);
 
+  const getRecommendedExtrudeDistance = useCallback((): number => {
+    return selectedEntryRef.current?.baseEdgeLen ?? meshEntriesRef.current[0]?.baseEdgeLen ?? 0.1;
+  }, []);
+
+  const getLoopPreview = useCallback((): { edgeCount: number; boundary: boolean; closed: boolean } | null => {
+    const entry = selectedEntryRef.current;
+    if (!entry || selectModeRef.current !== "edge") return null;
+    const loop = resolveSeedLoop(entry, selectionRef.current);
+    if (!loop) return null;
+    return { edgeCount: loop.edges.length, boundary: loop.boundary, closed: loop.closed };
+  }, []);
+
+  // Commits a face or edge-loop extrude on the current poly-edit selection.
+  // Pushes to the topology-aware undo stack (not the position-only one —
+  // vertex/triangle count changes here) before replacing the mesh's
+  // geometry, then re-selects the new cap/rim so extrude-chains work the
+  // way DCC tools expect.
+  const extrudeSelection = useCallback((distance: number): { ok: boolean; reason?: string } => {
+    const entry = selectedEntryRef.current;
+    if (!entry) return { ok: false, reason: "Nothing selected." };
+    if (!Number.isFinite(distance) || distance === 0) return { ok: false, reason: "Extrude distance must be nonzero." };
+
+    const rebuildWireAndBVH = () => {
+      entry.mesh.geometry.boundsTree = new MeshBVH(entry.mesh.geometry);
+      entry.seams = buildSeamData(entry.mesh.geometry.attributes.position.array as Float32Array);
+      const wire = entry.mesh.children.find((c) => c.name === "__wire");
+      if (wire) {
+        entry.mesh.remove(wire);
+        const newWire = new THREE.LineSegments(
+          new THREE.WireframeGeometry(entry.mesh.geometry),
+          (wire as THREE.LineSegments).material as THREE.Material,
+        );
+        newWire.name = "__wire";
+        newWire.visible = (wire as THREE.Object3D).visible;
+        newWire.renderOrder = 999;
+        entry.mesh.add(newWire);
+      }
+    };
+    const finish = (newKeys: string[]) => {
+      entry.topology = undefined;
+      rebuildWireAndBVH();
+      undoRef.current.clear(); // vertex count changed — position snapshots are now invalid
+      setPolyEditSelectionRef.current(entry, newKeys);
+      onModelLoadedRef.current?.(meshEntriesRef.current.reduce((s, e) => s + e.mesh.geometry.attributes.position.count, 0));
+    };
+
+    if (selectModeRef.current === "face") {
+      if (selectionRef.current.size === 0) return { ok: false, reason: "Select at least one face." };
+      const faces = resolveSelectedFaces(entry, selectionRef.current);
+      if (faces.length === 0) return { ok: false, reason: "Nothing selected." };
+
+      topoUndoRef.current.push(meshEntriesRef.current.map((e) => ({ mesh: e.mesh, quadIndices: e.quadIndices ?? new Uint32Array(0) })));
+      const result = extrudeFacesLib(entry.mesh.geometry, entry.quadIndices ?? new Uint32Array(0), faces, distance, entry.baseEdgeLen ?? 0.1);
+      const issues = findGeometryIssues(result.geometry);
+      if (issues.length > 0) console.warn("[SculptViewer] face extrude produced a suspect mesh:", issues);
+
+      entry.mesh.geometry.dispose();
+      entry.mesh.geometry = result.geometry;
+      entry.quadIndices = result.quadIndices;
+      const newKeys = [...result.newQuadIdx.map((q) => `q${q}`), ...result.newTriIdx.map((t) => `t${t}`)];
+      finish(newKeys);
+      return { ok: true };
+    }
+
+    if (selectModeRef.current === "edge") {
+      const loop = resolveSeedLoop(entry, selectionRef.current);
+      if (!loop) return { ok: false, reason: "Select an edge to extrude its loop." };
+      if (!loop.boundary) {
+        return { ok: false, reason: "Interior edge loops can't be extruded yet — only boundary (open-rim) loops are supported." };
+      }
+
+      topoUndoRef.current.push(meshEntriesRef.current.map((e) => ({ mesh: e.mesh, quadIndices: e.quadIndices ?? new Uint32Array(0) })));
+      const result = extrudeEdgeLoopLib(entry.mesh.geometry, entry.quadIndices ?? new Uint32Array(0), loop, distance, entry.baseEdgeLen ?? 0.1);
+      const issues = findGeometryIssues(result.geometry);
+      if (issues.length > 0) console.warn("[SculptViewer] loop extrude produced a suspect mesh:", issues);
+
+      entry.mesh.geometry.dispose();
+      entry.mesh.geometry = result.geometry;
+      entry.quadIndices = result.quadIndices;
+      const newKeys = result.newLoop.edges.map((e) => `${Math.min(e.v0, e.v1)}_${Math.max(e.v0, e.v1)}`);
+      finish(newKeys);
+      return { ok: true };
+    }
+
+    return { ok: false, reason: "Switch to Face or Edge select mode to extrude." };
+  }, []);
+
   const subdivide = useCallback(() => {
     if (meshEntriesRef.current.length === 0) return;
     // Vertex cap — Loop subdivision ≈ 4× vertex count; block before hitting WebGL limits
@@ -1311,6 +1537,7 @@ export default function SculptViewer({
     // Subdivision changes topology (new vertex count), so position snapshots from previous
     // sculpt strokes would be invalid after this point. Clear rather than push.
     undoRef.current.clear();
+    topoUndoRef.current.clear();
     clearPolyEditSelectionRef.current();
     let totalVerts = 0;
     for (const entry of meshEntriesRef.current) {
@@ -1353,6 +1580,7 @@ export default function SculptViewer({
   const remesh = useCallback(() => {
     if (meshEntriesRef.current.length === 0) return;
     undoRef.current.clear();
+    topoUndoRef.current.clear();
     clearPolyEditSelectionRef.current();
     let totalVerts = 0;
     for (const entry of meshEntriesRef.current) {
@@ -1399,6 +1627,7 @@ export default function SculptViewer({
     }
     meshEntriesRef.current = [];
     undoRef.current.clear();
+    topoUndoRef.current.clear();
     clearPolyEditSelectionRef.current();
     // Build geometry
     const geo = buildPrimitiveGeometry(type);
@@ -1463,6 +1692,7 @@ export default function SculptViewer({
     }
     meshEntriesRef.current = [];
     undoRef.current.clear();
+    topoUndoRef.current.clear();
     clearPolyEditSelectionRef.current();
 
     geo.computeVertexNormals();
@@ -1514,6 +1744,7 @@ export default function SculptViewer({
     if (entries.length === 0) return false;
     if (!entries[0].subdivStack || entries[0].subdivStack.length === 0) return false;
     undoRef.current.clear();
+    topoUndoRef.current.clear();
     clearPolyEditSelectionRef.current();
     let totalVerts = 0;
     for (const entry of entries) {
@@ -1566,6 +1797,7 @@ export default function SculptViewer({
     }
     meshEntriesRef.current = [];
     undoRef.current.clear();
+    topoUndoRef.current.clear();
     clearPolyEditSelectionRef.current();
     originalMaterialsRef.current.clear();
     channelMatsRef.current.forEach((m) => m.dispose());
@@ -1575,9 +1807,12 @@ export default function SculptViewer({
 
   useEffect(() => {
     if (handleRef) {
-      (handleRef as React.MutableRefObject<SculptViewerHandle | null>).current = { exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene };
+      (handleRef as React.MutableRefObject<SculptViewerHandle | null>).current = {
+        exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene,
+        extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance,
+      };
     }
-  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene]);
+  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance]);
 
   return <div ref={mountRef} className="w-full h-full" style={{ touchAction: "none" }} />;
 }

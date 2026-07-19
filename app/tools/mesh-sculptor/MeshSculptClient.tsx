@@ -167,6 +167,9 @@ export default function MeshSculptClient() {
   const [selectMode, setSelectMode] = useState<SelectMode>("vertex");
   const [transformMode, setTransformMode] = useState<TransformMode>("translate");
   const [selectionCount, setSelectionCount] = useState(0);
+  const [extrudeDistance, setExtrudeDistance] = useState(0.1);
+  const [extrudeMsg, setExtrudeMsg] = useState("");
+  const [loopPreview, setLoopPreview] = useState<{ edgeCount: number; boundary: boolean; closed: boolean } | null>(null);
 
   const viewerHandleRef = useRef<SculptViewerHandle | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -408,6 +411,29 @@ export default function MeshSculptClient() {
     return () => { window.removeEventListener("keydown", onDown); window.removeEventListener("keyup", onUp); };
   }, [editMode]);
 
+  // Seed the extrude-distance slider from the loaded mesh's own density the
+  // moment poly-edit mode is entered, so it starts at a sensible scale
+  // instead of an arbitrary constant.
+  useEffect(() => {
+    if (editMode !== "poly_edit") return;
+    const rec = viewerHandleRef.current?.getRecommendedExtrudeDistance();
+    if (rec) setExtrudeDistance(rec);
+  }, [editMode]);
+
+  // Live "N edges in loop" preview — fired directly from SculptViewer
+  // whenever edge-mode selection changes (event-sourced, not polled via a
+  // ref during render).
+  const handleLoopPreview = useCallback((info: { edgeCount: number; boundary: boolean; closed: boolean } | null) => {
+    setLoopPreview(info);
+    setExtrudeMsg("");
+  }, []);
+
+  const handleExtrude = useCallback(() => {
+    const result = viewerHandleRef.current?.extrudeSelection(extrudeDistance);
+    if (!result) return;
+    setExtrudeMsg(result.ok ? "" : (result.reason ?? "Extrude failed."));
+  }, [extrudeDistance]);
+
   const handleSave = useCallback(async () => {
     if (!viewerHandleRef.current || !user?.id) return;
     setSaving(true); setSaveMsg("");
@@ -530,6 +556,37 @@ export default function MeshSculptClient() {
                   ? "Click a mesh to select · Shift-click to add"
                   : `${selectionCount} ${selectMode}${selectionCount === 1 ? "" : "s"} selected`}
               </p>
+
+              {(selectMode === "face" || selectMode === "edge") && (
+                <div className="mt-3 pt-3 border-t border-[#2a2320]">
+                  {selectMode === "edge" && (
+                    <p className="text-[10.5px] mb-2" style={{ color: !loopPreview ? "#4a4040" : loopPreview.boundary ? "#6a8098" : "#e0824a" }}>
+                      {loopPreview
+                        ? loopPreview.boundary
+                          ? `${loopPreview.edgeCount} edges in loop${loopPreview.closed ? " (closed)" : ""}`
+                          : "Interior loop — not extrudable yet"
+                        : "Select a boundary edge to preview its loop"}
+                    </p>
+                  )}
+                  <label className="block mb-2">
+                    <div className="flex justify-between mb-1">
+                      <span className="text-[11px] text-dim">Extrude Distance</span>
+                      <span className="text-[11px] text-ink">{extrudeDistance.toFixed(3)}</span>
+                    </div>
+                    <input type="range" min={-2} max={2} step={0.01} value={extrudeDistance}
+                      onChange={(e) => setExtrudeDistance(Number(e.target.value))}
+                      className="w-full accent-[#c47be8]" />
+                  </label>
+                  <button
+                    onClick={handleExtrude}
+                    disabled={selectionCount === 0 || (selectMode === "edge" && loopPreview != null && !loopPreview.boundary)}
+                    className="w-full py-1.5 rounded text-[11px] font-semibold text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    style={{ background: PURPLE }}>
+                    {selectMode === "face" ? `Extrude Face${selectionCount > 1 ? "s" : ""}` : "Extrude Loop"}
+                  </button>
+                  {extrudeMsg && <p className="text-[10.5px] mt-1.5 text-amber-400">{extrudeMsg}</p>}
+                </div>
+              )}
             </>
           )}
         </div>
@@ -850,6 +907,7 @@ export default function MeshSculptClient() {
             onModelLoaded={setVertexCount}
             onLoadError={setLoadError}
             onSelectionChange={setSelectionCount}
+            onLoopPreview={handleLoopPreview}
             paintColor={paintColor}
             handleRef={viewerHandleRef}
           />

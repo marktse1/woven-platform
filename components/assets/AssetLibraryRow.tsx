@@ -15,9 +15,17 @@ const KIND_LABEL: Record<string, string> = { model: "Model", texture: "Texture",
 export default function AssetLibraryRow({
   asset,
   onChange,
+  onLoad,
+  loadable = false,
+  accent,
 }: {
   asset: AssetRow;
   onChange: () => void;
+  /** Present when a tool is mounted and registered as the active loader. */
+  onLoad?: (asset: AssetRow) => void;
+  /** Whether the active tool's `accepts` predicate passed for this asset. */
+  loadable?: boolean;
+  accent?: string;
 }) {
   const [saving, setSaving] = useState(false);
   const [priceInput, setPriceInput] = useState(() => (asset.price_cents / 100).toFixed(2));
@@ -50,10 +58,26 @@ export default function AssetLibraryRow({
     }
   }
 
+  const clickable = loadable && !!onLoad;
+
   return (
-    <div className="flex flex-col gap-1.5 px-3.5 py-2.5 border-b border-line last:border-b-0">
+    <div
+      className="flex flex-col gap-1.5 px-3.5 py-2.5 border-b border-line last:border-b-0 transition-opacity"
+      style={!loadable && onLoad !== undefined ? { opacity: 0.4 } : undefined}
+    >
       <div className="flex items-center justify-between gap-2">
-        <span className="text-[13px] text-ink truncate" title={asset.name}>{asset.name}</span>
+        {clickable ? (
+          <button
+            onClick={() => onLoad?.(asset)}
+            className="text-[13px] text-left truncate hover:underline"
+            style={{ color: accent ?? "var(--color-ink)" }}
+            title={`Load "${asset.name}"`}
+          >
+            {asset.name}
+          </button>
+        ) : (
+          <span className="text-[13px] text-ink truncate" title={asset.name}>{asset.name}</span>
+        )}
         <button
           onClick={handleDelete}
           disabled={saving}

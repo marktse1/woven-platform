@@ -5,6 +5,7 @@ import "./globals.css";
 import AccountStrip from "@/components/shell/AccountStrip";
 import MainNav from "@/components/shell/MainNav";
 import AssetLibraryPanel from "@/components/assets/AssetLibraryPanel";
+import { ActiveLoaderProvider } from "@/components/assets/ActiveLoaderContext";
 
 const inter = Inter({ subsets: ["latin"], weight: ["400", "500", "600", "700", "800"] });
 
@@ -24,10 +25,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <ClerkProvider>
       <html lang="en" className={inter.className}>
         <body>
-          <AccountStrip />
-          <MainNav />
-          {children}
-          <AssetLibraryPanel />
+          <ActiveLoaderProvider>
+            <AccountStrip />
+            <MainNav />
+            {children}
+            <AssetLibraryPanel />
+          </ActiveLoaderProvider>
         </body>
       </html>
     </ClerkProvider>

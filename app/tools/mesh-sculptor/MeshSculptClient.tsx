@@ -6,8 +6,8 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useUser } from "@clerk/nextjs";
 import { useCreatorStatus } from "@/lib/useCreatorStatus";
+import { useActiveLoader } from "@/components/assets/ActiveLoaderContext";
 import {
-  listVisibleAssets,
   uploadAsset,
   signedAssetUrl,
   type AssetRow,
@@ -133,17 +133,10 @@ const PRIMITIVES: { type: PrimitiveType; label: string; icon: string }[] = [
 
 const PURPLE = "#c47be8";
 
-function bytes(n: number) {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
-}
-
 export default function MeshSculptClient() {
   const { user, isLoaded } = useUser();
   const creatorStatus = useCreatorStatus();
 
-  const [assets, setAssets] = useState<AssetRow[]>([]);
   const [selectedAsset, setSelectedAsset] = useState<AssetRow | null>(null);
   const [glbData, setGlbData] = useState<ArrayBuffer | null>(null);
   const [vertexCount, setVertexCount] = useState<number | null>(null);
@@ -173,14 +166,17 @@ export default function MeshSculptClient() {
   const viewerHandleRef = useRef<SculptViewerHandle | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // ── refreshAssets defined first so handleLocalFile can call it ──────────
-  const refreshAssets = useCallback(async () => {
-    if (!user?.id) return;
-    try {
-      const rows = await listVisibleAssets(user.id);
-      setAssets(rows.filter((r) => r.format === "glb" || r.format === "GLB"));
-    } catch { /* non-fatal */ }
-  }, [user?.id]);
+  // Mesh Sculptor no longer keeps its own "browse my assets" list — the
+  // global My Assets panel (app/layout.tsx) is the universal loader now.
+  // Registering here makes clicking a .glb row there call setSelectedAsset,
+  // same as the old local list's onClick did.
+  const { register, notifyAssetsChanged } = useActiveLoader();
+  useEffect(() => {
+    return register({
+      onLoad: setSelectedAsset,
+      accepts: (a) => a.format.toLowerCase() === "glb",
+    });
+  }, [register]);
 
   // Uploads a GLB, then optionally runs it through the shared server-side
   // KTX2 compression pass. Compression failure is non-fatal — the
@@ -218,7 +214,7 @@ export default function MeshSculptClient() {
           try {
             setUploadMsg("Uploading to library…");
             await uploadAsset({ userId: user.id, name: file.name, bytes: buf, visibility: "private" });
-            await refreshAssets();
+            notifyAssetsChanged();
             setUploadMsg("Added to library.");
             setTimeout(() => setUploadMsg(""), 3000);
           } catch { setUploadMsg("Loaded locally (library upload failed)."); }
@@ -244,7 +240,7 @@ export default function MeshSculptClient() {
             const glbBytes = await viewerHandleRef.current.exportGlb();
             const glbName = file.name.replace(/\.drc$/i, ".glb");
             await uploadAndMaybeCompress(glbName, glbBytes.buffer as ArrayBuffer);
-            await refreshAssets();
+            notifyAssetsChanged();
             setUploadMsg("Added to library.");
             setTimeout(() => setUploadMsg(""), 3000);
           } catch { setUploadMsg("Loaded locally (library upload failed)."); }
@@ -269,7 +265,7 @@ export default function MeshSculptClient() {
             const glbBytes = await viewerHandleRef.current.exportGlb();
             const glbName = file.name.replace(/\.obj$/i, ".glb");
             await uploadAndMaybeCompress(glbName, glbBytes.buffer as ArrayBuffer);
-            await refreshAssets();
+            notifyAssetsChanged();
             setUploadMsg("Added to library.");
             setTimeout(() => setUploadMsg(""), 3000);
           } catch { setUploadMsg("Loaded locally (library upload failed)."); }
@@ -286,7 +282,7 @@ export default function MeshSculptClient() {
             const glbBytes = await viewerHandleRef.current.exportGlb();
             const glbName = file.name.replace(/\.stl$/i, ".glb");
             await uploadAndMaybeCompress(glbName, glbBytes.buffer as ArrayBuffer);
-            await refreshAssets();
+            notifyAssetsChanged();
             setUploadMsg("Added to library.");
             setTimeout(() => setUploadMsg(""), 3000);
           } catch { setUploadMsg("Loaded locally (library upload failed)."); }
@@ -297,7 +293,7 @@ export default function MeshSculptClient() {
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : "Failed to load file.");
     } finally { setLoadingAsset(false); }
-  }, [user?.id, refreshAssets, uploadAndMaybeCompress]);
+  }, [user?.id, notifyAssetsChanged, uploadAndMaybeCompress]);
 
   const clearWorkspace = useCallback(() => {
     viewerHandleRef.current?.clearScene();
@@ -334,10 +330,6 @@ export default function MeshSculptClient() {
     if (e.currentTarget.contains(e.relatedTarget as Node)) return;
     setIsDragging(false);
   }, []);
-
-  useEffect(() => {
-    if (user?.id) refreshAssets();
-  }, [creatorStatus, user?.id, refreshAssets]);
 
   // ── Persist brush settings per user in localStorage ──────────────────────
   useEffect(() => {
@@ -405,11 +397,11 @@ export default function MeshSculptClient() {
         vertexCount ?? undefined,
       );
       setSaveMsg(compressKtx2 && !compressed ? "Saved (uncompressed — texture compression failed)." : "Saved to library.");
-      await refreshAssets();
+      notifyAssetsChanged();
     } catch (e) {
       setSaveMsg(e instanceof Error ? e.message : "Save failed.");
     } finally { setSaving(false); }
-  }, [user?.id, selectedAsset, vertexCount, subdivLevel, exportLevel, compressKtx2, uploadAndMaybeCompress, refreshAssets]);
+  }, [user?.id, selectedAsset, vertexCount, subdivLevel, exportLevel, compressKtx2, uploadAndMaybeCompress, notifyAssetsChanged]);
 
   if (!isLoaded || creatorStatus === "loading") return null;
 
@@ -438,29 +430,9 @@ export default function MeshSculptClient() {
 
         <div className="px-4 py-3 border-b border-[#2a2320]">
           <p className="text-[11px] font-medium text-dim uppercase tracking-wide mb-2">Load Mesh</p>
-          {assets.length === 0 ? (
-            <p className="text-[11px] text-dim">No GLB assets yet. Upload one in Mesh Loom first.</p>
-          ) : (
-            <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
-              {assets.map((a) => (
-                <button key={a.id} onClick={() => setSelectedAsset(a)}
-                  className={`w-full text-left px-2 py-1.5 rounded text-[11px] transition-colors ${
-                    selectedAsset?.id === a.id ? "bg-[#c47be8]/20 text-[#c47be8]" : "text-ink hover:bg-[#1e1a17]"
-                  }`}>
-                  <span className="block truncate">{a.name}</span>
-                  <span className="flex items-center gap-1.5 mt-0.5">
-                    {a.poly_count != null && <span className="text-dim">{a.poly_count.toLocaleString()} tris</span>}
-                    <span className="text-dim">{bytes(a.file_bytes)}</span>
-                    {a.meta?.ktx2Compressed ? (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: "rgba(196,123,232,.18)", color: PURPLE }}>KTX2</span>
-                    ) : (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: "rgba(255,255,255,.06)", color: "#6a6058" }}>Uncompressed</span>
-                    )}
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
+          <p className="text-[11px] text-dim">
+            Open the <span className="text-ink">My Assets</span> panel (right edge) to load a saved .glb, or import a file directly:
+          </p>
           <input
             ref={fileInputRef}
             type="file"

@@ -12,7 +12,7 @@ import {
   signedAssetUrl,
   type AssetRow,
 } from "@/lib/assets";
-import type { SculptViewerHandle, ViewMode, PrimitiveType } from "@/components/tools/SculptViewer";
+import type { SculptViewerHandle, ViewMode, PrimitiveType, EditMode, SelectMode, TransformMode } from "@/components/tools/SculptViewer";
 import type { BrushMode } from "@/lib/sculpt/brushes";
 import type * as THREE from "three";
 
@@ -163,6 +163,11 @@ export default function MeshSculptClient() {
   const [dynTopo, setDynTopo] = useState(false);
   const [compressKtx2, setCompressKtx2] = useState(true);
 
+  const [editMode, setEditMode] = useState<EditMode>("sculpt");
+  const [selectMode, setSelectMode] = useState<SelectMode>("vertex");
+  const [transformMode, setTransformMode] = useState<TransformMode>("translate");
+  const [selectionCount, setSelectionCount] = useState(0);
+
   const viewerHandleRef = useRef<SculptViewerHandle | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -303,6 +308,7 @@ export default function MeshSculptClient() {
     setLoadError("");
     setUploadMsg("");
     setSubdivLevel(0);
+    setEditMode("sculpt");
   }, []);
 
   const handleDrop = useCallback(async (e: React.DragEvent<HTMLDivElement>) => {
@@ -373,6 +379,24 @@ export default function MeshSculptClient() {
   useEffect(() => {
     function onDown(e: KeyboardEvent) {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === "Tab") {
+        e.preventDefault();
+        setEditMode((m) => (m === "sculpt" ? "poly_edit" : "sculpt"));
+        return;
+      }
+      if (editMode === "poly_edit") {
+        // Blender-style select-mode/transform-mode shortcuts, scoped to
+        // poly-edit only — no conflict with the sculpt brush shortcuts below
+        // (E/R mean smooth/flatten there) since the two modes are mutually
+        // exclusive and this branch returns before reaching MODE_KEY.
+        if (e.key === "1") setSelectMode("vertex");
+        else if (e.key === "2") setSelectMode("edge");
+        else if (e.key === "3") setSelectMode("face");
+        else if (e.key.toLowerCase() === "w") setTransformMode("translate");
+        else if (e.key.toLowerCase() === "e") setTransformMode("rotate");
+        else if (e.key.toLowerCase() === "r") setTransformMode("scale");
+        return;
+      }
       const m = MODE_KEY[e.key.toLowerCase()];
       if (m) setBrushMode(m);
       if (e.key === "Shift") setShiftHeld(true);
@@ -382,7 +406,7 @@ export default function MeshSculptClient() {
     window.addEventListener("keydown", onDown);
     window.addEventListener("keyup", onUp);
     return () => { window.removeEventListener("keydown", onDown); window.removeEventListener("keyup", onUp); };
-  }, []);
+  }, [editMode]);
 
   const handleSave = useCallback(async () => {
     if (!viewerHandleRef.current || !user?.id) return;
@@ -453,6 +477,61 @@ export default function MeshSculptClient() {
           {loadingAsset && <p className="text-[11px] text-dim mt-2">Loading…</p>}
           {loadError    && <p className="text-[11px] text-red-400 mt-2">{loadError}</p>}
           {uploadMsg    && !loadError && <p className="text-[11px] text-green-400 mt-1">{uploadMsg}</p>}
+        </div>
+
+        {/* Poly-edit mode: vertex/edge/face selection + transform gizmo */}
+        <div className="px-4 py-3 border-b border-[#2a2320]">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-[11px] font-medium text-dim uppercase tracking-wide">Mode</p>
+            <span className="text-[10px]" style={{ color: "#4a4040" }}>Tab</span>
+          </div>
+          <div className="flex gap-1 mb-3">
+            <button onClick={() => setEditMode("sculpt")}
+              className="flex-1 py-1.5 rounded text-[11px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{ background: editMode === "sculpt" ? PURPLE : "#1e1a17", color: editMode === "sculpt" ? "#fff" : "#8aa0b4" }}>
+              Sculpt
+            </button>
+            <button onClick={() => setEditMode("poly_edit")}
+              disabled={vertexCount == null}
+              title="Select vertices, edges, or faces and transform them"
+              className="flex-1 py-1.5 rounded text-[11px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{ background: editMode === "poly_edit" ? PURPLE : "#1e1a17", color: editMode === "poly_edit" ? "#fff" : "#8aa0b4" }}>
+              Edit
+            </button>
+          </div>
+
+          {editMode === "poly_edit" && (
+            <>
+              <p className="text-[10px] text-dim uppercase tracking-wide mb-1.5">Select</p>
+              <div className="flex gap-1 mb-3">
+                {([["vertex", "1"], ["edge", "2"], ["face", "3"]] as [SelectMode, string][]).map(([m, key]) => (
+                  <button key={m} onClick={() => setSelectMode(m)}
+                    title={`${m[0].toUpperCase()}${m.slice(1)} (${key})`}
+                    className="flex-1 py-1.5 rounded text-[11px] font-medium capitalize transition-colors"
+                    style={{ background: selectMode === m ? "rgba(196,123,232,.22)" : "#1e1a17", color: selectMode === m ? PURPLE : "#8aa0b4" }}>
+                    {m}
+                  </button>
+                ))}
+              </div>
+
+              <p className="text-[10px] text-dim uppercase tracking-wide mb-1.5">Transform</p>
+              <div className="flex gap-1 mb-2">
+                {([["translate", "Move", "W"], ["rotate", "Rotate", "E"], ["scale", "Scale", "R"]] as [TransformMode, string, string][]).map(([m, label, key]) => (
+                  <button key={m} onClick={() => setTransformMode(m)}
+                    title={`${label} (${key})`}
+                    className="flex-1 py-1.5 rounded text-[11px] font-medium transition-colors"
+                    style={{ background: transformMode === m ? "rgba(196,123,232,.22)" : "#1e1a17", color: transformMode === m ? PURPLE : "#8aa0b4" }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10.5px]" style={{ color: selectionCount > 0 ? PURPLE : "#6a8098" }}>
+                {selectionCount === 0
+                  ? "Click a mesh to select · Shift-click to add"
+                  : `${selectionCount} ${selectMode}${selectionCount === 1 ? "" : "s"} selected`}
+              </p>
+            </>
+          )}
         </div>
 
         {/* Brush settings */}
@@ -605,29 +684,37 @@ export default function MeshSculptClient() {
         {/* TOP TOOLBAR */}
         <div className="flex items-stretch border-b border-[#2a2320] bg-[#100e0c] flex-shrink-0">
 
-          {/* BRUSH SHELF */}
-          <div className="flex items-center gap-0.5 px-2 py-1.5">
-            {BRUSH_MODES.map(({ mode, label, shortcut, invertHint }) => {
-              const active = brushMode === mode;
-              const subtracting = active && !!invertHint && altHeld;
-              return (
-                <button key={mode} onClick={() => setBrushMode(mode)}
-                  title={`${label} (${shortcut})${invertHint ? "  ·  " + invertHint : ""}`}
-                  className="relative flex flex-col items-center gap-1 px-3 py-2 rounded-lg transition-all"
-                  style={{
-                    background: subtracting ? "rgba(196,123,232,.4)" : active ? "rgba(196,123,232,.22)" : "transparent",
-                    color: active ? PURPLE : "#8aa0b4",
-                  }}>
-                  <BrushIcon mode={mode} active={active} />
-                  <span className="text-[10px] font-semibold tracking-wide uppercase leading-none">{label}</span>
-                  {subtracting && (
-                    <span className="absolute -top-1 -right-1 text-[8px] font-bold px-1 rounded-full leading-tight"
-                      style={{ background: PURPLE, color: "#fff" }}>⇩</span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
+          {/* BRUSH SHELF — sculpt mode only; poly-edit's own selection/transform
+              controls live in the sidebar (§ Mode panel) instead. */}
+          {editMode === "sculpt" ? (
+            <div className="flex items-center gap-0.5 px-2 py-1.5">
+              {BRUSH_MODES.map(({ mode, label, shortcut, invertHint }) => {
+                const active = brushMode === mode;
+                const subtracting = active && !!invertHint && altHeld;
+                return (
+                  <button key={mode} onClick={() => setBrushMode(mode)}
+                    title={`${label} (${shortcut})${invertHint ? "  ·  " + invertHint : ""}`}
+                    className="relative flex flex-col items-center gap-1 px-3 py-2 rounded-lg transition-all"
+                    style={{
+                      background: subtracting ? "rgba(196,123,232,.4)" : active ? "rgba(196,123,232,.22)" : "transparent",
+                      color: active ? PURPLE : "#8aa0b4",
+                    }}>
+                    <BrushIcon mode={mode} active={active} />
+                    <span className="text-[10px] font-semibold tracking-wide uppercase leading-none">{label}</span>
+                    {subtracting && (
+                      <span className="absolute -top-1 -right-1 text-[8px] font-bold px-1 rounded-full leading-tight"
+                        style={{ background: PURPLE, color: "#fff" }}>⇩</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="flex items-center px-4 py-1.5">
+              <span className="text-[11px] font-medium" style={{ color: PURPLE }}>Poly Edit</span>
+              <span className="text-[10px] text-dim ml-2">Tab to sculpt</span>
+            </div>
+          )}
 
           {/* Divider */}
           <div className="w-px self-stretch bg-[#2a2320] mx-1" />
@@ -757,8 +844,12 @@ export default function MeshSculptClient() {
             viewMode={viewMode}
             clayColor={clayColor}
             dynTopo={dynTopo}
+            editMode={editMode}
+            selectMode={selectMode}
+            transformMode={transformMode}
             onModelLoaded={setVertexCount}
             onLoadError={setLoadError}
+            onSelectionChange={setSelectionCount}
             paintColor={paintColor}
             handleRef={viewerHandleRef}
           />

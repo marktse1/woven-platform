@@ -6,6 +6,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { KTX2Loader } from "three/examples/jsm/loaders/KTX2Loader.js";
 import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { MeshBVH, acceleratedRaycast } from "three-mesh-bvh";
 import "three-mesh-bvh"; // pulls in BufferGeometry.boundsTree augmentation
 import { buildSeamData, type SeamData } from "@/lib/sculpt/seams";
@@ -13,6 +14,7 @@ import { applyBrush, gatherVertices, expandSeams, type BrushMode, type BrushHit 
 import { SculptUndoStack } from "@/lib/sculpt/undo";
 import { computeAvgEdgeLen, dynTopoRefine } from "@/lib/sculpt/dyntopo";
 import { detectQuads, catmullClarkSubdivide } from "@/lib/sculpt/catmullclark";
+import { buildTopology, type MeshTopology } from "@/lib/sculpt/topology";
 import * as BufferGeometryUtils from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
 // Patch Three.js raycaster to use BVH acceleration
@@ -35,7 +37,56 @@ type SculptMeshEntry = {
   quadIndices?: Uint32Array;
   /** Geometry snapshots taken before each subdivide — allows stepping back down levels. Max 8 levels. */
   subdivStack?: SubdivGeomSnapshot[];
+  /** Poly-edit adjacency — built lazily on first poly-edit use, thrown away (not patched) on any topology change. */
+  topology?: MeshTopology;
 };
+
+/** Result of a poly-edit pick — keeps the exact hit triangle's identity (see getElementHitFromEvent). */
+type PolyEditHit = {
+  entry: SculptMeshEntry;
+  triIndex: number;
+  /** Nearest of the hit triangle's 3 corners to the pointer, in screen space. */
+  vertex: number;
+  /** Nearest of the hit triangle's 3 edges to the pointer, in screen space. */
+  edge: { v0: number; v1: number };
+  /** The hit triangle's logical face — its paired quad if entry.topology has one, else the raw triangle. */
+  face: { kind: "quad"; quadIndex: number; verts: number[] } | { kind: "tri"; triIndex: number; verts: number[] };
+  worldPoint: THREE.Vector3;
+};
+
+export type EditMode = "sculpt" | "poly_edit";
+export type SelectMode = "vertex" | "edge" | "face";
+export type TransformMode = "translate" | "rotate" | "scale";
+
+/** Resolves a poly-edit selection (vertex/edge/face keys) to the concrete vertex
+ * indices it covers — shared by selection highlighting and the transform gizmo,
+ * so both always agree on exactly which vertices "the current selection" means. */
+function selectionVertexIndices(entry: SculptMeshEntry, selection: Set<string>, mode: SelectMode): number[] {
+  const verts = new Set<number>();
+  for (const key of selection) {
+    if (mode === "vertex") {
+      verts.add(Number(key.slice(1)));
+    } else if (mode === "edge") {
+      const [a, b] = key.split("_").map(Number);
+      verts.add(a); verts.add(b);
+    } else if (key.startsWith("q")) {
+      const qi = Number(key.slice(1));
+      entry.topology?.quadCorners[qi]?.forEach((v) => verts.add(v));
+    } else {
+      const ti = Number(key.slice(1));
+      const idx = entry.mesh.geometry.index;
+      if (idx) { verts.add(idx.getX(ti * 3)); verts.add(idx.getX(ti * 3 + 1)); verts.add(idx.getX(ti * 3 + 2)); }
+    }
+  }
+  return [...verts];
+}
+
+/** Canonical selection key for a poly-edit hit, given the active select mode. */
+function keyForHit(hit: PolyEditHit, mode: SelectMode): string {
+  if (mode === "vertex") return `v${hit.vertex}`;
+  if (mode === "edge") return `${Math.min(hit.edge.v0, hit.edge.v1)}_${Math.max(hit.edge.v0, hit.edge.v1)}`;
+  return hit.face.kind === "quad" ? `q${hit.face.quadIndex}` : `t${hit.face.triIndex}`;
+}
 
 const PAINT_TEX_SIZE = 1024;
 export type SculptViewerHandle = {
@@ -165,8 +216,12 @@ type Props = {
   clayColor?: string;
   paintColor?: string;
   dynTopo?: boolean;
+  editMode?: EditMode;
+  selectMode?: SelectMode;
+  transformMode?: TransformMode;
   onModelLoaded?: (vertexCount: number) => void;
   onLoadError?: (msg: string) => void;
+  onSelectionChange?: (count: number) => void;
   handleRef?: React.RefObject<SculptViewerHandle | null>;
 };
 
@@ -180,8 +235,12 @@ export default function SculptViewer({
   clayColor = "#ebe7e1",
   paintColor = "#e8925a",
   dynTopo = false,
+  editMode = "sculpt",
+  selectMode = "vertex",
+  transformMode = "translate",
   onModelLoaded,
   onLoadError,
+  onSelectionChange,
   handleRef,
 }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null);
@@ -219,8 +278,56 @@ export default function SculptViewer({
 
   const onModelLoadedRef = useRef(onModelLoaded);
   const onLoadErrorRef = useRef(onLoadError);
+  const onSelectionChangeRef = useRef(onSelectionChange);
   useEffect(() => { onModelLoadedRef.current = onModelLoaded; }, [onModelLoaded]);
   useEffect(() => { onLoadErrorRef.current = onLoadError; }, [onLoadError]);
+  useEffect(() => { onSelectionChangeRef.current = onSelectionChange; }, [onSelectionChange]);
+
+  // ── poly-edit mode: selection state + transform gizmo ─────────────────────
+  const editModeRef = useRef<EditMode>(editMode);
+  const selectModeRef = useRef<SelectMode>(selectMode);
+  const transformModeRef = useRef<TransformMode>(transformMode);
+  // Selection is scoped to a single mesh entry at a time (documented
+  // simplification vs. sculpt brushes, which already apply across all
+  // entries) — keyed "v{i}" / "{minIdx}_{maxIdx}" / "q{i}" or "t{i}"
+  // depending on selectModeRef.
+  const selectedEntryRef = useRef<SculptMeshEntry | null>(null);
+  const selectionRef = useRef<Set<string>>(new Set());
+  const gizmoPivotRef = useRef<THREE.Object3D | null>(null);
+  const transformControlsRef = useRef<TransformControls | null>(null);
+  // TransformControls itself isn't an Object3D in this three.js version —
+  // its visual representation (added to the scene) is a separate helper,
+  // and .visible lives there, not on the controls instance.
+  const transformHelperRef = useRef<THREE.Object3D | null>(null);
+  // Assigned inside the pointer-events effect (where hit-testing and the
+  // highlight overlay already live) so the mode-change effects below and the
+  // gizmo-drag handlers (set up in the scene-init effect) can reach them
+  // without duplicating selection-resolution logic in three places.
+  const clearPolyEditSelectionRef = useRef<() => void>(() => {});
+  const updateSelectionHighlightPointsRef = useRef<() => void>(() => {});
+
+  useEffect(() => {
+    editModeRef.current = editMode;
+    if (editMode === "poly_edit") {
+      // Lazily build adjacency the first time poly-edit is entered for each
+      // mesh — sculpt-only sessions never pay for it.
+      for (const entry of meshEntriesRef.current) {
+        if (!entry.topology) entry.topology = buildTopology(entry.mesh.geometry, entry.quadIndices);
+      }
+    } else {
+      clearPolyEditSelectionRef.current();
+    }
+  }, [editMode]);
+  useEffect(() => {
+    selectModeRef.current = selectMode;
+    // Selection keys are mode-specific (a "v3" key is meaningless once
+    // selectMode flips to edge/face) — clear rather than try to translate.
+    clearPolyEditSelectionRef.current();
+  }, [selectMode]);
+  useEffect(() => {
+    transformModeRef.current = transformMode;
+    transformControlsRef.current?.setMode(transformMode);
+  }, [transformMode]);
 
   // Material / view-mode refs
   const clayMatRef = useRef<THREE.MeshMatcapMaterial | null>(null);
@@ -390,6 +497,76 @@ export default function SculptViewer({
     scene.add(highlightPoints);
     highlightPointsRef.current = highlightPoints;
 
+    // Poly-edit transform gizmo — attaches to a hidden pivot (not to
+    // individual vertices; TransformControls only ever attaches to one
+    // Object3D) recentered on the selection's centroid whenever the
+    // selection changes. Hidden/disabled until a poly-edit selection exists.
+    const gizmoPivot = new THREE.Object3D();
+    scene.add(gizmoPivot);
+    gizmoPivotRef.current = gizmoPivot;
+
+    const transformControls = new TransformControls(camera, renderer.domElement);
+    transformControls.setMode(transformModeRef.current);
+    transformControls.enabled = false;
+    const transformHelper = transformControls.getHelper();
+    transformHelper.visible = false;
+    scene.add(transformHelper);
+    transformControlsRef.current = transformControls;
+    transformHelperRef.current = transformHelper;
+
+    // Per-vertex offsets (in the pivot's local space at drag start) —
+    // recomputed fresh at the start of every drag, so it doesn't matter that
+    // the pivot's own rotation/scale keep accumulating across drags (the
+    // same way an object's transform accumulates across repeated edits in
+    // any DCC tool).
+    let dragEntry: SculptMeshEntry | null = null;
+    let dragStartOffsets: Map<number, THREE.Vector3> | null = null;
+    let dragStartPivotInv: THREE.Matrix4 | null = null;
+    const _dragWp = new THREE.Vector3();
+
+    function beginGizmoDrag() {
+      const entry = selectedEntryRef.current;
+      const pivot = gizmoPivotRef.current;
+      if (!entry || !pivot) return;
+      undoRef.current.push(meshEntriesRef.current.map((e) => e.mesh));
+      const idxs = selectionVertexIndices(entry, selectionRef.current, selectModeRef.current);
+      const positions = entry.mesh.geometry.attributes.position as THREE.BufferAttribute;
+      dragStartPivotInv = pivot.matrixWorld.clone().invert();
+      dragStartOffsets = new Map();
+      for (const idx of idxs) {
+        _dragWp.fromBufferAttribute(positions, idx).applyMatrix4(entry.mesh.matrixWorld).applyMatrix4(dragStartPivotInv);
+        dragStartOffsets.set(idx, _dragWp.clone());
+      }
+      dragEntry = entry;
+    }
+
+    function applyGizmoDrag() {
+      const pivot = gizmoPivotRef.current;
+      if (!pivot || !dragEntry || !dragStartOffsets) return;
+      const positions = dragEntry.mesh.geometry.attributes.position as THREE.BufferAttribute;
+      const invMesh = dragEntry.mesh.matrixWorld.clone().invert();
+      for (const [idx, offset] of dragStartOffsets) {
+        _dragWp.copy(offset).applyMatrix4(pivot.matrixWorld).applyMatrix4(invMesh);
+        positions.setXYZ(idx, _dragWp.x, _dragWp.y, _dragWp.z);
+      }
+      positions.needsUpdate = true;
+      updateSelectionHighlightPointsRef.current();
+    }
+
+    function endGizmoDrag() {
+      dragEntry?.mesh.geometry.computeVertexNormals();
+      dragEntry = null;
+      dragStartOffsets = null;
+      dragStartPivotInv = null;
+    }
+
+    transformControls.addEventListener("dragging-changed", (event) => {
+      controls.enabled = !event.value;
+      if (event.value) beginGizmoDrag();
+      else endGizmoDrag();
+    });
+    transformControls.addEventListener("objectChange", applyGizmoDrag);
+
     const resize = () => {
       const w = mount.clientWidth || 1;
       const h = mount.clientHeight || 1;
@@ -413,6 +590,7 @@ export default function SculptViewer({
       cancelAnimationFrame(raf);
       ro.disconnect();
       controls.dispose();
+      transformControls.dispose();
       clayMatcapTexRef.current?.dispose();
       clayMatRef.current?.dispose();
       channelMatsRef.current.forEach(m => m.dispose());
@@ -441,6 +619,7 @@ export default function SculptViewer({
     }
     meshEntriesRef.current = [];
     undoRef.current.clear();
+    clearPolyEditSelectionRef.current();
 
     if (!glbData) return;
 
@@ -563,7 +742,10 @@ export default function SculptViewer({
     raycaster.firstHitOnly = true;
     const ndc = new THREE.Vector2();
 
-    function getHitFromEvent(e: PointerEvent): BrushHit | null {
+    // Shared by getHitFromEvent (sculpt brushes) and getElementHitFromEvent
+    // (poly-edit picking) so there's one raycast-over-all-meshes loop, not
+    // two — both just interpret the same three.js Intersection differently.
+    function raycastMeshes(e: PointerEvent): THREE.Intersection | null {
       const rect = renderer!.domElement.getBoundingClientRect();
       ndc.set(
         ((e.clientX - rect.left) / rect.width) * 2 - 1,
@@ -578,6 +760,11 @@ export default function SculptViewer({
           nearest = hits[0];
         }
       }
+      return nearest;
+    }
+
+    function getHitFromEvent(e: PointerEvent): BrushHit | null {
+      const nearest = raycastMeshes(e);
       if (!nearest || !nearest.face) return null;
 
       const normal = nearest.face.normal.clone()
@@ -585,6 +772,61 @@ export default function SculptViewer({
         .normalize();
       lastUVRef.current = nearest.uv ? { uv: nearest.uv.clone(), mesh: nearest.object as THREE.Mesh } : null;
       return { point: nearest.point.clone(), normal };
+    }
+
+    // Poly-edit picking. Unlike getHitFromEvent above, this keeps the exact
+    // hit triangle's identity (nearest.faceIndex/face.a/b/c) instead of
+    // collapsing to just a world point — three.js already computes these
+    // for every mesh raycast, getHitFromEvent just never needed them.
+    function projectToScreen(mesh: THREE.Mesh, vertexIndex: number, rect: DOMRect): { x: number; y: number } {
+      const positions = mesh.geometry.attributes.position as THREE.BufferAttribute;
+      const p = new THREE.Vector3().fromBufferAttribute(positions, vertexIndex).applyMatrix4(mesh.matrixWorld);
+      p.project(cameraRef.current!);
+      return { x: rect.left + (p.x * 0.5 + 0.5) * rect.width, y: rect.top + (-p.y * 0.5 + 0.5) * rect.height };
+    }
+    function pointToSegmentDist(px: number, py: number, x0: number, y0: number, x1: number, y1: number): number {
+      const dx = x1 - x0, dy = y1 - y0;
+      const lenSq = dx * dx + dy * dy;
+      let t = lenSq > 0 ? ((px - x0) * dx + (py - y0) * dy) / lenSq : 0;
+      t = Math.max(0, Math.min(1, t));
+      return Math.hypot(px - (x0 + t * dx), py - (y0 + t * dy));
+    }
+
+    function getElementHitFromEvent(e: PointerEvent): PolyEditHit | null {
+      const nearest = raycastMeshes(e);
+      if (!nearest || !nearest.face || nearest.faceIndex == null) return null;
+      const mesh = nearest.object as THREE.Mesh;
+      const entry = meshEntriesRef.current.find((en) => en.mesh === mesh);
+      if (!entry) return null;
+
+      const { a, b, c } = nearest.face;
+      const rect = renderer!.domElement.getBoundingClientRect();
+      const corners = [a, b, c];
+      const screenPts = corners.map((v) => projectToScreen(mesh, v, rect));
+
+      let vertex = corners[0], bestVertDist = Infinity;
+      for (let i = 0; i < corners.length; i++) {
+        const d = Math.hypot(screenPts[i].x - e.clientX, screenPts[i].y - e.clientY);
+        if (d < bestVertDist) { bestVertDist = d; vertex = corners[i]; }
+      }
+
+      const edgeCandidates: Array<{ v0: number; v1: number; i0: number; i1: number }> = [
+        { v0: a, v1: b, i0: 0, i1: 1 }, { v0: b, v1: c, i0: 1, i1: 2 }, { v0: c, v1: a, i0: 2, i1: 0 },
+      ];
+      let edge = { v0: a, v1: b }, bestEdgeDist = Infinity;
+      for (const cand of edgeCandidates) {
+        const p0 = screenPts[cand.i0], p1 = screenPts[cand.i1];
+        const d = pointToSegmentDist(e.clientX, e.clientY, p0.x, p0.y, p1.x, p1.y);
+        if (d < bestEdgeDist) { bestEdgeDist = d; edge = { v0: cand.v0, v1: cand.v1 }; }
+      }
+
+      const triIndex = nearest.faceIndex;
+      const quadIndex = entry.topology?.triToQuad.get(triIndex);
+      const face: PolyEditHit["face"] = quadIndex !== undefined
+        ? { kind: "quad", quadIndex, verts: entry.topology!.quadCorners[quadIndex] }
+        : { kind: "tri", triIndex, verts: [a, b, c] };
+
+      return { entry, triIndex, vertex, edge, face, worldPoint: nearest.point.clone() };
     }
 
     function updateIndicator(hit: BrushHit | null) {
@@ -652,6 +894,98 @@ export default function SculptViewer({
       points.visible = true;
     }
 
+    // ── poly-edit selection ───────────────────────────────────────────────────
+    // Renders the current poly-edit selection onto the same shared overlay
+    // updateHighlightPoints() above uses for brush-radius hover — the two
+    // never run at once since sculpt and poly-edit are mutually exclusive.
+    function updateSelectionHighlightPoints() {
+      const points = highlightPointsRef.current;
+      if (!points) return;
+      const entry = selectedEntryRef.current;
+      if (!entry || selectionRef.current.size === 0) {
+        points.visible = false;
+        return;
+      }
+      const idxs = selectionVertexIndices(entry, selectionRef.current, selectModeRef.current);
+      const positions = entry.mesh.geometry.attributes.position as THREE.BufferAttribute;
+      const mat = entry.mesh.matrixWorld;
+      const wp = new THREE.Vector3();
+      const world: number[] = [];
+      for (const idx of idxs) {
+        wp.fromBufferAttribute(positions, idx).applyMatrix4(mat);
+        world.push(wp.x, wp.y, wp.z);
+      }
+      points.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(world), 3));
+      points.geometry.attributes.position.needsUpdate = true;
+      points.geometry.computeBoundingSphere();
+      points.visible = true;
+    }
+    updateSelectionHighlightPointsRef.current = updateSelectionHighlightPoints;
+
+    // Recenters the transform gizmo on the selection's centroid, or hides it
+    // when the selection is empty. Rotation/scale reset to identity — pivot
+    // orientation is always world-aligned, a stated V1 simplification.
+    function repositionGizmoToSelection() {
+      const pivot = gizmoPivotRef.current;
+      const tc = transformControlsRef.current;
+      const helper = transformHelperRef.current;
+      if (!pivot || !tc) return;
+      const entry = selectedEntryRef.current;
+      if (!entry || selectionRef.current.size === 0) {
+        tc.enabled = false;
+        if (helper) helper.visible = false;
+        tc.detach();
+        return;
+      }
+      const idxs = selectionVertexIndices(entry, selectionRef.current, selectModeRef.current);
+      const positions = entry.mesh.geometry.attributes.position as THREE.BufferAttribute;
+      const mat = entry.mesh.matrixWorld;
+      const wp = new THREE.Vector3();
+      const centroid = new THREE.Vector3();
+      for (const idx of idxs) {
+        wp.fromBufferAttribute(positions, idx).applyMatrix4(mat);
+        centroid.add(wp);
+      }
+      centroid.divideScalar(idxs.length || 1);
+      pivot.position.copy(centroid);
+      pivot.quaternion.identity();
+      pivot.scale.set(1, 1, 1);
+      pivot.updateMatrixWorld(true);
+      tc.attach(pivot);
+      tc.enabled = true;
+      if (helper) helper.visible = true;
+    }
+
+    function clearPolyEditSelection() {
+      selectionRef.current.clear();
+      selectedEntryRef.current = null;
+      updateSelectionHighlightPoints();
+      repositionGizmoToSelection();
+      onSelectionChangeRef.current?.(0);
+    }
+    clearPolyEditSelectionRef.current = clearPolyEditSelection;
+
+    // Click replaces the selection; shift-click toggles a single element in
+    // or out. Clicking a different mesh entry starts a fresh selection on it
+    // (selection is scoped to one entry at a time — documented limitation).
+    function applyPolyEditSelection(hit: PolyEditHit | null, shift: boolean) {
+      if (!hit) {
+        if (!shift) { selectionRef.current.clear(); selectedEntryRef.current = null; }
+      } else {
+        const key = keyForHit(hit, selectModeRef.current);
+        if (!shift || selectedEntryRef.current !== hit.entry) {
+          selectedEntryRef.current = hit.entry;
+          selectionRef.current = new Set([key]);
+        } else if (selectionRef.current.has(key)) {
+          selectionRef.current.delete(key);
+        } else {
+          selectionRef.current.add(key);
+        }
+      }
+      updateSelectionHighlightPoints();
+      repositionGizmoToSelection();
+      onSelectionChangeRef.current?.(selectionRef.current.size);
+    }
 
     // ── UV texture painting ──────────────────────────────────────────────────
     function applyPaintDab() {
@@ -680,8 +1014,18 @@ export default function SculptViewer({
       entry.hasPaint = true;
     }
 
+    // Poly-edit click-to-select tracks down/up screen distance so an
+    // orbit-camera drag (mousedown, drag, mouseup) doesn't also register as
+    // a selection click — only a near-stationary down/up counts as a click.
+    let polyEditDownPos: { x: number; y: number } | null = null;
+
     function onPointerDown(e: PointerEvent) {
       if (e.button !== 0) return;
+      if (editModeRef.current === "poly_edit") {
+        if (transformControlsRef.current?.dragging) return;
+        polyEditDownPos = { x: e.clientX, y: e.clientY };
+        return;
+      }
       const hit = getHitFromEvent(e);
       if (!hit) return;
 
@@ -716,6 +1060,7 @@ export default function SculptViewer({
     }
 
     function onPointerMove(e: PointerEvent) {
+      if (editModeRef.current === "poly_edit") return; // no hover preview in poly-edit this pass
       const hit = getHitFromEvent(e);
       updateIndicator(hit);
       updateHighlightPoints(hit);
@@ -747,6 +1092,14 @@ export default function SculptViewer({
     }
 
     function onPointerUp(e: PointerEvent) {
+      if (editModeRef.current === "poly_edit") {
+        const down = polyEditDownPos;
+        polyEditDownPos = null;
+        if (transformControlsRef.current?.dragging) return;
+        if (!down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return;
+        applyPolyEditSelection(getElementHitFromEvent(e), e.shiftKey);
+        return;
+      }
       if (!strokeActiveRef.current) return;
       strokeActiveRef.current = false;
       lastHitRef.current = null;
@@ -766,6 +1119,7 @@ export default function SculptViewer({
             anyChanged = true;
             entry.mesh.geometry.boundsTree = new MeshBVH(entry.mesh.geometry);
             entry.seams = buildSeamData(entry.mesh.geometry.attributes.position.array as Float32Array);
+            entry.topology = undefined;
             const wire = entry.mesh.children.find((c) => c.name === "__wire");
             if (wire) {
               entry.mesh.remove(wire);
@@ -784,6 +1138,7 @@ export default function SculptViewer({
         // Topology changed — old position snapshots are now invalid
         if (anyChanged) {
           undoRef.current.clear();
+          clearPolyEditSelectionRef.current();
           onModelLoadedRef.current?.(totalVerts);
         }
       }
@@ -794,8 +1149,12 @@ export default function SculptViewer({
       if (ring) ring.visible = false;
       const innerRing = brushInnerIndicatorRef.current;
       if (innerRing) innerRing.visible = false;
-      const points = highlightPointsRef.current;
-      if (points) points.visible = false;
+      // Poly-edit's selection highlight is persistent state, not a hover
+      // preview — don't hide it just because the pointer left the canvas.
+      if (editModeRef.current !== "poly_edit") {
+        const points = highlightPointsRef.current;
+        if (points) points.visible = false;
+      }
     }
 
     const el = mount;
@@ -952,6 +1311,7 @@ export default function SculptViewer({
     // Subdivision changes topology (new vertex count), so position snapshots from previous
     // sculpt strokes would be invalid after this point. Clear rather than push.
     undoRef.current.clear();
+    clearPolyEditSelectionRef.current();
     let totalVerts = 0;
     for (const entry of meshEntriesRef.current) {
       const { mesh } = entry;
@@ -969,6 +1329,7 @@ export default function SculptViewer({
       mesh.geometry = subdivided;
       mesh.geometry.boundsTree = new MeshBVH(mesh.geometry);
       entry.quadIndices = newQuadIndices; // 4× quads for the next level
+      entry.topology = undefined;
       const posArr = mesh.geometry.attributes.position.array as Float32Array;
       entry.seams = buildSeamData(posArr);
       // Rebuild wireframe overlay
@@ -992,6 +1353,7 @@ export default function SculptViewer({
   const remesh = useCallback(() => {
     if (meshEntriesRef.current.length === 0) return;
     undoRef.current.clear();
+    clearPolyEditSelectionRef.current();
     let totalVerts = 0;
     for (const entry of meshEntriesRef.current) {
       const changed = dynTopoRefine(
@@ -1002,6 +1364,7 @@ export default function SculptViewer({
       if (changed) {
         entry.mesh.geometry.boundsTree = new MeshBVH(entry.mesh.geometry);
         entry.seams = buildSeamData(entry.mesh.geometry.attributes.position.array as Float32Array);
+        entry.topology = undefined;
         const wire = entry.mesh.children.find((c) => c.name === "__wire");
         if (wire) {
           entry.mesh.remove(wire);
@@ -1036,6 +1399,7 @@ export default function SculptViewer({
     }
     meshEntriesRef.current = [];
     undoRef.current.clear();
+    clearPolyEditSelectionRef.current();
     // Build geometry
     const geo = buildPrimitiveGeometry(type);
     geo.computeVertexNormals();
@@ -1099,6 +1463,7 @@ export default function SculptViewer({
     }
     meshEntriesRef.current = [];
     undoRef.current.clear();
+    clearPolyEditSelectionRef.current();
 
     geo.computeVertexNormals();
     if (!geo.index) {
@@ -1149,6 +1514,7 @@ export default function SculptViewer({
     if (entries.length === 0) return false;
     if (!entries[0].subdivStack || entries[0].subdivStack.length === 0) return false;
     undoRef.current.clear();
+    clearPolyEditSelectionRef.current();
     let totalVerts = 0;
     for (const entry of entries) {
       if (!entry.subdivStack || entry.subdivStack.length === 0) continue;
@@ -1157,6 +1523,7 @@ export default function SculptViewer({
       entry.mesh.geometry = snap.geometry;
       entry.mesh.geometry.boundsTree = new MeshBVH(entry.mesh.geometry);
       entry.quadIndices = snap.quadIndices;
+      entry.topology = undefined;
       const posArr = entry.mesh.geometry.attributes.position.array as Float32Array;
       entry.seams = buildSeamData(posArr);
       // Rebuild wireframe overlay
@@ -1199,6 +1566,7 @@ export default function SculptViewer({
     }
     meshEntriesRef.current = [];
     undoRef.current.clear();
+    clearPolyEditSelectionRef.current();
     originalMaterialsRef.current.clear();
     channelMatsRef.current.forEach((m) => m.dispose());
     channelMatsRef.current = [];

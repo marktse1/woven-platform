@@ -40,7 +40,7 @@ const _inv = new THREE.Matrix4();
 const _localCenter = new THREE.Vector3();
 
 /** Returns vertices within world-space radius, with falloffs. */
-function gatherVertices(
+export function gatherVertices(
   positions: THREE.BufferAttribute,
   mesh: THREE.Mesh,
   worldCenter: THREE.Vector3,
@@ -62,7 +62,7 @@ function gatherVertices(
 }
 
 /** Expand a vertex index set to include all UV-seam co-located vertices. */
-function expandSeams(indices: number[], seams: SeamData): Set<number> {
+export function expandSeams(indices: number[], seams: SeamData): Set<number> {
   const out = new Set<number>();
   for (const i of indices) {
     const group = seams.groups[seams.vertToGroup[i]];

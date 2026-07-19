@@ -9,7 +9,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { MeshBVH, acceleratedRaycast } from "three-mesh-bvh";
 import "three-mesh-bvh"; // pulls in BufferGeometry.boundsTree augmentation
 import { buildSeamData, type SeamData } from "@/lib/sculpt/seams";
-import { applyBrush, type BrushMode, type BrushHit } from "@/lib/sculpt/brushes";
+import { applyBrush, gatherVertices, expandSeams, type BrushMode, type BrushHit } from "@/lib/sculpt/brushes";
 import { SculptUndoStack } from "@/lib/sculpt/undo";
 import { computeAvgEdgeLen, dynTopoRefine } from "@/lib/sculpt/dyntopo";
 import { detectQuads, catmullClarkSubdivide } from "@/lib/sculpt/catmullclark";
@@ -195,6 +195,10 @@ export default function SculptViewer({
   const undoRef = useRef(new SculptUndoStack());
   const brushIndicatorRef = useRef<THREE.Mesh | null>(null);
   const brushInnerIndicatorRef = useRef<THREE.Mesh | null>(null);
+  // Shared with poly-edit selection highlighting (added later) — repointed
+  // by whichever call site is active; the two never render at once since
+  // sculpt brushing and poly-edit selection are mutually exclusive modes.
+  const highlightPointsRef = useRef<THREE.Points | null>(null);
   const strokeActiveRef = useRef(false);
   const lastHitRef = useRef<BrushHit | null>(null);
   const lastUVRef = useRef<{ uv: THREE.Vector2; mesh: THREE.Mesh } | null>(null);
@@ -370,6 +374,21 @@ export default function SculptViewer({
     innerRing.renderOrder = 999;
     scene.add(innerRing);
     brushInnerIndicatorRef.current = innerRing;
+
+    // Highlights whichever vertices the brush would currently affect (or,
+    // once poly-edit mode exists, whichever are selected) — an empty
+    // BufferGeometry to start; updateHighlightPoints() rebuilds its
+    // position attribute on every hover/selection change.
+    const highlightGeo = new THREE.BufferGeometry();
+    highlightGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(0), 3));
+    const highlightMat = new THREE.PointsMaterial({
+      color: 0xffe08a, size: 6, sizeAttenuation: false, depthTest: false, transparent: true, opacity: 0.9,
+    });
+    const highlightPoints = new THREE.Points(highlightGeo, highlightMat);
+    highlightPoints.visible = false;
+    highlightPoints.renderOrder = 999;
+    scene.add(highlightPoints);
+    highlightPointsRef.current = highlightPoints;
 
     const resize = () => {
       const w = mount.clientWidth || 1;
@@ -597,6 +616,42 @@ export default function SculptViewer({
       }
     }
 
+    // Highlights every vertex the active brush would actually touch on the
+    // next stroke sample — same gatherVertices()+expandSeams() call the
+    // brush itself uses (brushes.ts), so the highlight can't drift from
+    // real behavior. Paint mode doesn't displace vertices, so it's skipped.
+    function updateHighlightPoints(hit: BrushHit | null) {
+      const points = highlightPointsRef.current;
+      if (!points) return;
+      if (!hit || brushModeRef.current === "paint") {
+        points.visible = false;
+        return;
+      }
+      const r = brushRadiusRef.current;
+      const ir = brushInnerRadiusRef.current;
+      const world: number[] = [];
+      for (const entry of meshEntriesRef.current) {
+        const positions = entry.mesh.geometry.attributes.position as THREE.BufferAttribute;
+        const gathered = gatherVertices(positions, entry.mesh, hit.point, r, ir);
+        if (gathered.length === 0) continue;
+        const allIdx = expandSeams(gathered.map((g) => g.idx), entry.seams);
+        const mat = entry.mesh.matrixWorld;
+        const wp = new THREE.Vector3();
+        for (const idx of allIdx) {
+          wp.fromBufferAttribute(positions, idx).applyMatrix4(mat);
+          world.push(wp.x, wp.y, wp.z);
+        }
+      }
+      if (world.length === 0) {
+        points.visible = false;
+        return;
+      }
+      points.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(world), 3));
+      points.geometry.attributes.position.needsUpdate = true;
+      points.geometry.computeBoundingSphere();
+      points.visible = true;
+    }
+
 
     // ── UV texture painting ──────────────────────────────────────────────────
     function applyPaintDab() {
@@ -663,6 +718,7 @@ export default function SculptViewer({
     function onPointerMove(e: PointerEvent) {
       const hit = getHitFromEvent(e);
       updateIndicator(hit);
+      updateHighlightPoints(hit);
 
       if (!strokeActiveRef.current || !hit) return;
       const prevHit = lastHitRef.current ?? undefined;
@@ -736,6 +792,10 @@ export default function SculptViewer({
     function onPointerLeave() {
       const ring = brushIndicatorRef.current;
       if (ring) ring.visible = false;
+      const innerRing = brushInnerIndicatorRef.current;
+      if (innerRing) innerRing.visible = false;
+      const points = highlightPointsRef.current;
+      if (points) points.visible = false;
     }
 
     const el = mount;

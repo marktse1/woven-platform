@@ -80,7 +80,19 @@ function selectionVertexIndices(entry: SculptMeshEntry, selection: Set<string>, 
       if (idx) { verts.add(idx.getX(ti * 3)); verts.add(idx.getX(ti * 3 + 1)); verts.add(idx.getX(ti * 3 + 2)); }
     }
   }
-  return [...verts];
+  // Expand through UV-seam co-location groups so every coincident copy of a
+  // vertex (three.js primitives split vertices at every hard edge, purely
+  // for per-face UVs — a box has 24 verts, not 8) highlights and moves
+  // together. Without this, dragging one corner of a box with the gizmo
+  // leaves its duplicate copies behind, tearing the mesh open at the seam —
+  // sculpt brushes already avoid this via the same expandSeams() mechanism
+  // (brushes.ts); poly-edit needs the same treatment.
+  const expanded = new Set<number>();
+  for (const v of verts) {
+    const group = entry.seams.groups[entry.seams.vertToGroup[v]];
+    for (const g of group) expanded.add(g);
+  }
+  return [...expanded];
 }
 
 /** Canonical selection key for a poly-edit hit, given the active select mode. */
@@ -1551,6 +1563,7 @@ export default function SculptViewer({
       const { geometry: subdivided, newQuadIndices } = catmullClarkSubdivide(
         mesh.geometry,
         entry.quadIndices ?? new Uint32Array(0),
+        entry.seams,
       );
       mesh.geometry.dispose();
       mesh.geometry = subdivided;

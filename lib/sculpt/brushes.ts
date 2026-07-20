@@ -3,6 +3,7 @@
 
 import * as THREE from "three";
 import type { SeamData } from "./seams";
+import type { MirrorData } from "./mirror";
 
 export type BrushMode = "clay_buildup" | "push" | "smooth" | "flatten" | "move" | "paint";
 
@@ -21,7 +22,30 @@ export type BrushParams = {
   prevHit?: BrushHit;
   mesh: THREE.Mesh;
   seams: SeamData;
+  /** ZBrush-style X-axis symmetry — every mode except "paint" also applies
+   * the equivalent displacement to each affected vertex's mirror partner. */
+  mirror?: MirrorData;
 };
+
+/** For every vertex in `foMap`, finds its mirror partner (seam-expanded) and
+ * carries its falloff over — giving a second falloff map keyed by mirror-side
+ * vertex indices, directly usable the same way the primary foMap already is.
+ * Vertices whose mirror partner is already IN foMap (a selection straddling
+ * the centerline) are skipped, so a stroke near the centerline doesn't double
+ * -apply itself. */
+function mirrorFalloffMap(foMap: Map<number, number>, mirror: MirrorData, seams: SeamData): Map<number, number> {
+  const out = new Map<number, number>();
+  for (const [idx, fo] of foMap) {
+    const midx = mirror.get(idx);
+    if (midx === undefined || midx === idx || foMap.has(midx)) continue;
+    const group = seams.groups[seams.vertToGroup[midx]];
+    for (const j of group) {
+      const prev = out.get(j);
+      if (prev === undefined || fo > prev) out.set(j, fo);
+    }
+  }
+  return out;
+}
 
 /**
  * Falloff with an inner flat zone.
@@ -72,7 +96,7 @@ export function expandSeams(indices: number[], seams: SeamData): Set<number> {
 }
 
 export function applyBrush(params: BrushParams): void {
-  const { mode, radius, innerRadius, strength, hit, mesh, seams, invert = false } = params;
+  const { mode, radius, innerRadius, strength, hit, mesh, seams, invert = false, mirror } = params;
   const positions = mesh.geometry.attributes.position as THREE.BufferAttribute;
 
   _inv.copy(mesh.matrixWorld).invert();
@@ -102,6 +126,17 @@ export function applyBrush(params: BrushParams): void {
       const disp = sign * strength * fo * radius * 0.07;
       positions.setXYZ(idx, positions.getX(idx) + localNormal.x * disp, positions.getY(idx) + localNormal.y * disp, positions.getZ(idx) + localNormal.z * disp);
     }
+    if (mirror) {
+      // clay_buildup moves every vertex along ONE shared direction (the
+      // brush hit normal), so mirroring means reflecting that direction —
+      // not looking up each mirror vertex's own normal.
+      const mFoMap = mirrorFalloffMap(foMap, mirror, seams);
+      const mnx = -localNormal.x, mny = localNormal.y, mnz = localNormal.z;
+      for (const [idx, fo] of mFoMap) {
+        const disp = sign * strength * fo * radius * 0.07;
+        positions.setXYZ(idx, positions.getX(idx) + mnx * disp, positions.getY(idx) + mny * disp, positions.getZ(idx) + mnz * disp);
+      }
+    }
   } else if (mode === "push") {
     const sign = invert ? -1 : 1;
     const allIdx = expandSeams(gathered.map((g) => g.idx), seams);
@@ -126,6 +161,21 @@ export function applyBrush(params: BrushParams): void {
         positions.getY(idx) + nAttr.getY(idx) * disp,
         positions.getZ(idx) + nAttr.getZ(idx) * disp,
       );
+    }
+    if (mirror) {
+      // push already displaces along each vertex's OWN normal — no
+      // reflection needed, the mirror vertex's own normal already points
+      // the geometrically-correct outward direction on its side.
+      const mFoMap = mirrorFalloffMap(foMap, mirror, seams);
+      for (const [idx, fo] of mFoMap) {
+        const disp = sign * strength * fo * radius * 0.05;
+        positions.setXYZ(
+          idx,
+          positions.getX(idx) + nAttr.getX(idx) * disp,
+          positions.getY(idx) + nAttr.getY(idx) * disp,
+          positions.getZ(idx) + nAttr.getZ(idx) * disp,
+        );
+      }
     }
   } else if (mode === "smooth") {
     // Ring-1 Laplacian: each vertex moves toward the average of its topology neighbors.
@@ -169,6 +219,28 @@ export function applyBrush(params: BrushParams): void {
         positions.getZ(idx) * (1 - t) + az * inv * t,
       );
     }
+    if (mirror) {
+      // Laplacian smoothing is inherently local/shape-preserving — no
+      // directional reflection needed, just smooth the mirror vertex
+      // toward ITS OWN neighbors (from the same whole-mesh adjacency map).
+      const mFoMap = mirrorFalloffMap(foMap, mirror, seams);
+      for (const [idx, fo] of mFoMap) {
+        const neighbors = adj.get(idx);
+        if (!neighbors || neighbors.size === 0 || fo === 0) continue;
+        let ax = 0, ay = 0, az = 0;
+        for (const n of neighbors) {
+          ax += positions.getX(n); ay += positions.getY(n); az += positions.getZ(n);
+        }
+        const inv = 1 / neighbors.size;
+        const t = fo * strength * 0.4;
+        positions.setXYZ(
+          idx,
+          positions.getX(idx) * (1 - t) + ax * inv * t,
+          positions.getY(idx) * (1 - t) + ay * inv * t,
+          positions.getZ(idx) * (1 - t) + az * inv * t,
+        );
+      }
+    }
   } else if (mode === "flatten") {
     // Project vertices onto the plane at localHit with normal localNormal.
     const allIdx = expandSeams(gathered.map((g) => g.idx), seams);
@@ -199,6 +271,27 @@ export function applyBrush(params: BrushParams): void {
         vz - localNormal.z * dist * t,
       );
     }
+    if (mirror) {
+      // flatten projects onto ONE shared plane (localHit + localNormal), so
+      // mirroring means reflecting that whole plane across X, not looking
+      // up per-vertex data.
+      const mFoMap = mirrorFalloffMap(foMap, mirror, seams);
+      const mHitX = -localHit.x, mHitY = localHit.y, mHitZ = localHit.z;
+      const mnx = -localNormal.x, mny = localNormal.y, mnz = localNormal.z;
+      for (const [idx, fo] of mFoMap) {
+        const t = fo * strength * 0.3;
+        const vx = positions.getX(idx);
+        const vy = positions.getY(idx);
+        const vz = positions.getZ(idx);
+        const dist = (vx - mHitX) * mnx + (vy - mHitY) * mny + (vz - mHitZ) * mnz;
+        positions.setXYZ(
+          idx,
+          vx - mnx * dist * t,
+          vy - mny * dist * t,
+          vz - mnz * dist * t,
+        );
+      }
+    }
   } else if (mode === "move") {
     if (!params.prevHit) return;
     const localPrev = params.prevHit.point.clone().applyMatrix4(_inv);
@@ -224,6 +317,20 @@ export function applyBrush(params: BrushParams): void {
         positions.getY(idx) + dy * fo,
         positions.getZ(idx) + dz * fo,
       );
+    }
+    if (mirror) {
+      // move uses a world-space (well, local-space) XYZ delta — needs its
+      // X component sign-flipped for the mirror side; Y/Z are unaffected by
+      // reflecting across the X=0 plane.
+      const mFoMap = mirrorFalloffMap(foMap, mirror, seams);
+      for (const [idx, fo] of mFoMap) {
+        positions.setXYZ(
+          idx,
+          positions.getX(idx) + -dx * fo,
+          positions.getY(idx) + dy * fo,
+          positions.getZ(idx) + dz * fo,
+        );
+      }
     }
   }
 

@@ -104,9 +104,9 @@ function ek(a: number, b: number) { return a < b ? `${a}|${b}` : `${b}|${a}`; }
 type EdgeEntry = { v0: number; v1: number; adjQuads: number[] };
 
 /**
- * One level of Catmull-Clark subdivision.
- * Returns the subdivided BufferGeometry (triangulated) and the updated quad
- * indices (4× as many quads) for chaining further levels.
+ * One level of Catmull-Clark (smooth=true) or simple/flat (smooth=false)
+ * subdivision. Returns the subdivided BufferGeometry (triangulated) and the
+ * updated quad indices (4× as many quads) for chaining further levels.
  *
  * `seams` is required for correct adjacency: three.js's built-in primitive
  * generators (BoxGeometry, CylinderGeometry, ...) split every vertex at each
@@ -120,12 +120,23 @@ type EdgeEntry = { v0: number; v1: number; adjQuads: number[] };
  * canonically while still writing each split copy to its own output slot,
  * so UVs stay intact.
  *
- * Falls back to LoopSubdivision when quadIndices is empty.
+ * `smooth = false` gives a simple/flat subdivision that increases density
+ * without rounding the shape: edge points become plain midpoints (no blend
+ * with adjacent face points) and original vertices are left at their exact
+ * input positions (the CC vertex-reposition step is skipped entirely).
+ * Skipping *just* the vertex-reposition step isn't enough on its own — the
+ * edge-point formula also has to drop its face-point blend, or smoothing
+ * still leaks in through the new edge points even with original vertices
+ * unmoved.
+ *
+ * Falls back to LoopSubdivision when quadIndices is empty (smooth is not
+ * consulted in that path).
  */
 export function catmullClarkSubdivide(
   geometry: THREE.BufferGeometry,
   quadIndices: Uint32Array,
   seams: SeamData,
+  smooth: boolean = true,
 ): { geometry: THREE.BufferGeometry; newQuadIndices: Uint32Array } {
   // ── Fallback ────────────────────────────────────────────────────────────────
   if (quadIndices.length === 0) {
@@ -214,7 +225,13 @@ export function catmullClarkSubdivide(
     edgeToIdx.set(k, idx);
     const b = idx * 3;
     const canonQuads = canonAdjQuads.get(ek(canon(v0), canon(v1)))!;
-    if (canonQuads.length === 2) {
+    if (!smooth) {
+      // Simple/flat subdivision: every edge point is a plain midpoint,
+      // regardless of adjacency — no blend with neighboring face points.
+      outPos[b]     = (pos.getX(v0) + pos.getX(v1)) / 2;
+      outPos[b + 1] = (pos.getY(v0) + pos.getY(v1)) / 2;
+      outPos[b + 2] = (pos.getZ(v0) + pos.getZ(v1)) / 2;
+    } else if (canonQuads.length === 2) {
       // Interior edge (possibly split across a UV seam): average this
       // edge's endpoints with BOTH adjacent quads' face points — using
       // canonical adjacency so a box's hard edges get treated as interior
@@ -241,101 +258,105 @@ export function catmullClarkSubdivide(
   }
 
   // ── 4. CC vertex update ──────────────────────────────────────────────────────
+  // Skipped entirely for simple/flat subdivision — original vertices keep
+  // the exact positions already copied into outPos above.
   // Grouped by seam identity so every coincident raw copy of a vertex ends
   // up at the SAME final position (keeping split-vertex primitives
   // watertight) while still writing to its own output slot (preserving any
   // per-face UV) — the position math itself is identical for every copy in
   // a group since they're coincident to begin with.
-  const vertAdjQuadsRaw = new Map<number, Set<number>>();
-  for (let q = 0; q < nQuads; q++) {
-    for (let i = 0; i < 4; i++) {
-      const v = quadIndices[q * 4 + i];
-      if (!vertAdjQuadsRaw.has(v)) vertAdjQuadsRaw.set(v, new Set());
-      vertAdjQuadsRaw.get(v)!.add(q);
-    }
-  }
-  const vertAdjEdgesRaw = new Map<number, EdgeEntry[]>();
-  for (const entry of edgeMap.values()) {
-    for (const v of [entry.v0, entry.v1]) {
-      if (!vertAdjEdgesRaw.has(v)) vertAdjEdgesRaw.set(v, []);
-      vertAdjEdgesRaw.get(v)!.push(entry);
-    }
-  }
-
-  const processedGroups = new Set<number>();
-  for (const v of vertAdjQuadsRaw.keys()) {
-    const groupId = canon(v);
-    if (processedGroups.has(groupId)) continue;
-    processedGroups.add(groupId);
-    const group = seams.groups[groupId];
-
-    // Union of quads/edges touching ANY raw copy in this seam group.
-    const aQuads = new Set<number>();
-    const adjEdgesMap = new Map<string, EdgeEntry>();
-    for (const rv of group) {
-      for (const q of vertAdjQuadsRaw.get(rv) ?? []) aQuads.add(q);
-      for (const e of vertAdjEdgesRaw.get(rv) ?? []) {
-        const ck = ek(canon(e.v0), canon(e.v1));
-        if (!adjEdgesMap.has(ck)) adjEdgesMap.set(ck, e);
+  if (smooth) {
+    const vertAdjQuadsRaw = new Map<number, Set<number>>();
+    for (let q = 0; q < nQuads; q++) {
+      for (let i = 0; i < 4; i++) {
+        const v = quadIndices[q * 4 + i];
+        if (!vertAdjQuadsRaw.has(v)) vertAdjQuadsRaw.set(v, new Set());
+        vertAdjQuadsRaw.get(v)!.add(q);
       }
     }
-    const n = aQuads.size;
-    if (n < 2) continue;
+    const vertAdjEdgesRaw = new Map<number, EdgeEntry[]>();
+    for (const entry of edgeMap.values()) {
+      for (const v of [entry.v0, entry.v1]) {
+        if (!vertAdjEdgesRaw.has(v)) vertAdjEdgesRaw.set(v, []);
+        vertAdjEdgesRaw.get(v)!.push(entry);
+      }
+    }
 
-    const adjEdges = [...adjEdgesMap.values()];
-    // A physical edge is a true boundary only if its CANONICAL adjacency has
-    // just 1 quad — not its raw adjacency, which would flag every hard edge
-    // of a split-vertex primitive as a boundary.
-    const canonQuadsFor = (e: EdgeEntry) => canonAdjQuads.get(ek(canon(e.v0), canon(e.v1))) ?? [];
-    const isBoundary = adjEdges.some((e) => canonQuadsFor(e).length === 1);
+    const processedGroups = new Set<number>();
+    for (const v of vertAdjQuadsRaw.keys()) {
+      const groupId = canon(v);
+      if (processedGroups.has(groupId)) continue;
+      processedGroups.add(groupId);
+      const group = seams.groups[groupId];
 
-    // Representative position — every raw copy in the group is coincident.
-    const vx = pos.getX(v), vy = pos.getY(v), vz = pos.getZ(v);
-    let rx: number, ry: number, rz: number;
-
-    if (isBoundary) {
-      const bEdges = adjEdges.filter((e) => canonQuadsFor(e).length === 1);
-      if (bEdges.length >= 2) {
-        // Boundary vertex: 6:2 weighting of original position vs. the
-        // average of its boundary-edge neighbors (reduces to the standard
-        // (6V + N1 + N2) / 8 crease rule when there are exactly 2, as is
-        // the case for any simple open-rim loop).
-        let mx = 0, my = 0, mz = 0;
-        for (const e of bEdges) {
-          const o = canon(e.v0) === groupId ? e.v1 : e.v0;
-          mx += pos.getX(o); my += pos.getY(o); mz += pos.getZ(o);
+      // Union of quads/edges touching ANY raw copy in this seam group.
+      const aQuads = new Set<number>();
+      const adjEdgesMap = new Map<string, EdgeEntry>();
+      for (const rv of group) {
+        for (const q of vertAdjQuadsRaw.get(rv) ?? []) aQuads.add(q);
+        for (const e of vertAdjEdgesRaw.get(rv) ?? []) {
+          const ck = ek(canon(e.v0), canon(e.v1));
+          if (!adjEdgesMap.has(ck)) adjEdgesMap.set(ck, e);
         }
-        const bn = bEdges.length;
-        rx = (6 * vx + 2 * (mx / bn)) / 8;
-        ry = (6 * vy + 2 * (my / bn)) / 8;
-        rz = (6 * vz + 2 * (mz / bn)) / 8;
+      }
+      const n = aQuads.size;
+      if (n < 2) continue;
+
+      const adjEdges = [...adjEdgesMap.values()];
+      // A physical edge is a true boundary only if its CANONICAL adjacency has
+      // just 1 quad — not its raw adjacency, which would flag every hard edge
+      // of a split-vertex primitive as a boundary.
+      const canonQuadsFor = (e: EdgeEntry) => canonAdjQuads.get(ek(canon(e.v0), canon(e.v1))) ?? [];
+      const isBoundary = adjEdges.some((e) => canonQuadsFor(e).length === 1);
+
+      // Representative position — every raw copy in the group is coincident.
+      const vx = pos.getX(v), vy = pos.getY(v), vz = pos.getZ(v);
+      let rx: number, ry: number, rz: number;
+
+      if (isBoundary) {
+        const bEdges = adjEdges.filter((e) => canonQuadsFor(e).length === 1);
+        if (bEdges.length >= 2) {
+          // Boundary vertex: 6:2 weighting of original position vs. the
+          // average of its boundary-edge neighbors (reduces to the standard
+          // (6V + N1 + N2) / 8 crease rule when there are exactly 2, as is
+          // the case for any simple open-rim loop).
+          let mx = 0, my = 0, mz = 0;
+          for (const e of bEdges) {
+            const o = canon(e.v0) === groupId ? e.v1 : e.v0;
+            mx += pos.getX(o); my += pos.getY(o); mz += pos.getZ(o);
+          }
+          const bn = bEdges.length;
+          rx = (6 * vx + 2 * (mx / bn)) / 8;
+          ry = (6 * vy + 2 * (my / bn)) / 8;
+          rz = (6 * vz + 2 * (mz / bn)) / 8;
+        } else {
+          rx = vx; ry = vy; rz = vz;
+        }
       } else {
-        rx = vx; ry = vy; rz = vz;
+        // Interior: Q = avg face points, R = avg edge midpoints
+        let Qx = 0, Qy = 0, Qz = 0;
+        for (const q of aQuads) { Qx += fpx[q]; Qy += fpy[q]; Qz += fpz[q]; }
+        Qx /= n; Qy /= n; Qz /= n;
+
+        let Rx = 0, Ry = 0, Rz = 0;
+        for (const e of adjEdges) {
+          const o = canon(e.v0) === groupId ? e.v1 : e.v0;
+          Rx += (vx + pos.getX(o)) / 2;
+          Ry += (vy + pos.getY(o)) / 2;
+          Rz += (vz + pos.getZ(o)) / 2;
+        }
+        const ne = adjEdges.length;
+        if (ne > 0) { Rx /= ne; Ry /= ne; Rz /= ne; }
+
+        // CC formula: V' = (Q + 2R + (n-3)S) / n
+        rx = (Qx + 2 * Rx + (n - 3) * vx) / n;
+        ry = (Qy + 2 * Ry + (n - 3) * vy) / n;
+        rz = (Qz + 2 * Rz + (n - 3) * vz) / n;
       }
-    } else {
-      // Interior: Q = avg face points, R = avg edge midpoints
-      let Qx = 0, Qy = 0, Qz = 0;
-      for (const q of aQuads) { Qx += fpx[q]; Qy += fpy[q]; Qz += fpz[q]; }
-      Qx /= n; Qy /= n; Qz /= n;
 
-      let Rx = 0, Ry = 0, Rz = 0;
-      for (const e of adjEdges) {
-        const o = canon(e.v0) === groupId ? e.v1 : e.v0;
-        Rx += (vx + pos.getX(o)) / 2;
-        Ry += (vy + pos.getY(o)) / 2;
-        Rz += (vz + pos.getZ(o)) / 2;
+      for (const rv of group) {
+        outPos[rv * 3] = rx; outPos[rv * 3 + 1] = ry; outPos[rv * 3 + 2] = rz;
       }
-      const ne = adjEdges.length;
-      if (ne > 0) { Rx /= ne; Ry /= ne; Rz /= ne; }
-
-      // CC formula: V' = (Q + 2R + (n-3)S) / n
-      rx = (Qx + 2 * Rx + (n - 3) * vx) / n;
-      ry = (Qy + 2 * Ry + (n - 3) * vy) / n;
-      rz = (Qz + 2 * Rz + (n - 3) * vz) / n;
-    }
-
-    for (const rv of group) {
-      outPos[rv * 3] = rx; outPos[rv * 3 + 1] = ry; outPos[rv * 3 + 2] = rz;
     }
   }
 

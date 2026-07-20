@@ -12,7 +12,7 @@ import {
   signedAssetUrl,
   type AssetRow,
 } from "@/lib/assets";
-import type { SculptViewerHandle, ViewMode, PrimitiveType, EditMode, SelectMode, TransformMode } from "@/components/tools/SculptViewer";
+import type { SculptViewerHandle, ViewMode, PrimitiveType, EditMode, SelectMode, TransformMode, HighlightMode } from "@/components/tools/SculptViewer";
 import type { BrushMode } from "@/lib/sculpt/brushes";
 import type * as THREE from "three";
 
@@ -106,9 +106,11 @@ const MODE_KEY: Record<string, BrushMode> = {
   c: "clay_buildup", q: "push", e: "smooth", r: "flatten", t: "move", p: "paint",
 };
 
+// "wireframe" is no longer a selectable view mode here — it's superseded by
+// the independent Wireframe toggle (below), which overlays on top of any of
+// these instead of being its own mutually-exclusive mode.
 const VIEW_MODES: { mode: ViewMode; label: string }[] = [
   { mode: "combined",  label: "Combined" },
-  { mode: "wireframe", label: "Wireframe" },
   { mode: "clay",      label: "Clay" },
   { mode: "albedo",    label: "Albedo" },
   { mode: "ao",        label: "AO" },
@@ -161,6 +163,11 @@ export default function MeshSculptClient() {
   const [showPrimitives, setShowPrimitives] = useState(false);
   const [clayColor, setClayColor] = useState("#ebe7e1");
   const [dynTopo, setDynTopo] = useState(false);
+  const [showWireframe, setShowWireframe] = useState(false);
+  const [showGrid, setShowGrid] = useState(true);
+  const [highlightMode, setHighlightMode] = useState<HighlightMode>("all");
+  const [smoothSubdivide, setSmoothSubdivide] = useState(true);
+  const [mirrorMode, setMirrorMode] = useState(false);
   const [compressKtx2, setCompressKtx2] = useState(true);
 
   const [editMode, setEditMode] = useState<EditMode>("sculpt");
@@ -172,7 +179,6 @@ export default function MeshSculptClient() {
   const [loopPreview, setLoopPreview] = useState<{ edgeCount: number; boundary: boolean; closed: boolean } | null>(null);
 
   const viewerHandleRef = useRef<SculptViewerHandle | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Mesh Sculptor no longer keeps its own "browse my assets" list — the
   // global My Assets panel (app/layout.tsx) is the universal loader now.
@@ -193,9 +199,10 @@ export default function MeshSculptClient() {
     name: string,
     bytes: ArrayBuffer,
     polyCount?: number,
+    derivedFromAssetId?: string,
   ): Promise<{ asset: AssetRow; compressed: boolean }> => {
     if (!user?.id) throw new Error("Not signed in.");
-    const asset = await uploadAsset({ userId: user.id, name, bytes, visibility: "private", polyCount });
+    const asset = await uploadAsset({ userId: user.id, name, bytes, visibility: "private", polyCount, derivedFromAssetId });
     if (!compressKtx2) return { asset, compressed: false };
     try {
       const res = await fetch("/api/glb/compress-ktx2", {
@@ -387,6 +394,12 @@ export default function MeshSculptClient() {
         setEditMode((m) => (m === "sculpt" ? "poly_edit" : "sculpt"));
         return;
       }
+      // Above the poly_edit branch (like Tab) so it works in both modes —
+      // ZBrush-style symmetry applies to sculpt strokes and poly-edit alike.
+      if (e.key.toLowerCase() === "m") {
+        setMirrorMode((m) => !m);
+        return;
+      }
       if (editMode === "poly_edit") {
         // Blender-style select-mode/transform-mode shortcuts, scoped to
         // poly-edit only — no conflict with the sculpt brush shortcuts below
@@ -445,6 +458,7 @@ export default function MeshSculptClient() {
         `${selectedAsset?.name ?? "sculpted-mesh"}-sculpted${exportLevel > 0 ? `-level${exportLevel}` : ""}.glb`,
         bytes.buffer as ArrayBuffer,
         vertexCount ?? undefined,
+        selectedAsset?.id,
       );
       setSaveMsg(compressKtx2 && !compressed ? "Saved (uncompressed — texture compression failed)." : "Saved to library.");
       notifyAssetsChanged();
@@ -456,7 +470,7 @@ export default function MeshSculptClient() {
   if (!isLoaded || creatorStatus === "loading") return null;
 
   if (!user) return (
-    <main className="min-h-[calc(100vh-73px)] bg-[#0c0a08] flex items-center justify-center">
+    <main className="tool-min-h bg-[#0c0a08] flex items-center justify-center">
       <div className="text-center">
         <p className="text-dim text-sm mb-4">Sign in to use Mesh Sculptor.</p>
         <Link href="/sign-in" className="px-4 py-2 bg-accent text-white rounded-md text-sm">Sign in</Link>
@@ -469,10 +483,10 @@ export default function MeshSculptClient() {
   const activeDef = BRUSH_MODES.find((m) => m.mode === brushMode)!;
 
   return (
-    <main className="min-h-[calc(100vh-73px)] bg-[#0c0a08] flex" style={{ height: "calc(100vh - 73px)" }}>
+    <main className="tool-h bg-[#0c0a08] flex">
 
       {/* ── LEFT SIDEBAR ── */}
-      <aside className="w-60 flex-shrink-0 border-r border-[#2a2320] flex flex-col overflow-hidden">
+      <aside className="w-60 flex-shrink-0 border-r border-[#2a2320] flex flex-col overflow-y-auto">
         <div className="px-4 py-3 border-b border-[#2a2320]">
           <h1 className="text-sm font-semibold text-ink">Mesh Sculptor</h1>
           <p className="text-[11px] text-dim mt-0.5">Brush-based vertex sculpting</p>
@@ -481,25 +495,8 @@ export default function MeshSculptClient() {
         <div className="px-4 py-3 border-b border-[#2a2320]">
           <p className="text-[11px] font-medium text-dim uppercase tracking-wide mb-2">Load Mesh</p>
           <p className="text-[11px] text-dim">
-            Open the <span className="text-ink">My Assets</span> panel (right edge) to load a saved .glb, or import a file directly:
+            Open the <span className="text-ink">My Assets</span> panel (right edge) to load a saved .glb, or drop a .glb/.drc/.obj/.stl file onto the canvas.
           </p>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".glb,.drc,.obj,.stl"
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) handleLocalFile(file);
-              e.target.value = "";
-            }}
-          />
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="w-full mt-2 py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors"
-            title="Load a .glb, .drc, .obj, or .stl file directly from disk">
-            Load from disk…
-          </button>
           {loadingAsset && <p className="text-[11px] text-dim mt-2">Loading…</p>}
           {loadError    && <p className="text-[11px] text-red-400 mt-2">{loadError}</p>}
           {uploadMsg    && !loadError && <p className="text-[11px] text-green-400 mt-1">{uploadMsg}</p>}
@@ -624,6 +621,21 @@ export default function MeshSculptClient() {
             </label>
           ))}
 
+          {/* Brush-radius vertex highlight density — "all" gets visually
+              noisy on dense/subdivided meshes */}
+          <label className="block mb-4">
+            <div className="text-[11px] text-dim mb-1">Highlight</div>
+            <div className="flex gap-1">
+              {([["center", "Center"], ["all", "All"], ["none", "None"]] as [HighlightMode, string][]).map(([m, label]) => (
+                <button key={m} onClick={() => setHighlightMode(m)}
+                  className="flex-1 py-1.5 rounded text-[11px] font-medium transition-colors"
+                  style={{ background: highlightMode === m ? "rgba(196,123,232,.22)" : "#1e1a17", color: highlightMode === m ? PURPLE : "#8aa0b4" }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </label>
+
           <div className="flex gap-2 mt-4">
             <button onClick={() => viewerHandleRef.current?.undo()}
               className="flex-1 py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors" title="Ctrl+Z">Undo</button>
@@ -654,6 +666,22 @@ export default function MeshSculptClient() {
               <span className="text-[11px] text-dim">Subdivision</span>
               <span className="text-[11px] text-ink">Level {subdivLevel}</span>
             </div>
+            <div className="flex gap-1 mb-1">
+              <button
+                onClick={() => setSmoothSubdivide(true)}
+                title="Catmull-Clark — rounds the shape as it densifies"
+                className="flex-1 py-1 rounded text-[10.5px] font-medium transition-colors"
+                style={{ background: smoothSubdivide ? "rgba(196,123,232,.22)" : "#1e1a17", color: smoothSubdivide ? PURPLE : "#8aa0b4" }}>
+                Smooth
+              </button>
+              <button
+                onClick={() => setSmoothSubdivide(false)}
+                title="Simple — adds density without changing the shape"
+                className="flex-1 py-1 rounded text-[10.5px] font-medium transition-colors"
+                style={{ background: !smoothSubdivide ? "rgba(196,123,232,.22)" : "#1e1a17", color: !smoothSubdivide ? PURPLE : "#8aa0b4" }}>
+                Simple
+              </button>
+            </div>
             <div className="flex gap-1">
               <button
                 onClick={() => {
@@ -672,7 +700,7 @@ export default function MeshSculptClient() {
                 }}
                 disabled={vertexCount == null || (vertexCount * 4 > 1_000_000)}
                 className="flex-1 py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                title="Catmull-Clark subdivision — each level ≈ 4× triangle count">
+                title={smoothSubdivide ? "Catmull-Clark subdivision — each level ≈ 4× triangle count" : "Simple subdivision — adds density without rounding the shape"}>
                 ▲ Up
               </button>
             </div>
@@ -813,10 +841,45 @@ export default function MeshSculptClient() {
           <div className="flex items-center px-1">
             <button
               onClick={() => setDynTopo((d) => !d)}
-              title="Dynamic Topology — auto-splits long edges after each stroke"
+              title="Dynamic Topology: automatically adds geometry where you're sculpting. After each stroke, any triangle stretched past 1.5x the mesh's original edge length gets split — so detail stays smooth exactly where you're working, without needing to pre-subdivide the whole mesh. Areas you haven't touched stay at their original density."
               className="px-2.5 py-1.5 rounded text-[11px] font-medium transition-colors"
               style={{ background: dynTopo ? PURPLE : "transparent", color: dynTopo ? "#fff" : "#8aa0b4" }}>
               DynTopo
+            </button>
+          </div>
+
+          {/* Wireframe overlay toggle — independent of view mode, shows on
+              top of Combined/Clay/Albedo/AO alike */}
+          <div className="flex items-center px-1">
+            <button
+              onClick={() => setShowWireframe((w) => !w)}
+              title="Show mesh wireframe on top of the current view mode"
+              className="px-2.5 py-1.5 rounded text-[11px] font-medium transition-colors"
+              style={{ background: showWireframe ? PURPLE : "transparent", color: showWireframe ? "#fff" : "#8aa0b4" }}>
+              Wireframe
+            </button>
+          </div>
+
+          {/* Ground reference grid toggle */}
+          <div className="flex items-center px-1">
+            <button
+              onClick={() => setShowGrid((g) => !g)}
+              title="Show the ground reference grid"
+              className="px-2.5 py-1.5 rounded text-[11px] font-medium transition-colors"
+              style={{ background: showGrid ? PURPLE : "transparent", color: showGrid ? "#fff" : "#8aa0b4" }}>
+              Grid
+            </button>
+          </div>
+
+          {/* Mirror (X-axis symmetry) toggle — ZBrush-style, mirrors both
+              brush strokes and poly-edit selection/transforms */}
+          <div className="flex items-center px-1">
+            <button
+              onClick={() => setMirrorMode((m) => !m)}
+              title="Mirror sculpting and poly-edit across the X axis (M)"
+              className="px-2.5 py-1.5 rounded text-[11px] font-medium transition-colors"
+              style={{ background: mirrorMode ? PURPLE : "transparent", color: mirrorMode ? "#fff" : "#8aa0b4" }}>
+              Mirror
             </button>
           </div>
 
@@ -901,6 +964,11 @@ export default function MeshSculptClient() {
             viewMode={viewMode}
             clayColor={clayColor}
             dynTopo={dynTopo}
+            wireframeOverlay={showWireframe}
+            showGrid={showGrid}
+            highlightMode={highlightMode}
+            smoothSubdivide={smoothSubdivide}
+            mirrorMode={mirrorMode}
             editMode={editMode}
             selectMode={selectMode}
             transformMode={transformMode}

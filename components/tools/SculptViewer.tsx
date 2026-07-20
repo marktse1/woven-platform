@@ -17,6 +17,7 @@ import { computeAvgEdgeLen, dynTopoRefine } from "@/lib/sculpt/dyntopo";
 import { detectQuads, catmullClarkSubdivide } from "@/lib/sculpt/catmullclark";
 import { buildTopology, walkEdgeLoop, type MeshTopology, type EdgeLoop } from "@/lib/sculpt/topology";
 import { extrudeFaces as extrudeFacesLib, extrudeEdgeLoop as extrudeEdgeLoopLib, findGeometryIssues, type ExtrudeFace } from "@/lib/sculpt/extrude";
+import { buildMirrorData, type MirrorData } from "@/lib/sculpt/mirror";
 import * as BufferGeometryUtils from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
 // Patch Three.js raycaster to use BVH acceleration
@@ -41,6 +42,10 @@ type SculptMeshEntry = {
   subdivStack?: SubdivGeomSnapshot[];
   /** Poly-edit adjacency — built lazily on first poly-edit use, thrown away (not patched) on any topology change. */
   topology?: MeshTopology;
+  /** X-axis mirror pairs for symmetric sculpting — built lazily the first
+   * time mirror mode is turned on, thrown away (not patched) on any
+   * topology change, same as topology above. */
+  mirror?: MirrorData;
 };
 
 /** Result of a poly-edit pick — keeps the exact hit triangle's identity (see getElementHitFromEvent). */
@@ -59,11 +64,19 @@ type PolyEditHit = {
 export type EditMode = "sculpt" | "poly_edit";
 export type SelectMode = "vertex" | "edge" | "face";
 export type TransformMode = "translate" | "rotate" | "scale";
+/** Brush-radius vertex highlight density — "all" gets visually noisy on
+ * dense/subdivided meshes. */
+export type HighlightMode = "center" | "all" | "none";
 
 /** Resolves a poly-edit selection (vertex/edge/face keys) to the concrete vertex
  * indices it covers — shared by selection highlighting and the transform gizmo,
  * so both always agree on exactly which vertices "the current selection" means. */
-function selectionVertexIndices(entry: SculptMeshEntry, selection: Set<string>, mode: SelectMode): number[] {
+function selectionVertexIndices(
+  entry: SculptMeshEntry,
+  selection: Set<string>,
+  mode: SelectMode,
+  includeMirror = false,
+): number[] {
   const verts = new Set<number>();
   for (const key of selection) {
     if (mode === "vertex") {
@@ -91,6 +104,20 @@ function selectionVertexIndices(entry: SculptMeshEntry, selection: Set<string>, 
   for (const v of verts) {
     const group = entry.seams.groups[entry.seams.vertToGroup[v]];
     for (const g of group) expanded.add(g);
+  }
+  // Mirror mode: also show/select each vertex's X-axis mirror partner —
+  // "1 vert on each side" per ZBrush's own symmetry visualization. Only
+  // for highlighting/selection display — the transform gizmo deliberately
+  // does NOT fold mirror vertices into this same set (see beginGizmoDrag),
+  // since a uniformly-applied transform would be wrong for the mirror side
+  // (a +X translate must become -X on the other side, not repeat as +X).
+  if (includeMirror && entry.mirror) {
+    for (const v of [...expanded]) {
+      const mv = entry.mirror.get(v);
+      if (mv === undefined) continue;
+      const group = entry.seams.groups[entry.seams.vertToGroup[mv]];
+      for (const g of group) expanded.add(g);
+    }
   }
   return [...expanded];
 }
@@ -140,6 +167,69 @@ function resolveSeedLoop(entry: SculptMeshEntry, selection: Set<string>): EdgeLo
   const [v0, v1] = first.split("_").map(Number);
   if (!Number.isFinite(v0) || !Number.isFinite(v1)) return null;
   return walkEdgeLoop(topo, v0, v1);
+}
+
+/** Lazily builds (and caches on the entry) this mesh's X-axis mirror-pair
+ * data — same invalidation lifetime as entry.topology (thrown away, not
+ * patched, on any topology change). */
+function ensureMirror(entry: SculptMeshEntry): MirrorData {
+  if (!entry.mirror) {
+    const cellSize = entry.baseEdgeLen && entry.baseEdgeLen > 1e-6 ? entry.baseEdgeLen : 0.05;
+    entry.mirror = buildMirrorData(entry.mesh.geometry.attributes.position.array as Float32Array, cellSize);
+  }
+  return entry.mirror;
+}
+
+/**
+ * Builds a wireframe overlay whose position buffer is the SAME BufferAttribute
+ * object as the source geometry's — not a copy. THREE.WireframeGeometry bakes
+ * a brand-new, independent position array at construction time, so it never
+ * reflects later position edits (brush strokes, the poly-edit transform
+ * gizmo) unless explicitly rebuilt; sharing the attribute means those edits
+ * (positions.needsUpdate = true) show up on the wire for free, every frame,
+ * with zero rebuild cost. Only the edge INDEX needs rebuilding, and only when
+ * topology actually changes — the same sites that already call this.
+ */
+function buildWireOverlay(geometry: THREE.BufferGeometry, material: THREE.LineBasicMaterial): THREE.LineSegments {
+  const wireGeo = new THREE.BufferGeometry();
+  wireGeo.setAttribute("position", geometry.attributes.position);
+  const index = geometry.index;
+  if (index) {
+    const seen = new Set<number>();
+    const edgeIdx: number[] = [];
+    const triCount = index.count / 3;
+    for (let t = 0; t < triCount; t++) {
+      const a = index.getX(t * 3), b = index.getX(t * 3 + 1), c = index.getX(t * 3 + 2);
+      for (const [x, y] of [[a, b], [b, c], [c, a]] as [number, number][]) {
+        const key = x < y ? x * 4_194_304 + y : y * 4_194_304 + x; // 2^22 — safe well beyond this tool's 1M-vertex cap
+        if (seen.has(key)) continue;
+        seen.add(key);
+        edgeIdx.push(x, y);
+      }
+    }
+    wireGeo.setIndex(new THREE.BufferAttribute(new Uint32Array(edgeIdx), 1));
+  }
+  const wire = new THREE.LineSegments(wireGeo, material);
+  wire.name = "__wire";
+  wire.renderOrder = 999;
+  return wire;
+}
+
+// Clay's default light, near-uniform color needs a dark line to read clearly
+// (a light/white line all but disappears on it); every other view (Combined/
+// Albedo/AO) has busier, more varied underlying color where the original
+// neutral white reads fine. High opacity plus depthTest:false keeps the wire
+// visible on top of the surface either way. linewidth is set for correctness
+// but WebGL ignores it on nearly every browser/GPU combo (a long-standing
+// spec limitation, not a bug here) — true adjustable thickness needs
+// three.js's fat-line renderer (Line2/LineMaterial), a heavier swap not made
+// here.
+const WIRE_COLOR_CLAY = 0x453c34;
+const WIRE_COLOR_DEFAULT = 0xffffff;
+const WIRE_OPACITY = 0.85;
+
+function wireColorFor(vm: ViewMode): number {
+  return vm === "clay" ? WIRE_COLOR_CLAY : WIRE_COLOR_DEFAULT;
 }
 
 const PAINT_TEX_SIZE = 1024;
@@ -279,6 +369,19 @@ type Props = {
   clayColor?: string;
   paintColor?: string;
   dynTopo?: boolean;
+  /** Smooth (Catmull-Clark) vs. simple/flat subdivision for the NEXT "Up" press. */
+  smoothSubdivide?: boolean;
+  /** Independent of viewMode — shows the wireframe overlay on top of
+   * whichever view is active (combined/clay/albedo/ao), not just the
+   * dedicated "wireframe" view mode. */
+  wireframeOverlay?: boolean;
+  /** Ground reference grid. Defaults to visible (existing behavior). */
+  showGrid?: boolean;
+  /** Brush-radius vertex highlight density. Defaults to "all" (existing behavior). */
+  highlightMode?: HighlightMode;
+  /** ZBrush-style X-axis symmetry — mirrors sculpt strokes and poly-edit
+   * selection/transforms across the X=0 plane. */
+  mirrorMode?: boolean;
   editMode?: EditMode;
   selectMode?: SelectMode;
   transformMode?: TransformMode;
@@ -303,6 +406,11 @@ export default function SculptViewer({
   clayColor = "#ebe7e1",
   paintColor = "#e8925a",
   dynTopo = false,
+  smoothSubdivide = true,
+  wireframeOverlay = false,
+  showGrid = true,
+  highlightMode = "all",
+  mirrorMode = false,
   editMode = "sculpt",
   selectMode = "vertex",
   transformMode = "translate",
@@ -327,10 +435,18 @@ export default function SculptViewer({
   const topoUndoRef = useRef(new TopoUndoStack());
   const brushIndicatorRef = useRef<THREE.Mesh | null>(null);
   const brushInnerIndicatorRef = useRef<THREE.Mesh | null>(null);
+  /** Shows where a mirrored stroke would land, while mirror mode is on. */
+  const mirrorIndicatorRef = useRef<THREE.Mesh | null>(null);
+  const gridRef = useRef<THREE.GridHelper | null>(null);
   // Shared with poly-edit selection highlighting (added later) — repointed
   // by whichever call site is active; the two never render at once since
   // sculpt brushing and poly-edit selection are mutually exclusive modes.
   const highlightPointsRef = useRef<THREE.Points | null>(null);
+  /** Edge-mode selection: a real line segment per selected edge, instead of
+   * just the two disconnected corner dots highlightPointsRef would show. */
+  const edgeHighlightRef = useRef<THREE.LineSegments | null>(null);
+  /** Face-mode selection: a translucent fill over each selected face. */
+  const faceHighlightRef = useRef<THREE.Mesh | null>(null);
   const strokeActiveRef = useRef(false);
   const lastHitRef = useRef<BrushHit | null>(null);
   const lastUVRef = useRef<{ uv: THREE.Vector2; mesh: THREE.Mesh } | null>(null);
@@ -338,6 +454,37 @@ export default function SculptViewer({
   const shiftDownRef = useRef(false);
   const dynTopoRef = useRef(false);
   useEffect(() => { dynTopoRef.current = dynTopo; }, [dynTopo]);
+  const smoothSubdivideRef = useRef(true);
+  useEffect(() => { smoothSubdivideRef.current = smoothSubdivide; }, [smoothSubdivide]);
+
+  const wireframeOverlayRef = useRef(false);
+  useEffect(() => {
+    wireframeOverlayRef.current = wireframeOverlay;
+    // Toggle immediately, independent of viewMode — no need to also touch
+    // material state via applyViewToGroup for a pure visibility flip.
+    const group = modelRef.current;
+    if (!group) return;
+    group.traverse((o) => {
+      if (o.name === "__wire") o.visible = viewModeRef.current === "wireframe" || wireframeOverlay;
+    });
+  }, [wireframeOverlay]);
+
+  useEffect(() => {
+    if (gridRef.current) gridRef.current.visible = showGrid;
+  }, [showGrid]);
+
+  const highlightModeRef = useRef<HighlightMode>(highlightMode);
+  useEffect(() => { highlightModeRef.current = highlightMode; }, [highlightMode]);
+  const mirrorModeRef = useRef(false);
+  useEffect(() => {
+    mirrorModeRef.current = mirrorMode;
+    // Build (or reuse the cached) mirror data for every currently-loaded
+    // entry the moment mirror mode turns on, so it's ready for both brush
+    // strokes and poly-edit selection/gizmo use without a first-use hitch.
+    if (mirrorMode) {
+      for (const entry of meshEntriesRef.current) ensureMirror(entry);
+    }
+  }, [mirrorMode]);
 
   // Keep latest brush params accessible from pointer handlers without stale closures
   const brushModeRef = useRef(brushMode);
@@ -380,6 +527,7 @@ export default function SculptViewer({
   // without duplicating selection-resolution logic in three places.
   const clearPolyEditSelectionRef = useRef<() => void>(() => {});
   const updateSelectionHighlightPointsRef = useRef<() => void>(() => {});
+  const repositionGizmoToSelectionRef = useRef<() => void>(() => {});
   // Directly sets the selection to a specific key set (e.g. the new cap
   // face(s) after an extrude) rather than resolving it from a pointer hit.
   const setPolyEditSelectionRef = useRef<(entry: SculptMeshEntry, keys: string[]) => void>(() => {});
@@ -442,7 +590,11 @@ export default function SculptViewer({
     channelMatsRef.current = [];
     group.traverse((o) => {
       // Handle wire overlays first — LineSegments are not isMesh
-      if (o.name === "__wire") { o.visible = vm === "wireframe"; return; }
+      if (o.name === "__wire") {
+        o.visible = vm === "wireframe" || wireframeOverlayRef.current;
+        if (wireMatRef.current) wireMatRef.current.color.setHex(wireColorFor(vm));
+        return;
+      }
       const m = o as THREE.Mesh;
       if (!m.isMesh) return;
       const orig = originalMaterialsRef.current.get(m.uuid);
@@ -541,7 +693,9 @@ export default function SculptViewer({
     const grid = new THREE.GridHelper(10, 20, 0x6b5d52, 0x3d3530);
     (grid.material as THREE.Material).transparent = true;
     (grid.material as THREE.Material).opacity = 0.4;
+    grid.visible = showGrid;
     scene.add(grid);
+    gridRef.current = grid;
 
     // Brush indicator rings: outer = full radius, inner = focal zone
     const ringGeo = new THREE.TorusGeometry(1, 0.008, 6, 48);
@@ -560,6 +714,17 @@ export default function SculptViewer({
     scene.add(innerRing);
     brushInnerIndicatorRef.current = innerRing;
 
+    // Mirror-point indicator — a small solid dot at the mirrored hit
+    // location while mirror mode is on, so the mirrored stroke's target is
+    // visibly shown (not just implicitly mirrored).
+    const mirrorGeo = new THREE.SphereGeometry(1, 12, 8);
+    const mirrorMat = new THREE.MeshBasicMaterial({ color: 0x5ad1ff, depthTest: false, transparent: true, opacity: 0.8 });
+    const mirrorDot = new THREE.Mesh(mirrorGeo, mirrorMat);
+    mirrorDot.visible = false;
+    mirrorDot.renderOrder = 999;
+    scene.add(mirrorDot);
+    mirrorIndicatorRef.current = mirrorDot;
+
     // Highlights whichever vertices the brush would currently affect (or,
     // once poly-edit mode exists, whichever are selected) — an empty
     // BufferGeometry to start; updateHighlightPoints() rebuilds its
@@ -574,6 +739,32 @@ export default function SculptViewer({
     highlightPoints.renderOrder = 999;
     scene.add(highlightPoints);
     highlightPointsRef.current = highlightPoints;
+
+    // Poly-edit edge/face selection shape overlays — real geometry instead
+    // of just corner dots, so a selected edge/face is visually distinct
+    // from a scattering of individually-selected vertices. Empty to start;
+    // rebuilt by updateSelectionHighlightPoints() below.
+    const edgeHighlightGeo = new THREE.BufferGeometry();
+    edgeHighlightGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(0), 3));
+    const edgeHighlightMat = new THREE.LineBasicMaterial({
+      color: 0xc47be8, depthTest: false, transparent: true, opacity: 0.9,
+    });
+    const edgeHighlight = new THREE.LineSegments(edgeHighlightGeo, edgeHighlightMat);
+    edgeHighlight.visible = false;
+    edgeHighlight.renderOrder = 999;
+    scene.add(edgeHighlight);
+    edgeHighlightRef.current = edgeHighlight;
+
+    const faceHighlightGeo = new THREE.BufferGeometry();
+    faceHighlightGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(0), 3));
+    const faceHighlightMat = new THREE.MeshBasicMaterial({
+      color: 0xc47be8, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthTest: false,
+    });
+    const faceHighlight = new THREE.Mesh(faceHighlightGeo, faceHighlightMat);
+    faceHighlight.visible = false;
+    faceHighlight.renderOrder = 999;
+    scene.add(faceHighlight);
+    faceHighlightRef.current = faceHighlight;
 
     // Poly-edit transform gizmo — attaches to a hidden pivot (not to
     // individual vertices; TransformControls only ever attaches to one
@@ -600,7 +791,20 @@ export default function SculptViewer({
     let dragEntry: SculptMeshEntry | null = null;
     let dragStartOffsets: Map<number, THREE.Vector3> | null = null;
     let dragStartPivotInv: THREE.Matrix4 | null = null;
+    // Mirror partners are NOT folded into dragStartOffsets/the pivot-relative
+    // group above — a transform uniformly applied to both sides would be
+    // wrong (a +X translate must become -X on the mirror side, a rotation
+    // must flip handedness, not repeat identically). Instead each mirror
+    // vertex keeps its own drag-start WORLD position, and applyGizmoDrag
+    // applies a REFLECTED copy of the pivot's own delta transform to it —
+    // reflecting a transform across a plane is R * M * R (R = the reflection
+    // matrix, its own inverse), a standard construction, verified standalone
+    // for translate/rotate/scale before being wired in here.
+    let dragStartMirrorOffsets: Map<number, THREE.Vector3> | null = null;
     const _dragWp = new THREE.Vector3();
+    const _dragDelta = new THREE.Matrix4();
+    const _dragReflected = new THREE.Matrix4();
+    const _dragReflectR = new THREE.Matrix4().makeScale(-1, 1, 1);
 
     function beginGizmoDrag() {
       const entry = selectedEntryRef.current;
@@ -616,6 +820,20 @@ export default function SculptViewer({
         dragStartOffsets.set(idx, _dragWp.clone());
       }
       dragEntry = entry;
+
+      dragStartMirrorOffsets = null;
+      if (mirrorModeRef.current) {
+        const mirrorData = ensureMirror(entry);
+        const idxSet = new Set(idxs);
+        const map = new Map<number, THREE.Vector3>();
+        for (const idx of idxs) {
+          const midx = mirrorData.get(idx);
+          if (midx === undefined || midx === idx || idxSet.has(midx) || map.has(midx)) continue;
+          const wp = new THREE.Vector3().fromBufferAttribute(positions, midx).applyMatrix4(entry.mesh.matrixWorld);
+          map.set(midx, wp);
+        }
+        if (map.size > 0) dragStartMirrorOffsets = map;
+      }
     }
 
     function applyGizmoDrag() {
@@ -627,6 +845,17 @@ export default function SculptViewer({
         _dragWp.copy(offset).applyMatrix4(pivot.matrixWorld).applyMatrix4(invMesh);
         positions.setXYZ(idx, _dragWp.x, _dragWp.y, _dragWp.z);
       }
+      if (dragStartMirrorOffsets && dragStartPivotInv) {
+        // World-space delta the pivot has undergone since drag start...
+        _dragDelta.multiplyMatrices(pivot.matrixWorld, dragStartPivotInv);
+        // ...reflected across X=0 (R * delta * R, R its own inverse) so it's
+        // the mirror-consistent version of the same gesture.
+        _dragReflected.copy(_dragReflectR).multiply(_dragDelta).multiply(_dragReflectR);
+        for (const [midx, startWorld] of dragStartMirrorOffsets) {
+          _dragWp.copy(startWorld).applyMatrix4(_dragReflected).applyMatrix4(invMesh);
+          positions.setXYZ(midx, _dragWp.x, _dragWp.y, _dragWp.z);
+        }
+      }
       positions.needsUpdate = true;
       updateSelectionHighlightPointsRef.current();
     }
@@ -636,6 +865,7 @@ export default function SculptViewer({
       dragEntry = null;
       dragStartOffsets = null;
       dragStartPivotInv = null;
+      dragStartMirrorOffsets = null;
     }
 
     transformControls.addEventListener("dragging-changed", (event) => {
@@ -673,6 +903,10 @@ export default function SculptViewer({
       clayMatRef.current?.dispose();
       channelMatsRef.current.forEach(m => m.dispose());
       wireMatRef.current?.dispose();
+      edgeHighlightRef.current?.geometry.dispose();
+      (edgeHighlightRef.current?.material as THREE.Material | undefined)?.dispose();
+      faceHighlightRef.current?.geometry.dispose();
+      (faceHighlightRef.current?.material as THREE.Material | undefined)?.dispose();
       ktx2LoaderRef.current?.dispose();
       ktx2LoaderRef.current = null;
       renderer.dispose();
@@ -710,7 +944,14 @@ export default function SculptViewer({
 
       if (!wireMatRef.current) {
         wireMatRef.current = new THREE.LineBasicMaterial({
-          color: 0xffffff, transparent: true, opacity: 0.3, depthTest: false,
+          // depthTest:true so wire on the FAR side of the mesh (behind the
+          // near surface) is correctly occluded instead of bleeding through
+          // — the near-side wire sits at the exact same depth as the solid
+          // surface beneath it (same vertices, same camera), so it still
+          // passes the default LEQUAL depth test and draws on top normally.
+          // depthWrite:false so this decorative overlay doesn't affect what
+          // subsequent draws (e.g. the selection-highlight points) see.
+          color: wireColorFor(viewModeRef.current), transparent: true, opacity: WIRE_OPACITY, depthTest: true, depthWrite: false, linewidth: 2,
         });
       }
 
@@ -731,6 +972,14 @@ export default function SculptViewer({
           posData[i * 3 + 2] = posAttr.getZ(i);
         }
         mesh.geometry.setAttribute("position", new THREE.BufferAttribute(posData, 3));
+
+        // GLBs commonly ship with baked normals — only compute if genuinely
+        // absent (e.g. no NORMAL accessor), so authored normals aren't
+        // silently overwritten. Missing normals otherwise read as (0,0,0) in
+        // Clay mode's unlit matcap material, producing flat, gradient-less shading.
+        if (!mesh.geometry.attributes.normal) {
+          mesh.geometry.computeVertexNormals();
+        }
 
         // Ensure indexed for BVH (use vertex count, not raw array length)
         if (!mesh.geometry.index) {
@@ -762,13 +1011,8 @@ export default function SculptViewer({
         totalVerts += mesh.geometry.attributes.position.count;
 
         // Wireframe overlay — excluded from GLB export, hidden by default
-        const wire = new THREE.LineSegments(
-          new THREE.WireframeGeometry(mesh.geometry),
-          wireMatRef.current!,
-        );
-        wire.name = "__wire";
+        const wire = buildWireOverlay(mesh.geometry, wireMatRef.current!);
         wire.visible = false;
-        wire.renderOrder = 999;
         mesh.add(wire);
       });
 
@@ -935,6 +1179,20 @@ export default function SculptViewer({
           innerRing.quaternion.copy(q);
         }
       }
+
+      const mirrorDot = mirrorIndicatorRef.current;
+      if (mirrorDot) {
+        mirrorDot.visible = mirrorModeRef.current;
+        if (mirrorModeRef.current) {
+          // Reflects the WORLD-space hit point across X=0 — a simple,
+          // cheap approximation for visualization only (meshes in this
+          // tool are always loaded centered at the origin, so world and
+          // local X=0 coincide in practice). Actual edits use the real
+          // per-vertex mirror pairs (lib/sculpt/mirror.ts), not this.
+          mirrorDot.position.set(-hit.point.x, hit.point.y, hit.point.z);
+          mirrorDot.scale.setScalar(Math.max(r * 0.12, 0.01));
+        }
+      }
     }
 
     // Highlights every vertex the active brush would actually touch on the
@@ -944,18 +1202,25 @@ export default function SculptViewer({
     function updateHighlightPoints(hit: BrushHit | null) {
       const points = highlightPointsRef.current;
       if (!points) return;
-      if (!hit || brushModeRef.current === "paint") {
+      if (!hit || brushModeRef.current === "paint" || highlightModeRef.current === "none") {
         points.visible = false;
         return;
       }
       const r = brushRadiusRef.current;
       const ir = brushInnerRadiusRef.current;
+      const showCenterOnly = highlightModeRef.current === "center";
       const world: number[] = [];
       for (const entry of meshEntriesRef.current) {
         const positions = entry.mesh.geometry.attributes.position as THREE.BufferAttribute;
         const gathered = gatherVertices(positions, entry.mesh, hit.point, r, ir);
         if (gathered.length === 0) continue;
-        const allIdx = expandSeams(gathered.map((g) => g.idx), entry.seams);
+        // "center" mode: only the single closest-to-hit vertex (highest
+        // falloff — the exact same falloff applyBrush itself computes, so
+        // this can't drift from what a stroke would actually touch most).
+        const idxSource = showCenterOnly
+          ? [gathered.reduce((best, g) => (g.fo > best.fo ? g : best))]
+          : gathered;
+        const allIdx = expandSeams(idxSource.map((g) => g.idx), entry.seams);
         const mat = entry.mesh.matrixWorld;
         const wp = new THREE.Vector3();
         for (const idx of allIdx) {
@@ -979,25 +1244,81 @@ export default function SculptViewer({
     // never run at once since sculpt and poly-edit are mutually exclusive.
     function updateSelectionHighlightPoints() {
       const points = highlightPointsRef.current;
-      if (!points) return;
+      const edgeHi = edgeHighlightRef.current;
+      const faceHi = faceHighlightRef.current;
+      if (!points || !edgeHi || !faceHi) return;
       const entry = selectedEntryRef.current;
+      const mode = selectModeRef.current;
       if (!entry || selectionRef.current.size === 0) {
         points.visible = false;
+        edgeHi.visible = false;
+        faceHi.visible = false;
         return;
       }
-      const idxs = selectionVertexIndices(entry, selectionRef.current, selectModeRef.current);
+
       const positions = entry.mesh.geometry.attributes.position as THREE.BufferAttribute;
       const mat = entry.mesh.matrixWorld;
       const wp = new THREE.Vector3();
-      const world: number[] = [];
-      for (const idx of idxs) {
+      const worldOf = (idx: number): [number, number, number] => {
         wp.fromBufferAttribute(positions, idx).applyMatrix4(mat);
-        world.push(wp.x, wp.y, wp.z);
+        return [wp.x, wp.y, wp.z];
+      };
+
+      // Edge/face selections get their own real shape (a line, a fill) —
+      // dots would only show disconnected corners with no sense of which
+      // ones belong together or what area's actually selected. Vertex mode
+      // keeps the dots, the correct visual for isolated points.
+      if (mode === "edge") {
+        points.visible = false;
+        faceHi.visible = false;
+        const world: number[] = [];
+        for (const key of selectionRef.current) {
+          const [a, b] = key.split("_").map(Number);
+          world.push(...worldOf(a), ...worldOf(b));
+          if (mirrorModeRef.current && entry.mirror) {
+            const ma = entry.mirror.get(a), mb = entry.mirror.get(b);
+            if (ma !== undefined && mb !== undefined && ma !== a && mb !== b) {
+              world.push(...worldOf(ma), ...worldOf(mb));
+            }
+          }
+        }
+        edgeHi.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(world), 3));
+        edgeHi.geometry.attributes.position.needsUpdate = true;
+        edgeHi.geometry.computeBoundingSphere();
+        edgeHi.visible = world.length > 0;
+      } else if (mode === "face") {
+        points.visible = false;
+        edgeHi.visible = false;
+        const world: number[] = [];
+        const pushFan = (ring: number[]) => {
+          for (let i = 1; i < ring.length - 1; i++) {
+            world.push(...worldOf(ring[0]), ...worldOf(ring[i]), ...worldOf(ring[i + 1]));
+          }
+        };
+        for (const face of resolveSelectedFaces(entry, selectionRef.current)) {
+          pushFan(face.ring);
+          if (mirrorModeRef.current && entry.mirror) {
+            const mirrored = face.ring.map((v) => entry.mirror!.get(v));
+            if (mirrored.every((v): v is number => v !== undefined) && !mirrored.every((v, i) => v === face.ring[i])) {
+              pushFan(mirrored);
+            }
+          }
+        }
+        faceHi.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(world), 3));
+        faceHi.geometry.attributes.position.needsUpdate = true;
+        faceHi.geometry.computeBoundingSphere();
+        faceHi.visible = world.length > 0;
+      } else {
+        edgeHi.visible = false;
+        faceHi.visible = false;
+        const idxs = selectionVertexIndices(entry, selectionRef.current, mode, mirrorModeRef.current);
+        const world: number[] = [];
+        for (const idx of idxs) world.push(...worldOf(idx));
+        points.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(world), 3));
+        points.geometry.attributes.position.needsUpdate = true;
+        points.geometry.computeBoundingSphere();
+        points.visible = true;
       }
-      points.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(world), 3));
-      points.geometry.attributes.position.needsUpdate = true;
-      points.geometry.computeBoundingSphere();
-      points.visible = true;
     }
     updateSelectionHighlightPointsRef.current = updateSelectionHighlightPoints;
 
@@ -1034,6 +1355,7 @@ export default function SculptViewer({
       tc.enabled = true;
       if (helper) helper.visible = true;
     }
+    repositionGizmoToSelectionRef.current = repositionGizmoToSelection;
 
     // Fires both selection-count and (when in edge mode) loop-preview
     // callbacks from the one place selection actually changes — keeps the
@@ -1157,6 +1479,7 @@ export default function SculptViewer({
             mesh: entry.mesh,
             seams: entry.seams,
             invert: altDownRef.current,
+            mirror: mirrorModeRef.current ? ensureMirror(entry) : undefined,
           });
         }
       }
@@ -1187,6 +1510,7 @@ export default function SculptViewer({
             mesh: entry.mesh,
             seams: entry.seams,
             invert: altDownRef.current,
+            mirror: mirrorModeRef.current ? ensureMirror(entry) : undefined,
           });
         }
       }
@@ -1223,16 +1547,12 @@ export default function SculptViewer({
             entry.mesh.geometry.boundsTree = new MeshBVH(entry.mesh.geometry);
             entry.seams = buildSeamData(entry.mesh.geometry.attributes.position.array as Float32Array);
             entry.topology = undefined;
+            entry.mirror = undefined;
             const wire = entry.mesh.children.find((c) => c.name === "__wire");
             if (wire) {
               entry.mesh.remove(wire);
-              const newWire = new THREE.LineSegments(
-                new THREE.WireframeGeometry(entry.mesh.geometry),
-                (wire as THREE.LineSegments).material as THREE.Material,
-              );
-              newWire.name = "__wire";
+              const newWire = buildWireOverlay(entry.mesh.geometry, (wire as THREE.LineSegments).material as THREE.LineBasicMaterial);
               newWire.visible = (wire as THREE.Object3D).visible;
-              newWire.renderOrder = 999;
               entry.mesh.add(newWire);
             }
           }
@@ -1255,6 +1575,8 @@ export default function SculptViewer({
       if (ring) ring.visible = false;
       const innerRing = brushInnerIndicatorRef.current;
       if (innerRing) innerRing.visible = false;
+      const mirrorDot = mirrorIndicatorRef.current;
+      if (mirrorDot) mirrorDot.visible = false;
       // Poly-edit's selection highlight is persistent state, not a hover
       // preview — don't hide it just because the pointer left the canvas.
       if (editModeRef.current !== "poly_edit") {
@@ -1276,6 +1598,36 @@ export default function SculptViewer({
     };
   }, []);
 
+  // Declared before the keyboard-undo effect below (which now calls these
+  // directly) so it's not a forward reference — both only depend on refs
+  // declared earlier in the component, so moving them up is safe.
+  const undo = useCallback(() => {
+    const snaps = undoRef.current.undo();
+    if (!snaps) return;
+    for (const { mesh, positions } of snaps) {
+      (mesh.geometry.attributes.position.array as Float32Array).set(positions);
+      mesh.geometry.attributes.position.needsUpdate = true;
+      mesh.geometry.computeVertexNormals();
+    }
+    // A poly-edit gizmo drag pushes onto this same position-only undo stack
+    // (beginGizmoDrag) — without these, the selection overlay and gizmo stay
+    // rendered at the stale, pre-undo shape/position after the mesh reverts.
+    updateSelectionHighlightPointsRef.current();
+    repositionGizmoToSelectionRef.current();
+  }, []);
+
+  const redo = useCallback(() => {
+    const snaps = undoRef.current.redo();
+    if (!snaps) return;
+    for (const { mesh, positions } of snaps) {
+      (mesh.geometry.attributes.position.array as Float32Array).set(positions);
+      mesh.geometry.attributes.position.needsUpdate = true;
+      mesh.geometry.computeVertexNormals();
+    }
+    updateSelectionHighlightPointsRef.current();
+    repositionGizmoToSelectionRef.current();
+  }, []);
+
   // ── keyboard undo/redo ────────────────────────────────────────────────────
   useEffect(() => {
     function applyTopoSnapshots(snaps: TopoMeshSnapshot[]) {
@@ -1287,17 +1639,13 @@ export default function SculptViewer({
         entry.mesh.geometry.boundsTree = new MeshBVH(entry.mesh.geometry);
         entry.quadIndices = snap.quadIndices;
         entry.topology = undefined;
+        entry.mirror = undefined;
         entry.seams = buildSeamData(entry.mesh.geometry.attributes.position.array as Float32Array);
         const wire = entry.mesh.children.find((c) => c.name === "__wire");
         if (wire) {
           entry.mesh.remove(wire);
-          const newWire = new THREE.LineSegments(
-            new THREE.WireframeGeometry(entry.mesh.geometry),
-            (wire as THREE.LineSegments).material as THREE.Material,
-          );
-          newWire.name = "__wire";
+          const newWire = buildWireOverlay(entry.mesh.geometry, (wire as THREE.LineSegments).material as THREE.LineBasicMaterial);
           newWire.visible = (wire as THREE.Object3D).visible;
-          newWire.renderOrder = 999;
           entry.mesh.add(newWire);
         }
       }
@@ -1325,21 +1673,18 @@ export default function SculptViewer({
         if (isRedo && topo.canRedo) { applyTopoSnapshots(topo.redo(currentTopoEntries)!); return; }
       }
 
-      const stack = undoRef.current;
-      const applySnap = (snaps: ReturnType<typeof stack.undo>) => {
-        if (!snaps) return;
-        for (const { mesh, positions } of snaps) {
-          (mesh.geometry.attributes.position.array as Float32Array).set(positions);
-          mesh.geometry.attributes.position.needsUpdate = true;
-          mesh.geometry.computeVertexNormals();
-        }
-      };
-      if (isUndo) applySnap(stack.undo());
-      if (isRedo) applySnap(stack.redo());
+      // Delegate to the same undo()/redo() the toolbar buttons use, rather
+      // than duplicating the position-restore loop here — a prior version
+      // of this handler had its own hand-rolled copy that diverged from
+      // undo()/redo() (which also refresh the poly-edit selection overlay
+      // and transform gizmo afterward) and silently fell out of sync,
+      // leaving both stuck at their pre-undo position after a keyboard undo.
+      if (isUndo) undo();
+      if (isRedo) redo();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [undo, redo]);
 
   // Modifier key tracking: Shift = smooth override, Alt/Option = invert
   useEffect(() => {
@@ -1429,26 +1774,6 @@ export default function SculptViewer({
     });
   }, []);
 
-  const undo = useCallback(() => {
-    const snaps = undoRef.current.undo();
-    if (!snaps) return;
-    for (const { mesh, positions } of snaps) {
-      (mesh.geometry.attributes.position.array as Float32Array).set(positions);
-      mesh.geometry.attributes.position.needsUpdate = true;
-      mesh.geometry.computeVertexNormals();
-    }
-  }, []);
-
-  const redo = useCallback(() => {
-    const snaps = undoRef.current.redo();
-    if (!snaps) return;
-    for (const { mesh, positions } of snaps) {
-      (mesh.geometry.attributes.position.array as Float32Array).set(positions);
-      mesh.geometry.attributes.position.needsUpdate = true;
-      mesh.geometry.computeVertexNormals();
-    }
-  }, []);
-
   const getRecommendedExtrudeDistance = useCallback((): number => {
     return selectedEntryRef.current?.baseEdgeLen ?? meshEntriesRef.current[0]?.baseEdgeLen ?? 0.1;
   }, []);
@@ -1477,18 +1802,14 @@ export default function SculptViewer({
       const wire = entry.mesh.children.find((c) => c.name === "__wire");
       if (wire) {
         entry.mesh.remove(wire);
-        const newWire = new THREE.LineSegments(
-          new THREE.WireframeGeometry(entry.mesh.geometry),
-          (wire as THREE.LineSegments).material as THREE.Material,
-        );
-        newWire.name = "__wire";
+        const newWire = buildWireOverlay(entry.mesh.geometry, (wire as THREE.LineSegments).material as THREE.LineBasicMaterial);
         newWire.visible = (wire as THREE.Object3D).visible;
-        newWire.renderOrder = 999;
         entry.mesh.add(newWire);
       }
     };
     const finish = (newKeys: string[]) => {
       entry.topology = undefined;
+      entry.mirror = undefined;
       rebuildWireAndBVH();
       undoRef.current.clear(); // vertex count changed — position snapshots are now invalid
       setPolyEditSelectionRef.current(entry, newKeys);
@@ -1564,25 +1885,22 @@ export default function SculptViewer({
         mesh.geometry,
         entry.quadIndices ?? new Uint32Array(0),
         entry.seams,
+        smoothSubdivideRef.current,
       );
       mesh.geometry.dispose();
       mesh.geometry = subdivided;
       mesh.geometry.boundsTree = new MeshBVH(mesh.geometry);
       entry.quadIndices = newQuadIndices; // 4× quads for the next level
       entry.topology = undefined;
+      entry.mirror = undefined;
       const posArr = mesh.geometry.attributes.position.array as Float32Array;
       entry.seams = buildSeamData(posArr);
       // Rebuild wireframe overlay
       const wire = mesh.children.find((c) => c.name === "__wire");
       if (wire) {
         mesh.remove(wire);
-        const newWire = new THREE.LineSegments(
-          new THREE.WireframeGeometry(mesh.geometry),
-          (wire as THREE.LineSegments).material as THREE.Material,
-        );
-        newWire.name = "__wire";
+        const newWire = buildWireOverlay(mesh.geometry, (wire as THREE.LineSegments).material as THREE.LineBasicMaterial);
         newWire.visible = (wire as THREE.Object3D).visible;
-        newWire.renderOrder = 999;
         mesh.add(newWire);
       }
       totalVerts += mesh.geometry.attributes.position.count;
@@ -1606,16 +1924,12 @@ export default function SculptViewer({
         entry.mesh.geometry.boundsTree = new MeshBVH(entry.mesh.geometry);
         entry.seams = buildSeamData(entry.mesh.geometry.attributes.position.array as Float32Array);
         entry.topology = undefined;
+        entry.mirror = undefined;
         const wire = entry.mesh.children.find((c) => c.name === "__wire");
         if (wire) {
           entry.mesh.remove(wire);
-          const newWire = new THREE.LineSegments(
-            new THREE.WireframeGeometry(entry.mesh.geometry),
-            (wire as THREE.LineSegments).material as THREE.Material,
-          );
-          newWire.name = "__wire";
+          const newWire = buildWireOverlay(entry.mesh.geometry, (wire as THREE.LineSegments).material as THREE.LineBasicMaterial);
           newWire.visible = (wire as THREE.Object3D).visible;
-          newWire.renderOrder = 999;
           entry.mesh.add(newWire);
         }
       }
@@ -1655,10 +1969,10 @@ export default function SculptViewer({
     const mat = clayMatRef.current ?? new THREE.MeshMatcapMaterial();
     const mesh = new THREE.Mesh(geo, mat);
     if (!wireMatRef.current) {
-      wireMatRef.current = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.3, depthTest: false });
+      wireMatRef.current = new THREE.LineBasicMaterial({ color: wireColorFor(viewModeRef.current), transparent: true, opacity: WIRE_OPACITY, depthTest: true, depthWrite: false, linewidth: 2 });
     }
-    const wire = new THREE.LineSegments(new THREE.WireframeGeometry(geo), wireMatRef.current);
-    wire.name = "__wire"; wire.visible = false; wire.renderOrder = 999;
+    const wire = buildWireOverlay(geo, wireMatRef.current);
+    wire.visible = false;
     mesh.add(wire);
     const posArr = geo.attributes.position.array as Float32Array;
     const seams = buildSeamData(posArr);
@@ -1719,10 +2033,10 @@ export default function SculptViewer({
     const mat = clayMatRef.current ?? new THREE.MeshMatcapMaterial();
     const mesh = new THREE.Mesh(geo, mat);
     if (!wireMatRef.current) {
-      wireMatRef.current = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.3, depthTest: false });
+      wireMatRef.current = new THREE.LineBasicMaterial({ color: wireColorFor(viewModeRef.current), transparent: true, opacity: WIRE_OPACITY, depthTest: true, depthWrite: false, linewidth: 2 });
     }
-    const wire = new THREE.LineSegments(new THREE.WireframeGeometry(geo), wireMatRef.current);
-    wire.name = "__wire"; wire.visible = false; wire.renderOrder = 999;
+    const wire = buildWireOverlay(geo, wireMatRef.current);
+    wire.visible = false;
     mesh.add(wire);
     const posArr = geo.attributes.position.array as Float32Array;
     const seams = buildSeamData(posArr);
@@ -1768,19 +2082,15 @@ export default function SculptViewer({
       entry.mesh.geometry.boundsTree = new MeshBVH(entry.mesh.geometry);
       entry.quadIndices = snap.quadIndices;
       entry.topology = undefined;
+      entry.mirror = undefined;
       const posArr = entry.mesh.geometry.attributes.position.array as Float32Array;
       entry.seams = buildSeamData(posArr);
       // Rebuild wireframe overlay
       const wire = entry.mesh.children.find((c) => c.name === "__wire");
       if (wire) {
         entry.mesh.remove(wire);
-        const newWire = new THREE.LineSegments(
-          new THREE.WireframeGeometry(entry.mesh.geometry),
-          (wire as THREE.LineSegments).material as THREE.Material,
-        );
-        newWire.name = "__wire";
+        const newWire = buildWireOverlay(entry.mesh.geometry, (wire as THREE.LineSegments).material as THREE.LineBasicMaterial);
         newWire.visible = (wire as THREE.Object3D).visible;
-        newWire.renderOrder = 999;
         entry.mesh.add(newWire);
       }
       totalVerts += entry.mesh.geometry.attributes.position.count;

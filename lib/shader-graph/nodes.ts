@@ -12,6 +12,22 @@ export type SlotSpec = {
 
 export type NodeCategory = "input" | "math" | "utility" | "output";
 
+export type ParamControl = "number" | "boolean" | "vec2";
+
+export type ParamSpec = {
+  /** Key into the node's `data` object — also doubles as the input slot id
+   *  for slots that are both connectable and directly editable (e.g.
+   *  Fresnel's "power"), so the compiler can look up the same value either
+   *  way. */
+  key: string;
+  label: string;
+  type: ParamControl;
+  min?: number;
+  max?: number;
+  step?: number;
+  default: number | boolean | [number, number];
+};
+
 export type NodeTypeDef = {
   type: string;
   label: string;
@@ -20,6 +36,10 @@ export type NodeTypeDef = {
   outputs: SlotSpec[];
   /** Initial data values for the node */
   defaultData?: Record<string, unknown>;
+  /** Editable parameters shown in the node inspector panel. Generic — the
+   *  inspector renders a control per spec with no per-node-type special
+   *  casing. */
+  params?: ParamSpec[];
 };
 
 export const NODE_TYPES: NodeTypeDef[] = [
@@ -30,6 +50,11 @@ export const NODE_TYPES: NodeTypeDef[] = [
     category: "input",
     inputs: [],
     outputs: [{ id: "uv", label: "UV", type: "vec2" }],
+    defaultData: { scale: [1, 1], offset: [0, 0] },
+    params: [
+      { key: "scale", label: "Scale", type: "vec2", default: [1, 1] },
+      { key: "offset", label: "Offset", type: "vec2", default: [0, 0] },
+    ],
   },
   {
     type: "WorldPosition",
@@ -81,6 +106,11 @@ export const NODE_TYPES: NodeTypeDef[] = [
       { id: "b", label: "B", type: "float" },
       { id: "a", label: "A", type: "float" },
     ],
+    // `data.imageUrl` (string) drives the live preview. `data.assetId`
+    // (string, optional — only present for library assets, e.g. wired via
+    // Import Texture Set) lets a GLB export look the original bytes up
+    // server-side by id; textures from the per-node upload widget (raw
+    // data: URIs) have no assetId and can't be included in a GLB export.
     defaultData: { uniformName: "" },
   },
   {
@@ -93,6 +123,19 @@ export const NODE_TYPES: NodeTypeDef[] = [
     ],
     outputs: [{ id: "fresnel", label: "Fresnel", type: "float" }],
     defaultData: { power: 5.0 },
+    params: [{ key: "power", label: "Power", type: "number", min: 0.1, max: 10, step: 0.1, default: 5.0 }],
+  },
+  {
+    type: "Noise",
+    label: "Noise",
+    category: "input",
+    inputs: [{ id: "uv", label: "UV", type: "vec2" }],
+    outputs: [{ id: "value", label: "Value", type: "float" }],
+    defaultData: { scale: 4.0, octaves: 1 },
+    params: [
+      { key: "scale", label: "Scale", type: "number", min: 0.1, max: 50, step: 0.1, default: 4.0 },
+      { key: "octaves", label: "Octaves", type: "number", min: 1, max: 6, step: 1, default: 1 },
+    ],
   },
 
   // ── Math ──────────────────────────────────────────────────────────────────
@@ -158,6 +201,10 @@ export const NODE_TYPES: NodeTypeDef[] = [
     ],
     outputs: [{ id: "result", label: "Result", type: "float" }],
     defaultData: { min: 0, max: 1 },
+    params: [
+      { key: "min", label: "Min", type: "number", min: -10, max: 10, step: 0.01, default: 0 },
+      { key: "max", label: "Max", type: "number", min: -10, max: 10, step: 0.01, default: 1 },
+    ],
   },
   {
     type: "Step",
@@ -249,10 +296,16 @@ export const NODE_TYPES: NodeTypeDef[] = [
       { id: "normal", label: "Normal", type: "vec3" },
       { id: "roughness", label: "Roughness", type: "float" },
       { id: "metallic", label: "Metallic", type: "float" },
+      { id: "ao", label: "AO", type: "float" },
       { id: "emissive", label: "Emissive", type: "vec3" },
     ],
     outputs: [],
-    defaultData: { outputMode: "pbr" },
+    defaultData: { outputMode: "pbr", normalStrength: 1, aoStrength: 1, roughnessStrength: 1 },
+    params: [
+      { key: "normalStrength", label: "Normal Strength", type: "number", min: 0, max: 2, step: 0.05, default: 1 },
+      { key: "aoStrength", label: "AO Strength", type: "number", min: 0, max: 1, step: 0.05, default: 1 },
+      { key: "roughnessStrength", label: "Roughness Strength", type: "number", min: 0, max: 2, step: 0.05, default: 1 },
+    ],
   },
 ];
 

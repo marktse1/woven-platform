@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import {
   ReactFlow,
   Background,
@@ -20,6 +20,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { NODE_TYPES, getNodeDef, type NodeTypeDef } from "@/lib/shader-graph/nodes";
+import NodeInspector from "./NodeInspector";
 
 // ── Custom node renderer ──────────────────────────────────────────────────────
 
@@ -38,7 +39,7 @@ const TYPE_COLORS: Record<string, string> = {
   sampler2D: "#c47be8",
 };
 
-function ShaderNode({ id, data, type }: NodeProps & { type: string }) {
+function ShaderNode({ id, data, type, selected }: NodeProps & { type: string }) {
   const def: NodeTypeDef | undefined = getNodeDef(type);
   const { updateNodeData } = useReactFlow();
   if (!def) return null;
@@ -49,12 +50,12 @@ function ShaderNode({ id, data, type }: NodeProps & { type: string }) {
       style={{
         minWidth: 140,
         background: "#18141c",
-        border: `1px solid ${accent}55`,
+        border: selected ? `1px solid #fff` : `1px solid ${accent}55`,
         borderTop: `2px solid ${accent}`,
         borderRadius: 8,
         fontSize: 11,
         color: "#e0d8ec",
-        boxShadow: "0 4px 16px #0008",
+        boxShadow: selected ? `0 4px 16px #0008, 0 0 0 1px ${accent}` : "0 4px 16px #0008",
       }}
     >
       {/* Header */}
@@ -223,13 +224,33 @@ const INITIAL_EDGES: Edge[] = [
 
 // ── Main NodeCanvas component ────────────────────────────────────────────────
 
-type Props = {
-  onGraphChange: (nodes: Node[], edges: Edge[]) => void;
+// Lets the parent push a whole new graph in (loading a saved shader,
+// auto-building one from an imported texture set) — NodeCanvas otherwise
+// owns its graph state entirely internally, with no way in for a parent.
+export type NodeCanvasHandle = {
+  loadGraph: (nodes: Node[], edges: Edge[]) => void;
 };
 
-export default function NodeCanvas({ onGraphChange }: Props) {
+type Props = {
+  onGraphChange: (nodes: Node[], edges: Edge[]) => void;
+  handleRef?: React.RefObject<NodeCanvasHandle | null>;
+};
+
+export default function NodeCanvas({ onGraphChange, handleRef }: Props) {
   const [nodes, setNodes, onNodesChange] = useNodesState(INITIAL_NODES);
   const [edges, setEdges, onEdgesChange] = useEdgesState(INITIAL_EDGES);
+
+  const loadGraph = useCallback((newNodes: Node[], newEdges: Edge[]) => {
+    setNodes(newNodes);
+    setEdges(newEdges);
+    onGraphChange(newNodes, newEdges);
+  }, [setNodes, setEdges, onGraphChange]);
+
+  useEffect(() => {
+    if (handleRef) {
+      (handleRef as React.MutableRefObject<NodeCanvasHandle | null>).current = { loadGraph };
+    }
+  }, [handleRef, loadGraph]);
 
   const onConnect = useCallback(
     (params: Connection) => {
@@ -285,6 +306,21 @@ export default function NodeCanvas({ onGraphChange }: Props) {
     [nodes, edges, setNodes, onGraphChange],
   );
 
+  // Powers the inspector panel — React Flow already tracks per-node
+  // `.selected` through the built-in change types handleNodesChange applies,
+  // so no separate selection state is needed here.
+  const selectedNode = nodes.find((n) => n.selected);
+  const updateSelectedNodeData = useCallback(
+    (patch: Record<string, unknown>) => {
+      setNodes((ns) => {
+        const next = ns.map((n) => (n.selected ? { ...n, data: { ...n.data, ...patch } } : n));
+        setTimeout(() => onGraphChange(next, edges), 0);
+        return next;
+      });
+    },
+    [edges, onGraphChange, setNodes],
+  );
+
   const categories: Array<{ label: string; key: string }> = [
     { label: "Inputs", key: "input" },
     { label: "Math", key: "math" },
@@ -333,6 +369,8 @@ export default function NodeCanvas({ onGraphChange }: Props) {
           <MiniMap style={{ background: "#18141c", borderColor: "#2a2320" }} nodeColor="#c47be8" maskColor="#0e0b0888" />
         </ReactFlow>
       </div>
+
+      <NodeInspector node={selectedNode} onChange={updateSelectedNodeData} />
     </div>
   );
 }

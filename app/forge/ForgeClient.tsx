@@ -202,7 +202,7 @@ export default function ForgeClient() {
 
   if (phase === "running" && iframeSrc) {
     return (
-      <main className="min-h-[calc(100vh-73px)] bg-[#070b11] text-ink flex flex-col">
+      <main className="tool-min-h bg-[#070b11] text-ink flex flex-col">
         <div className="flex items-center gap-3 px-6 py-3 border-b border-line bg-panel/80 shrink-0">
           <button
             onClick={() => { setPhase("picker"); setIframeSrc(null); setActiveTool(null); }}
@@ -235,7 +235,7 @@ export default function ForgeClient() {
 
   if (phase === "loading") {
     return (
-      <main className="min-h-[calc(100vh-73px)] bg-[#070b11] text-ink flex items-center justify-center">
+      <main className="tool-min-h bg-[#070b11] text-ink flex items-center justify-center">
         <div className="text-[13px] text-dim">Loading Forge...</div>
       </main>
     );
@@ -243,7 +243,7 @@ export default function ForgeClient() {
 
   if (phase === "no-access" || phase === "error") {
     return (
-      <main className="min-h-[calc(100vh-73px)] bg-[#070b11] text-ink flex items-center justify-center px-6">
+      <main className="tool-min-h bg-[#070b11] text-ink flex items-center justify-center px-6">
         <div className="max-w-[520px] w-full bg-panel border border-line rounded-[10px] p-6">
           <div className="text-[20px] font-extrabold tracking-[-0.02em] mb-2">Weave Forge</div>
           <p className="text-[13px] text-dim leading-relaxed">{message}</p>
@@ -263,7 +263,7 @@ export default function ForgeClient() {
 
   // Picker screen
   return (
-    <main className="min-h-[calc(100vh-73px)] bg-[#070b11] text-ink">
+    <main className="tool-min-h bg-[#070b11] text-ink">
       <div className="max-w-[960px] mx-auto px-8 pt-10 pb-16">
         <p className="text-[11px] font-bold tracking-[.14em] uppercase text-accent mb-2">Weave Forge</p>
         <h1 className="text-[34px] font-extrabold tracking-[-0.02em] mb-1">Choose your dev kit</h1>

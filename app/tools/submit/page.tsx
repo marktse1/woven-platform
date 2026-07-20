@@ -65,7 +65,7 @@ export default function SubmitToolPage() {
 
   if (isLoaded && !user?.id) {
     return (
-      <main className="min-h-[calc(100vh-73px)] bg-[#070b11] text-ink flex items-center justify-center px-6">
+      <main className="tool-min-h bg-[#070b11] text-ink flex items-center justify-center px-6">
         <div className="max-w-[480px] bg-panel border border-line rounded-[12px] p-6">
           <h1 className="text-[20px] font-extrabold mb-2">Submit a tool</h1>
           <p className="text-[13px] text-dim">Sign in to submit a tool for review.</p>
@@ -77,7 +77,7 @@ export default function SubmitToolPage() {
 
   if (done) {
     return (
-      <main className="min-h-[calc(100vh-73px)] bg-[#070b11] text-ink flex items-center justify-center px-6">
+      <main className="tool-min-h bg-[#070b11] text-ink flex items-center justify-center px-6">
         <div className="max-w-[480px] bg-panel border border-line rounded-[12px] p-6 text-center">
           <div className="text-[34px] mb-2">✅</div>
           <h1 className="text-[20px] font-extrabold mb-2">Submitted for review</h1>
@@ -89,7 +89,7 @@ export default function SubmitToolPage() {
   }
 
   return (
-    <main className="min-h-[calc(100vh-73px)] bg-[#070b11] text-ink">
+    <main className="tool-min-h bg-[#070b11] text-ink">
       <div className="max-w-[720px] mx-auto px-6 pt-10 pb-16">
         <Link href="/forge" className="text-[12px] text-dim no-underline hover:text-ink">← Forge</Link>
         <h1 className="text-[30px] font-extrabold tracking-[-0.02em] mt-2 mb-1">Submit a tool</h1>

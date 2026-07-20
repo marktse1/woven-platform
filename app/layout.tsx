@@ -4,6 +4,7 @@ import { ClerkProvider } from "@clerk/nextjs";
 import "./globals.css";
 import AccountStrip from "@/components/shell/AccountStrip";
 import MainNav from "@/components/shell/MainNav";
+import HeaderShell from "@/components/shell/HeaderShell";
 import AssetLibraryPanel from "@/components/assets/AssetLibraryPanel";
 import { ActiveLoaderProvider } from "@/components/assets/ActiveLoaderContext";
 
@@ -26,8 +27,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <html lang="en" className={inter.className}>
         <body>
           <ActiveLoaderProvider>
-            <AccountStrip />
-            <MainNav />
+            <HeaderShell>
+              <AccountStrip />
+              <MainNav />
+            </HeaderShell>
             {children}
             <AssetLibraryPanel />
           </ActiveLoaderProvider>

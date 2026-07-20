@@ -57,7 +57,7 @@ export default function AiKeysSettingsPage() {
   }
 
   return (
-    <main className="min-h-[calc(100vh-73px)] bg-[#070b11] text-ink px-6 lg:px-12 py-10">
+    <main className="tool-min-h bg-[#070b11] text-ink px-6 lg:px-12 py-10">
       <div className="max-w-[720px] mx-auto">
         <h1 className="text-[26px] font-extrabold tracking-[-0.02em]">AI editor keys</h1>
         <p className="text-[13.5px] text-dim mt-2 mb-6">

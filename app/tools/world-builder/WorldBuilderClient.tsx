@@ -26,7 +26,7 @@ export default function WorldBuilderClient() {
 
   if (!user) {
     return (
-      <main className="min-h-[calc(100vh-73px)] bg-[#0b0f14] flex items-center justify-center">
+      <main className="tool-min-h bg-[#0b0f14] flex items-center justify-center">
         <div className="text-center">
           <p className="text-dim text-sm mb-4">Sign in to use the World Builder.</p>
           <Link href="/sign-in" className="px-4 py-2 bg-accent text-white rounded-md text-sm">Sign in</Link>
@@ -36,7 +36,7 @@ export default function WorldBuilderClient() {
   }
 
   return (
-    <main className="bg-[#0b0f14]" style={{ height: "calc(100vh - 73px)" }}>
+    <main className="tool-h bg-[#0b0f14]">
       <WorldBuilderViewer userId={user.id} />
     </main>
   );

@@ -7,7 +7,7 @@ export default function ShaderadePage() {
   return (
     <Suspense
       fallback={
-        <main className="min-h-[calc(100vh-73px)] bg-[#0e0b08] text-ink flex items-center justify-center">
+        <main className="tool-min-h bg-[#0e0b08] text-ink flex items-center justify-center">
           <div className="text-[13px] text-dim">Loading Shaderade…</div>
         </main>
       }

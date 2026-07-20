@@ -34,6 +34,30 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+:root {
+  /* Fallback for the brief window before HeaderShell measures the real
+     AccountStrip+MainNav height on mount. Kept close to the real value so
+     there's no visible jump once the JS-measured value takes over. */
+  --header-h: 104px;
+}
+
+/* Page-flow content below the header (sign-in gates, simple form pages) —
+   allowed to grow past the fold and scroll normally. */
+.tool-min-h {
+  min-height: calc(100vh - var(--header-h));
+  min-height: calc(100dvh - var(--header-h));
+}
+
+/* App-shell tool UIs that lay out internal flex/overflow regions against a
+   real fixed height (e.g. a sidebar with its own scrollable middle section
+   and a pinned footer). */
+.tool-h {
+  height: calc(100vh - var(--header-h));
+  height: calc(100dvh - var(--header-h));
+  min-height: calc(100vh - var(--header-h));
+  min-height: calc(100dvh - var(--header-h));
+}
+
 @keyframes spin {
   to { transform: rotate(360deg); }
 }

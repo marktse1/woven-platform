@@ -79,14 +79,14 @@ export default function SubstanceWeaverClient() {
 
   if (!isLoaded || creatorStatus === "loading") {
     return (
-      <main className="min-h-[calc(100vh-73px)] bg-[#070b11] text-ink flex items-center justify-center">
+      <main className="tool-min-h bg-[#070b11] text-ink flex items-center justify-center">
         <div className="text-[13px] text-dim">Loading Mesh Painter…</div>
       </main>
     );
   }
 
   return (
-    <main className="min-h-[calc(100vh-73px)] bg-[#070b11] text-ink">
+    <main className="tool-min-h bg-[#070b11] text-ink">
       <div className="max-w-[1600px] mx-auto px-6 lg:px-10 pt-6 pb-16">
         {error && (
           <div className="mb-4 p-3 rounded-[9px] border text-[13px]" style={{ borderColor: "rgba(227,92,92,.4)", background: "rgba(227,92,92,.08)", color: "#f0a6a6" }}>

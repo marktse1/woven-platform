@@ -163,7 +163,7 @@ export default function EditPage({ params }: { params: Promise<{ gameId: string;
   }
 
   return (
-    <main className="min-h-[calc(100vh-73px)] bg-[#070b11] text-ink flex flex-col">
+    <main className="tool-min-h bg-[#070b11] text-ink flex flex-col">
       <div className="flex items-center gap-3 px-6 py-3 border-b border-line bg-panel/80 shrink-0">
         <Link href="/dashboard" className="text-[13px] text-dim hover:text-ink">← Dashboard</Link>
         <div className="text-[13px] font-semibold">Editing build {version}</div>

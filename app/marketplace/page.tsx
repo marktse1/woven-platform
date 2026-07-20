@@ -29,7 +29,7 @@ export default function MarketplacePage() {
   return (
     <>
       <CreatorSubNav />
-      <main className="min-h-[calc(100vh-73px)] bg-[#070b11] text-ink">
+      <main className="tool-min-h bg-[#070b11] text-ink">
         <div className="max-w-[860px] mx-auto px-8 pt-14 pb-20">
 
           {/* Hero */}

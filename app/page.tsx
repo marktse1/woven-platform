@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import StoreSubNav from "@/components/shell/StoreSubNav";
 import { getSupabaseClient } from "@/lib/supabase";
 
@@ -94,6 +95,7 @@ export default function StorePage() {
         <p className="text-[13px] font-bold tracking-[.12em] uppercase text-muted mb-3.5">Featured & Recommended</p>
         <section className="grid gap-4 grid-cols-1 lg:grid-cols-[1fr_320px]">
           {featuredGame ? (
+            <Link href={`/game/${featuredGame.slug}`} className="no-underline text-inherit">
             <GradArt pair={pal[0]} className="rounded-lg border border-line min-h-[280px] lg:min-h-[440px]">
               <span className="absolute left-3.5 top-3 font-mono text-[11px] text-white bg-black/40 px-2 py-1 rounded-md z-10">
                 banner art · 16:9
@@ -112,15 +114,16 @@ export default function StorePage() {
                   </div>
                 </div>
                 <div className="flex items-center shrink-0 rounded-lg overflow-hidden">
-                  <button className="self-stretch px-5 font-extrabold text-[14px] cursor-pointer border-none"
+                  <span className="self-stretch flex items-center px-5 font-extrabold text-[14px] cursor-pointer"
                     style={{ background: "linear-gradient(180deg, #8bc34a, #5c8a1e)", color: "#0e1a06" }}>
                     {featuredGame.pass_included
                       ? "Play free on Pass"
-                      : `Add to cart · ${formatPrice(featuredGame.price_cents, featuredGame.pass_included)}`}
-                  </button>
+                      : `View · ${formatPrice(featuredGame.price_cents, featuredGame.pass_included)}`}
+                  </span>
                 </div>
               </div>
             </GradArt>
+            </Link>
           ) : (
             <div className="rounded-lg border border-line bg-panel min-h-[440px] flex items-center justify-center">
               <span className="text-dim text-[13px]">
@@ -131,8 +134,8 @@ export default function StorePage() {
 
           <div className="flex flex-col gap-2">
             {railGames.map((g, i) => (
-              <div key={g.id}
-                className="flex gap-2.5 p-2 rounded-[7px] cursor-pointer items-center border transition-colors bg-panel border-transparent hover:bg-panel2 hover:border-line">
+              <Link key={g.id} href={`/game/${g.slug}`}
+                className="flex gap-2.5 p-2 rounded-[7px] cursor-pointer items-center border transition-colors bg-panel border-transparent hover:bg-panel2 hover:border-line no-underline text-inherit">
                 <GradArt pair={pal[(i + 1) % pal.length]} className="w-[88px] h-12 rounded-md shrink-0" />
                 <div className="flex-1 min-w-0">
                   <div className="text-[13px] font-semibold truncate">{g.title}</div>
@@ -141,7 +144,7 @@ export default function StorePage() {
                 <div className={`text-[13px] font-bold ${g.pass_included ? "text-accent text-[11px]" : ""}`}>
                   {formatPrice(g.price_cents, g.pass_included)}
                 </div>
-              </div>
+              </Link>
             ))}
             {!loading && railGames.length === 0 && (
               <div className="flex-1 flex items-center justify-center text-dim text-[13px] p-4">
@@ -157,8 +160,8 @@ export default function StorePage() {
             <p className="text-[13px] font-bold tracking-[.12em] uppercase text-muted mb-3.5">Special Offers</p>
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
               {specials.map((s, i) => (
-                <div key={s.id}
-                  className="bg-panel border border-line rounded-lg overflow-hidden cursor-pointer transition-[transform,box-shadow] hover:-translate-y-[3px] hover:shadow-[0_12px_30px_rgba(0,0,0,.5)]">
+                <Link key={s.id} href={`/game/${s.slug}`}
+                  className="block bg-panel border border-line rounded-lg overflow-hidden cursor-pointer transition-[transform,box-shadow] hover:-translate-y-[3px] hover:shadow-[0_12px_30px_rgba(0,0,0,.5)] no-underline text-inherit">
                   <GradArt pair={pal[(i + 2) % pal.length]} className="h-[130px]" />
                   <div className="px-3 pt-2.5 pb-3">
                     <div className="text-[14px] font-semibold truncate">{s.title}</div>
@@ -171,7 +174,7 @@ export default function StorePage() {
                       )}
                     </div>
                   </div>
-                </div>
+                </Link>
               ))}
             </div>
           </section>

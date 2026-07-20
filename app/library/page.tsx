@@ -2,6 +2,8 @@
 import { useEffect, useState } from "react";
 import { useUser } from "@clerk/nextjs";
 import { getSupabaseClient } from "@/lib/supabase";
+import { getCurrentBuild, type GameBuildRow } from "@/lib/games";
+import { joinBuildUrl } from "@/lib/joinBuildUrl";
 
 type GradPair = [string, string];
 const pal: GradPair[] = [
@@ -52,6 +54,10 @@ export default function LibraryPage() {
   const [search, setSearch] = useState("");
   const [games, setGames] = useState<Game[]>([]);
   const [loading, setLoading] = useState(true);
+  const [playing, setPlaying] = useState(false);
+  const [build, setBuild] = useState<GameBuildRow | null>(null);
+  const [launching, setLaunching] = useState(false);
+  const [playError, setPlayError] = useState("");
 
   useEffect(() => {
     if (!isLoaded) return;
@@ -80,6 +86,32 @@ export default function LibraryPage() {
   }, [isLoaded, user?.id]);
 
   const g = games[selected] ?? null;
+
+  function selectGame(idx: number) {
+    setSelected(idx);
+    setPlaying(false);
+    setBuild(null);
+    setPlayError("");
+  }
+
+  async function handlePlay() {
+    if (!g) return;
+    setLaunching(true);
+    setPlayError("");
+    try {
+      const b = await getCurrentBuild(g.id);
+      if (!b) {
+        setPlayError("This game's build isn't ready to play yet.");
+        return;
+      }
+      setBuild(b);
+      setPlaying(true);
+    } catch (e) {
+      setPlayError(e instanceof Error ? e.message : "Failed to load the game.");
+    } finally {
+      setLaunching(false);
+    }
+  }
 
   const filtered = games.filter(game =>
     (activeCol === "All" || true) &&
@@ -145,7 +177,7 @@ export default function LibraryPage() {
                 const idx = games.indexOf(game);
                 const on = selected === idx;
                 return (
-                  <button key={game.id} onClick={() => setSelected(idx)}
+                  <button key={game.id} onClick={() => selectGame(idx)}
                     className="flex items-center gap-2.5 p-2 rounded-[9px] cursor-pointer text-left w-full transition-colors"
                     style={{ background: on ? "rgba(86,166,232,.14)" : "transparent" }}>
                     <GradArt a={game.a} b={game.b} className="w-[46px] h-[46px] rounded-[7px] shrink-0" />
@@ -161,7 +193,27 @@ export default function LibraryPage() {
 
           {/* Detail */}
           <div>
-            {g ? (
+            {g && playing && build ? (
+              <>
+                <div className="flex items-center gap-3 mb-3">
+                  <button onClick={() => { setPlaying(false); setBuild(null); }}
+                    className="px-3 py-1.5 rounded-[7px] border border-line bg-panel2 text-[12px] font-semibold cursor-pointer">
+                    ← Back
+                  </button>
+                  <div className="text-[14px] font-bold">{g.title}</div>
+                </div>
+                <iframe
+                  key={build.id}
+                  src={joinBuildUrl(build.build_url, build.entry_file)}
+                  className="w-full border-0 rounded-[14px]"
+                  style={{ height: "calc(100vh - 260px)", minHeight: 400, background: "#0a0e13" }}
+                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
+                  allow="fullscreen; clipboard-read; clipboard-write; gamepad"
+                  referrerPolicy="no-referrer"
+                  title={g.title}
+                />
+              </>
+            ) : g ? (
               <>
                 {/* Hero */}
                 <GradArt a={g.a} b={g.b} className="h-[220px] sm:h-[280px] lg:h-[340px] rounded-[14px] border border-line">
@@ -175,11 +227,13 @@ export default function LibraryPage() {
 
                 {/* Play bar */}
                 <div className="flex items-center gap-3 my-4">
-                  <button className="flex items-center gap-2 px-8 py-3.5 rounded-[9px] font-bold text-[16px] cursor-pointer border-none"
+                  <button onClick={handlePlay} disabled={launching}
+                    className="flex items-center gap-2 px-8 py-3.5 rounded-[9px] font-bold text-[16px] cursor-pointer border-none disabled:opacity-50 disabled:cursor-not-allowed"
                     style={{ background: "linear-gradient(180deg, #8bc34a, #5c8a1e)", color: "#0e1a06" }}>
-                    <span className="text-[13px]">▶</span> Play in browser
+                    <span className="text-[13px]">▶</span> {launching ? "Loading…" : "Play in browser"}
                   </button>
                   <button className="px-4 py-3.5 rounded-[9px] font-bold text-[14px] cursor-pointer bg-transparent border border-line text-ink">···</button>
+                  {playError && <span className="text-[12px] text-red-400">{playError}</span>}
                 </div>
 
                 {/* 3-col cards */}

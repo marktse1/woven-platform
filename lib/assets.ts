@@ -22,6 +22,8 @@ export type AssetRow = {
   poly_count: number | null;
   price_cents: number;
   meta: Record<string, unknown>;
+  group_id: string | null;
+  derived_from_asset_id: string | null;
   created_at: string;
 };
 
@@ -51,7 +53,10 @@ function client() {
   return c;
 }
 
-/** Upload a GLB blob to the private bucket and record it in the library. */
+/** Upload a blob to the private bucket and record it in the library. Defaults
+ * to today's GLB-model behavior so every existing call site is unaffected;
+ * pass kind/format/contentType explicitly for other content (textures,
+ * shader-graph JSON, etc). */
 export async function uploadAsset(params: {
   userId: string;
   name: string;
@@ -59,20 +64,28 @@ export async function uploadAsset(params: {
   polyCount?: number;
   visibility?: Visibility;
   meta?: Record<string, unknown>;
+  kind?: string;
+  format?: string;
+  contentType?: string;
+  groupId?: string;
+  derivedFromAssetId?: string;
 }): Promise<AssetRow> {
   const supabase = client();
   const id = crypto.randomUUID();
   const safeName = params.name.replace(/[^a-zA-Z0-9._-]/g, "_");
   const path = `${params.userId}/${id}-${safeName}`;
+  const kind = params.kind ?? "model";
+  const format = params.format ?? "glb";
+  const contentType = params.contentType ?? "model/gltf-binary";
 
   const blob =
     params.bytes instanceof Blob
       ? params.bytes
-      : new Blob([params.bytes as BlobPart], { type: "model/gltf-binary" });
+      : new Blob([params.bytes as BlobPart], { type: contentType });
 
   const { error: upErr } = await supabase.storage
     .from(BUCKET)
-    .upload(path, blob, { contentType: "model/gltf-binary", upsert: false });
+    .upload(path, blob, { contentType, upsert: false });
   if (upErr) throw upErr;
 
   const { data, error } = await supabase
@@ -81,14 +94,53 @@ export async function uploadAsset(params: {
       id,
       clerk_user_id: params.userId,
       name: params.name,
-      kind: "model",
-      format: "glb",
+      kind,
+      format,
       visibility: params.visibility ?? "private",
       storage_path: path,
       file_bytes: blob.size,
       poly_count: params.polyCount ?? null,
       meta: params.meta ?? {},
+      group_id: params.groupId ?? null,
+      derived_from_asset_id: params.derivedFromAssetId ?? null,
     })
+    .select()
+    .single<AssetRow>();
+  if (error) throw error;
+  return data;
+}
+
+/** Overwrites an existing asset's stored bytes in place (same storage_path,
+ * same DB row) instead of minting a new asset — for "Save" on something
+ * already loaded/previously saved this session, as opposed to a first save
+ * or an explicit "Save As New". */
+export async function overwriteAssetBytes(params: {
+  id: string;
+  storagePath: string;
+  bytes: Uint8Array | ArrayBuffer | Blob;
+  contentType?: string;
+  meta?: Record<string, unknown>;
+}): Promise<AssetRow> {
+  const supabase = client();
+  const contentType = params.contentType ?? "application/octet-stream";
+  const blob =
+    params.bytes instanceof Blob
+      ? params.bytes
+      : new Blob([params.bytes as BlobPart], { type: contentType });
+
+  const { error: upErr } = await supabase.storage
+    .from(BUCKET)
+    .upload(params.storagePath, blob, { contentType, upsert: true });
+  if (upErr) throw upErr;
+
+  const { data, error } = await supabase
+    .from("creator_assets")
+    .update({
+      file_bytes: blob.size,
+      meta: params.meta ?? {},
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", params.id)
     .select()
     .single<AssetRow>();
   if (error) throw error;
@@ -146,11 +198,36 @@ export async function setAssetVisibility(
   if (error) throw error;
 }
 
-export async function deleteAsset(asset: AssetRow): Promise<void> {
+export async function renameAsset(id: string, name: string): Promise<void> {
   const supabase = client();
-  await supabase.storage.from(BUCKET).remove([asset.storage_path]);
-  const { error } = await supabase.from("creator_assets").delete().eq("id", asset.id);
+  const { error } = await supabase
+    .from("creator_assets")
+    .update({ name, updated_at: new Date().toISOString() })
+    .eq("id", id);
   if (error) throw error;
+}
+
+export async function deleteAssets(assets: AssetRow[]): Promise<void> {
+  if (assets.length === 0) return;
+  const supabase = client();
+  const paths = assets.map((a) => a.storage_path);
+  const ids = assets.map((a) => a.id);
+
+  const { error: storageErr } = await supabase.storage.from(BUCKET).remove(paths);
+  if (storageErr) {
+    // Never block the DB-row delete on storage cleanup failing — an
+    // orphaned blob is recoverable later; a dangling DB row pointing at
+    // deleted/missing storage is a worse, user-visible bug (broken
+    // loads/thumbnails forever).
+    console.error("deleteAssets: storage removal failed for", paths, storageErr);
+  }
+
+  const { error } = await supabase.from("creator_assets").delete().in("id", ids);
+  if (error) throw error;
+}
+
+export async function deleteAsset(asset: AssetRow): Promise<void> {
+  return deleteAssets([asset]);
 }
 
 export async function deletePipelineStep(stepId: string): Promise<void> {
@@ -372,6 +449,7 @@ export async function appendTier1Step(params: {
   params?: Record<string, unknown>;
   stats?: Record<string, unknown>;
   visibility?: Visibility;
+  derivedFromAssetId?: string;
 }): Promise<PipelineStepRow> {
   const supabase = client();
 
@@ -389,6 +467,7 @@ export async function appendTier1Step(params: {
       polyCount: params.outputPolyCount,
       visibility: params.visibility ?? "private",
       meta: { pipelineOp: params.op, ...(params.stats ?? {}) },
+      derivedFromAssetId: params.derivedFromAssetId,
     });
     outputAssetId = outputAsset.id;
   }

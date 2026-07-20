@@ -257,6 +257,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
         outputPolyCount: res.resultPolys,
         params: { targetPolys, mode: decimateMode, curvatureWeight, lockFraction },
         stats: { sourcePolys: res.sourcePolys, resultPolys: res.resultPolys, reduction: res.reduction },
+        derivedFromAssetId: asset?.id,
       });
 
       // Fetch the stored bytes directly — guarantees the viewer shows exactly
@@ -276,7 +277,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
     } finally {
       setBusy(false);
     }
-  }, [session, workingBuf, targetPolys, decimateMode, curvatureWeight, lockFraction, isCharacter, userId, asset?.name, steps.length, currentAssetId]);
+  }, [session, workingBuf, targetPolys, decimateMode, curvatureWeight, lockFraction, isCharacter, userId, asset?.id, asset?.name, steps.length, currentAssetId]);
 
   const applySegment = useCallback(async () => {
     if (!session || !workingBuf) return;
@@ -325,6 +326,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
         outputPolyCount: resultPolys,
         params: { excludedSegments: Array.from(excludedSegIds) },
         stats: { removedSegments: excludedSegIds.size, resultPolys },
+        derivedFromAssetId: asset?.id,
       });
       const viewerBytes = await fetchAssetBytes(step.output_asset_id!);
       setSteps((prev) => [...prev, step]);
@@ -343,7 +345,7 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
     } finally {
       setBusy(false);
     }
-  }, [session, workingBuf, excludedSegIds, segmentation, userId, asset?.name, steps.length, currentAssetId]);
+  }, [session, workingBuf, excludedSegIds, segmentation, userId, asset?.id, asset?.name, steps.length, currentAssetId]);
 
   const applyRetopo = useCallback(async () => {
     if (!session) return;

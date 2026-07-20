@@ -116,6 +116,7 @@ export async function POST(req: NextRequest) {
               file_bytes: output.byteLength,
               poly_count: null,
               meta: { pipelineOp: "bake", bakeMaps: maps, reAtlas, ktx2, ktx2Compressed: ktx2 },
+              derived_from_asset_id: sourceAssetId ?? null,
             })
             .select("id")
             .single();

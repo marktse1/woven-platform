@@ -165,7 +165,8 @@ export default function AssetLibraryPanel() {
     refresh();
   }
 
-  if (!isLoaded || !user) return null;
+  const inForgeArea = pathname?.startsWith("/forge") || NATIVE_TOOLS.some((t) => t.href && pathname?.startsWith(t.href));
+  if (!isLoaded || !user || !inForgeArea) return null;
 
   // Each piece is independently `fixed` (rather than flex siblings sharing
   // one right-0 wrapper) — a flexed sibling next to the drawer still

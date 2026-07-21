@@ -32,6 +32,7 @@ import { stripSegments } from "@/lib/retopo/strip";
 import { encodeSegmentRle } from "@/lib/retopo/encode-segments";
 import type { SegmentationOverlay, TextureChannel } from "@/components/tools/ModelViewer";
 import { BAKE_OPTIONS } from "@/lib/retopo/optimize";
+import { toGlbFile } from "@/lib/convertMeshFile";
 import StepCard from "./StepCard";
 import { AnimatePresence, motion } from "framer-motion";
 
@@ -76,9 +77,11 @@ type Props = {
   userId: string;
   onBack: () => void;
   onAssetCreated?: () => void;
+  onFile: (file: File) => Promise<void>;
 };
 
-export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }: Props) {
+export default function PipelineStudio({ asset, userId, onBack, onAssetCreated, onFile }: Props) {
+  const [isDragging, setIsDragging] = useState(false);
   const [session, setSession] = useState<PipelineSessionRow | null>(null);
   const [steps, setSteps] = useState<PipelineStepRow[]>([]);
   const [classification, setClassification] = useState<Classification>("auto");
@@ -547,6 +550,33 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
 
   const viewerBuf = compareToSource ? sourceBuf : workingBuf;
 
+  const handleDrop = useCallback(async (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+    const ext = file.name.split(".").pop()?.toLowerCase();
+    if (ext !== "glb" && ext !== "drc" && ext !== "obj") {
+      setError(`Unsupported format: .${ext}. Drop a .glb, .drc, or .obj file.`);
+      return;
+    }
+    try {
+      await onFile(await toGlbFile(file));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load file.");
+    }
+  }, [onFile]);
+
+  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setIsDragging(false);
+  }, []);
+
   return (
     <div className="flex flex-col gap-5">
       <div className="flex items-center gap-3">
@@ -976,8 +1006,35 @@ export default function PipelineStudio({ asset, userId, onBack, onAssetCreated }
                   {compareToSource ? fmt(sourcePolys) : fmt(workingPolys)} tris{!compareToSource && reduction > 0 ? ` · ${reduction}% lighter` : ""}
                 </div>
               </div>
-              <div className="h-[clamp(320px,52vh,700px)]">
-                {!viewerBuf ? (
+              <div
+                className="h-[clamp(320px,52vh,700px)] relative"
+                onDrop={handleDrop}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+              >
+                {!asset ? (
+                  <div className="absolute inset-0 flex items-center justify-center text-center pointer-events-none z-10">
+                    <div
+                      className="rounded-2xl px-10 py-8 flex flex-col items-center gap-2 transition-all"
+                      style={{
+                        border: isDragging ? `2px dashed ${ACCENT}` : "2px dashed #2a2320",
+                        background: isDragging ? "rgba(214,91,54,0.07)" : "transparent",
+                        transition: "all 0.15s",
+                      }}
+                    >
+                      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" style={{ opacity: isDragging ? 1 : 0.35 }}>
+                        <path d="M12 16V4m0 0L8 8m4-4 4 4" stroke={isDragging ? ACCENT : "#8aa0b4"} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+                        <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" stroke={isDragging ? ACCENT : "#8aa0b4"} strokeWidth="1.6" strokeLinecap="round"/>
+                      </svg>
+                      <p className="text-sm font-medium" style={{ color: isDragging ? ACCENT : "#c0b8b0" }}>
+                        {isDragging ? "Drop to load" : "Drop a GLB, DRC, or OBJ here"}
+                      </p>
+                      <p className="text-[11px]" style={{ color: "#6a8098" }}>
+                        or open one from My Assets
+                      </p>
+                    </div>
+                  </div>
+                ) : !viewerBuf ? (
                   <div className="w-full h-full flex items-center justify-center text-[13px]" style={{ color: "#9b9082" }}>Loading…</div>
                 ) : (
                   <ModelViewer

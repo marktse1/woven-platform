@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useUser } from "@clerk/nextjs";
-import DropZone from "@/components/tools/DropZone";
 import { useCreatorStatus } from "@/lib/useCreatorStatus";
 import { useActiveLoader } from "@/components/assets/ActiveLoaderContext";
 import { countGlbTriangles } from "@/lib/retopo/optimize";
@@ -21,7 +20,6 @@ export default function RetopologyClient() {
   const [openedAsset, setOpenedAsset] = useState<AssetRow | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [libraryOpen, setLibraryOpen] = useState(true);
 
   // Mesh Loom no longer keeps its own "your asset library" list — the
   // global My Assets panel (app/layout.tsx) is the universal loader now.
@@ -96,43 +94,7 @@ export default function RetopologyClient() {
           </div>
         )}
 
-        <div className={`grid grid-cols-1 gap-6 items-start ${libraryOpen ? "lg:grid-cols-[1fr_300px]" : "lg:grid-cols-1"}`}>
-          {/* ---- left+center: pipeline studio, always visible ---- */}
-          <PipelineStudio asset={openedAsset} userId={user?.id ?? ""} onBack={() => setOpenedAsset(null)} onAssetCreated={notifyAssetsChanged} />
-
-          {/* ---- right: upload + library, collapsible ---- */}
-          {libraryOpen ? (
-          <div className="flex flex-col gap-5">
-            <div className="rounded-[12px] p-4">
-              <div className="flex items-center justify-between mb-2.5">
-                <p className="text-[11px] font-bold tracking-[.12em] uppercase" style={{ color: "#e8e1d5" }}>Upload</p>
-                <button
-                  onClick={() => setLibraryOpen(false)}
-                  className="text-[11px] px-2 py-0.5 rounded border"
-                  style={{ borderColor: "rgba(255,255,255,0.08)", color: "#6b6460" }}
-                  title="Collapse library"
-                >✕</button>
-              </div>
-              <DropZone onFile={onFile} hint="Drop a GLB" compact accentColor="#d65b36" inactiveBorder="rgba(214,91,54,.30)" baseBg="rgba(214,91,54,0.05)" />
-              {busy && <p className="text-[11.5px] mt-2 text-center" style={{ color: "#c7bfb2" }}>Uploading…</p>}
-              <p className="text-[11px] mt-2.5 leading-relaxed" style={{ color: "#c7bfb2" }}>
-                Open the My Assets panel (right edge) to open a saved model, or drop a new one here.
-              </p>
-            </div>
-          </div>
-          ) : (
-            <div className="hidden lg:flex flex-col items-center pt-2">
-              <button
-                onClick={() => setLibraryOpen(true)}
-                className="text-[11px] px-2.5 py-1.5 rounded-lg border"
-                style={{ borderColor: "rgba(255,255,255,0.08)", background: "#2c2926", color: "#9b9082" }}
-                title="Open library"
-              >
-                Library ▸
-              </button>
-            </div>
-          )}
-        </div>
+        <PipelineStudio asset={openedAsset} userId={user?.id ?? ""} onBack={() => setOpenedAsset(null)} onAssetCreated={notifyAssetsChanged} onFile={onFile} />
       </div>
 
     </motion.main>

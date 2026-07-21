@@ -15,7 +15,7 @@ export const NATIVE_TOOLS: ToolDef[] = [
     kind: "native",
     access: "creators",
     href: "/tools/retopology",
-    accent: "#56a6e8",
+    accent: "#d65b36",
     badge: "New",
   },
   {

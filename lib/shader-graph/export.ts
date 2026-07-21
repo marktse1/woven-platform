@@ -6,6 +6,7 @@ type Compiled = {
   vertexShader: string;
   fragmentShader: string;
   uniforms: Record<string, UniformSpec>;
+  transparent: boolean;
 };
 
 function uniformsToThree(uniforms: Record<string, UniformSpec>): string {
@@ -38,6 +39,7 @@ ${compiled.vertexShader}
 ${compiled.fragmentShader}
 \`,
   uniforms: ${uniformsToThree(compiled.uniforms)},
+  transparent: ${compiled.transparent},
 });
 
 // Apply to a mesh:
@@ -97,7 +99,7 @@ ${compiled.fragmentShader}
   uniforms: ${JSON.stringify(scalars, null, 2)},
   samplers: ${JSON.stringify(samplers, null, 2)},
 });
-
+${compiled.transparent ? '\nshaderMaterial.needAlphaBlending = () => true;\n' : ''}
 // Uniform/texture values, as currently wired in Shaderade:
 ${babylonSetterCalls(compiled.uniforms)}
 
@@ -154,7 +156,7 @@ ${compiled.fragmentShader}
 
 const material = new pc.Material();
 material.shader = shader;
-// entity.model.meshInstances[0].material = material;
+${compiled.transparent ? 'material.blendType = pc.BLEND_NORMAL;\n' : ''}// entity.model.meshInstances[0].material = material;
 
 // Uniform/texture values, as currently wired in Shaderade:
 ${playcanvasParamCalls(compiled.uniforms)}
@@ -178,7 +180,10 @@ function glslUniformComment(uniforms: Record<string, UniformSpec>): string {
 }
 
 export function exportGlsl(compiled: Compiled): string {
-  return `${glslUniformComment(compiled.uniforms)}/* ── vertex.glsl ── */
+  const transparencyNote = compiled.transparent
+    ? "/* This fragment shader writes a non-1.0 alpha (transmission > 0) — enable\n   alpha blending on whatever material/pipeline you attach it to. */\n\n"
+    : "";
+  return `${transparencyNote}${glslUniformComment(compiled.uniforms)}/* ── vertex.glsl ── */
 ${compiled.vertexShader}
 
 /* ── fragment.glsl ── */

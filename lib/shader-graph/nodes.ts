@@ -84,6 +84,9 @@ export const NODE_TYPES: NodeTypeDef[] = [
     inputs: [],
     outputs: [{ id: "value", label: "Value", type: "float" }],
     defaultData: { value: 0.5 },
+    // Wide practical range since this is a generic constant feeding
+    // anything (metallic, math nodes, strengths) — not metallic-specific.
+    params: [{ key: "value", label: "Value", type: "number", min: -2, max: 4, step: 0.01, default: 0.5 }],
   },
   {
     type: "Color",
@@ -92,6 +95,14 @@ export const NODE_TYPES: NodeTypeDef[] = [
     inputs: [],
     outputs: [{ id: "color", label: "Color", type: "vec4" }],
     defaultData: { r: 1, g: 1, b: 1, a: 1 },
+    // max: 4 (not 1) gives headroom for feeding OutputPBR's emissive slot
+    // brighter-than-white, since that channel is intentionally unclamped.
+    params: [
+      { key: "r", label: "R", type: "number", min: 0, max: 4, step: 0.01, default: 1 },
+      { key: "g", label: "G", type: "number", min: 0, max: 4, step: 0.01, default: 1 },
+      { key: "b", label: "B", type: "number", min: 0, max: 4, step: 0.01, default: 1 },
+      { key: "a", label: "A", type: "number", min: 0, max: 1, step: 0.01, default: 1 },
+    ],
   },
   {
     type: "Texture2D",
@@ -300,11 +311,29 @@ export const NODE_TYPES: NodeTypeDef[] = [
       { id: "emissive", label: "Emissive", type: "vec3" },
     ],
     outputs: [],
-    defaultData: { outputMode: "pbr", normalStrength: 1, aoStrength: 1, roughnessStrength: 1 },
+    defaultData: {
+      outputMode: "pbr",
+      normalStrength: 1,
+      aoStrength: 1,
+      roughnessStrength: 1,
+      emissiveStrength: 1,
+      ior: 1.5,
+      transmission: 0,
+    },
     params: [
       { key: "normalStrength", label: "Normal Strength", type: "number", min: 0, max: 2, step: 0.05, default: 1 },
       { key: "aoStrength", label: "AO Strength", type: "number", min: 0, max: 1, step: 0.05, default: 1 },
       { key: "roughnessStrength", label: "Roughness Strength", type: "number", min: 0, max: 2, step: 0.05, default: 1 },
+      // Multiplies whatever's wired into the emissive slot — lets a creator
+      // push glow brightness beyond that node's own 0-4 range (Color's own
+      // params above already allow >1 per channel too; this stacks on top).
+      { key: "emissiveStrength", label: "Emissive Strength", type: "number", min: 0, max: 8, step: 0.1, default: 1 },
+      // ior/transmission drive a Fresnel/Schlick reflectance term in the
+      // compiler (glass ~1.5, water ~1.33, diamond ~2.42) — there's no
+      // environment/cubemap sampling in this compiler, so this is Fresnel-
+      // accurate edge reflectivity, not true ray-bent refraction of a scene.
+      { key: "ior", label: "IOR", type: "number", min: 1.0, max: 2.42, step: 0.01, default: 1.5 },
+      { key: "transmission", label: "Transmission", type: "number", min: 0, max: 1, step: 0.01, default: 0 },
     ],
   },
 ];

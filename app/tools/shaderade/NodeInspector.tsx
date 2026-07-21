@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import type { Node } from "@xyflow/react";
 import { getNodeDef, type ParamSpec } from "@/lib/shader-graph/nodes";
 
@@ -8,22 +9,62 @@ type Props = {
   onChange: (patch: Record<string, unknown>) => void;
 };
 
-const fieldClass = "w-full bg-[#18141c] border border-[#2a2320] rounded px-2 py-1 text-[11px] text-ink outline-none focus:border-[#5a4455]";
+const fieldClass = "bg-[#18141c] border border-[#2a2320] rounded px-2 py-1 text-[11px] text-ink outline-none focus:border-[#5a4455]";
 
+// Keeps the input's displayed text decoupled from the committed numeric
+// value while the user is mid-edit. Committing on every keystroke (the
+// previous behavior) meant clearing the field produced Number("") === 0,
+// which snapped the controlled input back to "0" before the next keystroke
+// landed — so typing "2" after clearing produced "02" instead of "2".
+// Only finite, non-empty text commits upstream; blur resets to the last
+// committed value if the field was left empty or unparseable (e.g. just "-").
 function NumberField({ spec, value, onChange }: { spec: ParamSpec; value: number; onChange: (v: number) => void }) {
+  const [text, setText] = useState(String(Number.isFinite(value) ? value : 0));
+
+  useEffect(() => {
+    const parsed = Number(text);
+    if (!Number.isFinite(parsed) || parsed !== value) {
+      setText(String(Number.isFinite(value) ? value : 0));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  function handleChange(raw: string) {
+    setText(raw);
+    const parsed = Number(raw);
+    if (raw.trim() !== "" && Number.isFinite(parsed)) onChange(parsed);
+  }
+
+  const hasSlider = spec.min !== undefined && spec.max !== undefined;
+
   return (
-    <label className="flex flex-col gap-1">
-      <span className="text-[10px] text-dim">{spec.label}</span>
-      <input
-        type="number"
-        value={Number.isFinite(value) ? value : 0}
-        min={spec.min}
-        max={spec.max}
-        step={spec.step ?? "any"}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className={fieldClass}
-      />
-    </label>
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] text-dim">{spec.label}</span>
+        <input
+          type="number"
+          value={text}
+          min={spec.min}
+          max={spec.max}
+          step={spec.step ?? "any"}
+          onChange={(e) => handleChange(e.target.value)}
+          onBlur={() => setText(String(Number.isFinite(value) ? value : 0))}
+          className={`${fieldClass} w-20 text-right`}
+        />
+      </div>
+      {hasSlider && (
+        <input
+          type="range"
+          min={spec.min}
+          max={spec.max}
+          step={spec.step ?? 0.01}
+          value={Number.isFinite(value) ? value : 0}
+          onChange={(e) => handleChange(e.target.value)}
+          className="w-full"
+          style={{ accentColor: "#e8875a" }}
+        />
+      )}
+    </div>
   );
 }
 

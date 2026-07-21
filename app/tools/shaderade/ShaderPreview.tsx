@@ -210,6 +210,7 @@ export default function ShaderPreview({ compiled, bgLightness = 0.05 }: Props) {
 
     mat.vertexShader = compiled.vertexShader;
     mat.fragmentShader = compiled.fragmentShader;
+    mat.transparent = compiled.transparent;
 
     // Dispose textures from the previous compile to avoid GPU leaks
     for (const tex of prevTexturesRef.current) tex.dispose();

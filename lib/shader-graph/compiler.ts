@@ -10,7 +10,7 @@ export type ShaderGraph = {
 };
 
 export type CompileResult =
-  | { ok: true; fragmentShader: string; vertexShader: string; uniforms: Record<string, UniformSpec> }
+  | { ok: true; fragmentShader: string; vertexShader: string; uniforms: Record<string, UniformSpec>; transparent: boolean }
   | { ok: false; error: string };
 
 export type UniformSpec = {
@@ -416,6 +416,7 @@ export function compile(graph: ShaderGraph): CompileResult {
   const extraDecls: string[] = [];
 
   let outputGlsl = "";
+  let transparent = false;
   if (outputMode === "unlit") {
     const colorConn = getId("color");
     const colorExpr = colorConn
@@ -474,6 +475,15 @@ export function compile(graph: ShaderGraph): CompileResult {
     const normalStrength = (outputData.normalStrength as number) ?? 1;
     const aoStrength = (outputData.aoStrength as number) ?? 1;
     const roughnessStrength = (outputData.roughnessStrength as number) ?? 1;
+    const emissiveStrength = (outputData.emissiveStrength as number) ?? 1;
+    // ior defaults to 1.5 (glass), which yields the exact same 0.04 F0
+    // dielectric reflectance this shader already hardcoded — so existing
+    // graphs (which never set ior) render pixel-identical to before.
+    // transmission defaults to 0, which zeroes out every new term below,
+    // for the same reason.
+    const ior = (outputData.ior as number) ?? 1.5;
+    const transmission = (outputData.transmission as number) ?? 0;
+    transparent = transmission > 0;
 
     lines.push(`vec3 pbrN = normalize(vNormal);`);
     if (normalConn) {
@@ -494,16 +504,28 @@ export function compile(graph: ShaderGraph): CompileResult {
       `float pbrMetal = clamp(${metallicExpr}, 0.0, 1.0);`,
       `float pbrAo = mix(1.0, clamp(${aoExpr}, 0.0, 1.0), ${formatFloat(aoStrength)});`,
       `vec3 pbrAlbedo = ${albedoExpr};`,
-      `vec3 pbrEmissive = ${emissiveExpr};`,
+      `vec3 pbrEmissive = (${emissiveExpr}) * ${formatFloat(emissiveStrength)};`,
       `float pbrNdotL = max(dot(pbrN, pbrLightDir), 0.0);`,
       `float pbrShininess = mix(128.0, 4.0, pbrRough);`,
-      `vec3 pbrSpecColor = mix(vec3(0.04), pbrAlbedo, pbrMetal);`,
+      // F0 (normal-incidence reflectance) derived from IOR via Schlick's
+      // approximation — this is the actual physical effect IOR has on
+      // appearance. ior=1.5 (the default) gives F0=0.04, matching the
+      // dielectric constant this shader always hardcoded, so this is a
+      // strict generalization, not a behavior change at the default.
+      `float pbrF0 = pow((${formatFloat(ior)} - 1.0) / (${formatFloat(ior)} + 1.0), 2.0);`,
+      `float pbrFresnel = pbrF0 + (1.0 - pbrF0) * pow(1.0 - max(dot(pbrN, pbrV), 0.0), 5.0);`,
+      `vec3 pbrSpecColor = mix(vec3(pbrF0), pbrAlbedo, pbrMetal);`,
       `float pbrSpec = pow(max(dot(pbrN, pbrH), 0.0), pbrShininess) * (1.0 - pbrRough);`,
       `vec3 pbrDiffuse = pbrAlbedo * (1.0 - pbrMetal) * pbrNdotL * pbrLightColor;`,
       `vec3 pbrAmbient = pbrAlbedo * pbrAmbientColor;`,
       `vec3 pbrLit = (pbrAmbient + pbrDiffuse) * pbrAo + pbrSpecColor * pbrSpec * pbrLightColor + pbrEmissive;`,
+      // Grazing-angle Fresnel edge brightening — "glass"-like rim
+      // reflectivity — scaled directly by transmission (0 by default, so
+      // no contribution unless a creator dials transmission up).
+      `pbrLit += pbrFresnel * pbrLightColor * ${formatFloat(transmission)};`,
+      `float pbrAlpha = mix(1.0, pbrFresnel, ${formatFloat(transmission)});`,
     );
-    outputGlsl = `gl_FragColor = vec4(pbrLit, 1.0);`;
+    outputGlsl = `gl_FragColor = vec4(pbrLit, pbrAlpha);`;
   }
 
   // Uniform declarations
@@ -560,5 +582,5 @@ export function compile(graph: ShaderGraph): CompileResult {
     "}",
   ].join("\n");
 
-  return { ok: true, fragmentShader, vertexShader, uniforms };
+  return { ok: true, fragmentShader, vertexShader, uniforms, transparent };
 }

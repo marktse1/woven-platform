@@ -3,7 +3,6 @@ import { useEffect, useState } from "react";
 import { useUser } from "@clerk/nextjs";
 import { getSupabaseClient } from "@/lib/supabase";
 import { getCurrentBuild, type GameBuildRow } from "@/lib/games";
-import { joinBuildUrl } from "@/lib/joinBuildUrl";
 
 type GradPair = [string, string];
 const pal: GradPair[] = [
@@ -204,7 +203,7 @@ export default function LibraryPage() {
                 </div>
                 <iframe
                   key={build.id}
-                  src={joinBuildUrl(build.build_url, build.entry_file)}
+                  src={`/api/games/play/${build.id}/${build.entry_file}`}
                   className="w-full border-0 rounded-[14px]"
                   style={{ height: "calc(100vh - 260px)", minHeight: 400, background: "#0a0e13" }}
                   sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"

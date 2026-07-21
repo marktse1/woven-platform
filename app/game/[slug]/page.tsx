@@ -4,7 +4,6 @@ import { useEffect, useState, use as usePromise } from "react";
 import { useUser } from "@clerk/nextjs";
 import Link from "next/link";
 import { getGameBySlug, getCurrentBuild, isInLibrary, addFreeGameToLibrary, type GameRow, type GameBuildRow } from "@/lib/games";
-import { joinBuildUrl } from "@/lib/joinBuildUrl";
 
 type GradPair = [string, string];
 const pal: GradPair[] = [
@@ -121,7 +120,7 @@ export default function GamePage({ params }: { params: Promise<{ slug: string }>
         <div className="flex-1">
           <iframe
             key={build.id}
-            src={joinBuildUrl(build.build_url, build.entry_file)}
+            src={`/api/games/play/${build.id}/${build.entry_file}`}
             className="w-full h-full border-0"
             style={{ height: "calc(100vh - 121px)" }}
             sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"

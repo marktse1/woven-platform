@@ -3,7 +3,7 @@
 import { useEffect, useState, use as usePromise } from "react";
 import { useUser } from "@clerk/nextjs";
 import Link from "next/link";
-import { getGameBySlug, getCurrentBuild, isInLibrary, addFreeGameToLibrary, type GameRow, type GameBuildRow } from "@/lib/games";
+import { getGameBySlug, getCurrentBuild, getBuildHistory, isInLibrary, addFreeGameToLibrary, type GameRow, type GameBuildRow, type GameBuildHistoryRow } from "@/lib/games";
 
 type GradPair = [string, string];
 const pal: GradPair[] = [
@@ -29,6 +29,10 @@ function formatPrice(priceCents: number, passIncluded: boolean): string {
   return `$${(priceCents / 100).toFixed(2)}`;
 }
 
+function formatDate(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
 type Phase = "loading" | "not-found" | "ready" | "playing";
 
 export default function GamePage({ params }: { params: Promise<{ slug: string }> }) {
@@ -38,6 +42,7 @@ export default function GamePage({ params }: { params: Promise<{ slug: string }>
   const [phase, setPhase] = useState<Phase>("loading");
   const [game, setGame] = useState<GameRow | null>(null);
   const [build, setBuild] = useState<GameBuildRow | null>(null);
+  const [history, setHistory] = useState<GameBuildHistoryRow[]>([]);
   const [owned, setOwned] = useState(false);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState("");
@@ -53,6 +58,7 @@ export default function GamePage({ params }: { params: Promise<{ slug: string }>
         const b = await getCurrentBuild(g.id);
         if (!active) return;
         setBuild(b);
+        getBuildHistory(g.id).then((h) => { if (active) setHistory(h); });
         if (user?.id) {
           const inLib = await isInLibrary(user.id, g.id);
           if (!active) return;
@@ -142,6 +148,15 @@ export default function GamePage({ params }: { params: Promise<{ slug: string }>
           <div className="absolute inset-0" style={{ background: "linear-gradient(180deg, transparent 40%, rgba(5,8,11,.92))" }} />
           <div className="absolute left-6 right-6 bottom-5 z-10">
             <h1 className="text-[26px] sm:text-[36px] font-extrabold tracking-[-0.02em]">{game.title}</h1>
+            <p className="text-[13px] text-[#c2d2e0] mt-1">
+              {game.creator_profiles?.handle ? (
+                <>by <Link href={`/studio/${game.creator_profiles.handle}`} className="text-accent no-underline hover:underline">{game.creator_profiles.studio_name ?? game.creator_profiles.handle}</Link></>
+              ) : game.creator_profiles?.studio_name ? (
+                <>by {game.creator_profiles.studio_name}</>
+              ) : null}
+              {game.creator_profiles?.studio_name || game.creator_profiles?.handle ? " · " : null}
+              Released {formatDate(game.created_at)}
+            </p>
             {game.short_description && (
               <p className="text-[#c2d2e0] text-sm mt-1.5 max-w-[520px]">{game.short_description}</p>
             )}
@@ -183,6 +198,29 @@ export default function GamePage({ params }: { params: Promise<{ slug: string }>
         </div>
 
         {error && <p className="text-[12px] text-red-400 mt-2">{error}</p>}
+
+        <div className="mt-8 bg-panel border border-line rounded-[10px]">
+          <div className="px-6 py-4 border-b border-line font-bold text-[15px]">Version history</div>
+          {history.length === 0 ? (
+            <div className="px-6 py-4 text-dim text-[13px]">No release notes yet.</div>
+          ) : (
+            <div>
+              {history.map((h) => (
+                <div key={h.id} className="px-6 py-4 border-b border-line last:border-none">
+                  <div className="flex items-center gap-2.5 mb-1.5">
+                    <span className="text-[13px] font-semibold">{formatDate(h.created_at)}</span>
+                    {h.is_current && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-[.04em]" style={{ background: "rgba(123,194,74,.16)", color: "#a6e06a" }}>
+                        Current
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[13px] text-dim whitespace-pre-wrap">{h.changelog || "No release notes for this version."}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </main>
   );

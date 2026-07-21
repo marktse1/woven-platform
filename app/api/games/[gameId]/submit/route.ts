@@ -14,12 +14,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ gameId:
 
   const { gameId } = await params;
   const body = await req.json().catch(() => ({}));
-  const { priceCents, passIncluded, shortDescription, title, engine } = body as {
+  const { priceCents, passIncluded, shortDescription, title, engine, changelog } = body as {
     priceCents?: number;
     passIncluded?: boolean;
     shortDescription?: string;
     title?: string;
     engine?: string;
+    changelog?: string;
   };
 
   const admin = getSupabaseAdmin();
@@ -60,10 +61,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ gameId:
 
   if (!submission) return Response.json({ error: "No submission found for this game — upload a build first" }, { status: 404 });
 
-  if (engine) {
+  if (engine || changelog) {
     const { data: sub } = await admin.from("game_submissions").select("build_id").eq("id", submission.id).maybeSingle<{ build_id: string | null }>();
-    if (sub?.build_id) await admin.from("game_builds").update({ engine }).eq("id", sub.build_id);
-    await admin.from("game_submissions").update({ engine }).eq("id", submission.id);
+    if (sub?.build_id) {
+      const buildPatch: Record<string, unknown> = {};
+      if (engine) buildPatch.engine = engine;
+      if (changelog) buildPatch.changelog = changelog;
+      await admin.from("game_builds").update(buildPatch).eq("id", sub.build_id);
+    }
+    if (engine) await admin.from("game_submissions").update({ engine }).eq("id", submission.id);
   }
 
   if (submission.status !== "pending_review") {

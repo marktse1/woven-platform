@@ -43,6 +43,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ gameId:
     return Response.json({ error: "This build has no source tree to rebuild from" }, { status: 400 });
   }
 
+  const body = await req.json().catch(() => ({}));
+  const { changelog } = body as { changelog?: string };
+
   const version = Date.now().toString(36);
   const storagePrefix = `${gameId}/${version}`;
 
@@ -57,6 +60,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ gameId:
       uploaded_by: userId,
       engine: sourceBuild.engine,
       is_current: false,
+      changelog: changelog || null,
     })
     .select("id")
     .single<{ id: string }>();

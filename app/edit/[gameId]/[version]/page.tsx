@@ -39,6 +39,7 @@ export default function EditPage({ params }: { params: Promise<{ gameId: string;
 
   const [rebuildStatus, setRebuildStatus] = useState<"idle" | "running" | "done" | "error">("idle");
   const [rebuildStage, setRebuildStage] = useState("");
+  const [changelogInput, setChangelogInput] = useState("");
 
   const streamingReplyRef = useRef("");
   const [streamingReply, setStreamingReply] = useState("");
@@ -151,7 +152,7 @@ export default function EditPage({ params }: { params: Promise<{ gameId: string;
     setRebuildStatus("running");
     setError("");
     try {
-      await streamNdjson(`/api/games/${gameId}/builds/${build.id}/rebuild`, {}, (evt) => {
+      await streamNdjson(`/api/games/${gameId}/builds/${build.id}/rebuild`, { changelog: changelogInput.trim() || undefined }, (evt) => {
         if (typeof evt.stage === "string") setRebuildStage(evt.stage);
         if (evt.done) setRebuildStatus(evt.error ? "error" : "done");
         if (evt.error) setError(evt.error as string);
@@ -168,6 +169,12 @@ export default function EditPage({ params }: { params: Promise<{ gameId: string;
         <Link href="/dashboard" className="text-[13px] text-dim hover:text-ink">← Dashboard</Link>
         <div className="text-[13px] font-semibold">Editing build {version}</div>
         <div className="flex-1" />
+        <input
+          value={changelogInput}
+          onChange={(e) => setChangelogInput(e.target.value)}
+          placeholder="What's new in this version…"
+          className="bg-[#0a0e13] border border-line rounded-lg px-2.5 py-1.5 text-[12.5px] outline-none w-[240px]"
+        />
         <button
           onClick={rebuild}
           disabled={rebuildStatus === "running"}

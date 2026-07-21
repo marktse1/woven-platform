@@ -106,6 +106,7 @@ type SharedState = {
   isFree: boolean;
   priceInput: string;
   passIncluded: boolean;
+  changelog: string;
   submitStatus: "idle" | "submitting" | "submitted" | "error";
   submitError: string;
   onFile: (file: File) => void;
@@ -115,6 +116,7 @@ type SharedState = {
   setIsFree: (v: boolean) => void;
   setPriceInput: (v: string) => void;
   setPassIncluded: (v: boolean) => void;
+  setChangelog: (v: string) => void;
   onSubmit: () => void;
 };
 
@@ -393,6 +395,15 @@ function Step5({ s }: { s: SharedState }) {
             </div>
           ))}
         </div>
+        <div className="mt-5">
+          <label className="text-[13px] font-semibold text-muted block mb-1.5">What&apos;s new</label>
+          <textarea
+            className={`${inputCls()} min-h-[90px] resize-y`}
+            value={s.changelog}
+            onChange={(e) => s.setChangelog(e.target.value)}
+            placeholder="Release notes players will see on the store page (optional for a first release, but recommended for updates)"
+          />
+        </div>
       </div>
       <div className="bg-panel border border-line rounded-[10px] p-6">
         <SectionLabel>Review & timeline</SectionLabel>
@@ -438,6 +449,7 @@ export default function UploadPage() {
   const [isFree, setIsFree] = useState(true);
   const [priceInput, setPriceInput] = useState("9.99");
   const [passIncluded, setPassIncluded] = useState(false);
+  const [changelog, setChangelog] = useState("");
 
   const [submitStatus, setSubmitStatus] = useState<"idle" | "submitting" | "submitted" | "error">("idle");
   const [submitError, setSubmitError] = useState("");
@@ -492,6 +504,7 @@ export default function UploadPage() {
           priceCents: isFree ? 0 : Math.round((Number(priceInput) || 0) * 100),
           passIncluded,
           engine: engineOverride ?? undefined,
+          changelog: changelog.trim() || undefined,
         }),
       });
       const body = await res.json().catch(() => ({}));
@@ -506,9 +519,9 @@ export default function UploadPage() {
   const shared: SharedState = {
     file, uploadPhase, uploadPct, stage, stageProgress, gameId, buildId,
     detectedEngine, entryFile, engineOverride, warnings, errorMsg,
-    title, shortDescription, isFree, priceInput, passIncluded,
+    title, shortDescription, isFree, priceInput, passIncluded, changelog,
     submitStatus, submitError,
-    onFile, setEngineOverride, setTitle, setShortDescription, setIsFree, setPriceInput, setPassIncluded, onSubmit,
+    onFile, setEngineOverride, setTitle, setShortDescription, setIsFree, setPriceInput, setPassIncluded, setChangelog, onSubmit,
   };
 
   const goTo = (i: number) => { setCurrent(i); window.scrollTo({ top: 0 }); };

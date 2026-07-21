@@ -2,7 +2,8 @@
 import { useEffect, useState } from "react";
 import { useUser } from "@clerk/nextjs";
 import { getSupabaseClient } from "@/lib/supabase";
-import { getCurrentBuild, type GameBuildRow } from "@/lib/games";
+import Link from "next/link";
+import { getCurrentBuild, getBuildHistory, type GameBuildRow, type GameBuildHistoryRow } from "@/lib/games";
 
 type GradPair = [string, string];
 const pal: GradPair[] = [
@@ -14,9 +15,13 @@ const pal: GradPair[] = [
 
 type Game = {
   id: string;
+  slug: string;
   title: string;
   tags: string[];
   pass_included: boolean;
+  creator_id: string | null;
+  created_at: string;
+  creator_profiles: { studio_name: string | null; handle: string | null } | null;
   a: string;
   b: string;
 };
@@ -26,13 +31,21 @@ type LibraryRow = {
   source: string;
   games: {
     id: string;
+    slug: string;
     title: string;
     tags: string[];
     pass_included: boolean;
+    creator_id: string | null;
+    created_at: string;
+    creator_profiles: { studio_name: string | null; handle: string | null } | null;
   } | null;
 };
 
 const collections = ["All", "Recently played", "Favorites", "Unplayed", "Co-op", "Cozy"];
+
+function formatDate(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
 
 function GradArt({ a, b, className = "", children }: { a: string; b: string; className?: string; children?: React.ReactNode }) {
   return (
@@ -57,6 +70,7 @@ export default function LibraryPage() {
   const [build, setBuild] = useState<GameBuildRow | null>(null);
   const [launching, setLaunching] = useState(false);
   const [playError, setPlayError] = useState("");
+  const [history, setHistory] = useState<GameBuildHistoryRow[]>([]);
 
   useEffect(() => {
     if (!isLoaded) return;
@@ -65,7 +79,7 @@ export default function LibraryPage() {
     if (!supabase) { setLoading(false); return; }
     supabase
       .from("user_library")
-      .select("game_id, source, games(id, title, tags, pass_included)")
+      .select("game_id, source, games(id, slug, title, tags, pass_included, creator_id, created_at, creator_profiles(studio_name, handle))")
       .eq("clerk_user_id", user.id)
       .then(({ data }) => {
         const rows = (data ?? []) as unknown as LibraryRow[];
@@ -73,9 +87,13 @@ export default function LibraryPage() {
           .filter(r => r.games !== null)
           .map((r, i) => ({
             id: r.games!.id,
+            slug: r.games!.slug,
             title: r.games!.title,
             tags: r.games!.tags ?? [],
             pass_included: r.games!.pass_included,
+            creator_id: r.games!.creator_id,
+            created_at: r.games!.created_at,
+            creator_profiles: r.games!.creator_profiles,
             a: pal[i % pal.length][0],
             b: pal[i % pal.length][1],
           }));
@@ -85,6 +103,13 @@ export default function LibraryPage() {
   }, [isLoaded, user?.id]);
 
   const g = games[selected] ?? null;
+
+  useEffect(() => {
+    if (!g) { setHistory([]); return; }
+    let active = true;
+    getBuildHistory(g.id).then((h) => { if (active) setHistory(h); });
+    return () => { active = false; };
+  }, [g?.id]);
 
   function selectGame(idx: number) {
     setSelected(idx);
@@ -220,7 +245,16 @@ export default function LibraryPage() {
                   <div className="absolute left-6 right-6 bottom-5 z-10">
                     <p className="text-[12px] font-bold tracking-[.10em] uppercase text-[#cfe6fb]">{g.tags.slice(0, 2).join(" · ")}</p>
                     <h1 className="text-[24px] sm:text-[32px] lg:text-[38px] font-extrabold tracking-[-0.02em] leading-none my-1.5">{g.title}</h1>
-                    <p className="text-[13.5px] text-muted">WebGL build</p>
+                    <p className="text-[13.5px] text-muted">
+                      {g.creator_profiles?.handle ? (
+                        <>by <Link href={`/studio/${g.creator_profiles.handle}`} className="text-accent no-underline hover:underline">{g.creator_profiles.studio_name ?? g.creator_profiles.handle}</Link></>
+                      ) : g.creator_profiles?.studio_name ? (
+                        <>by {g.creator_profiles.studio_name}</>
+                      ) : (
+                        "WebGL build"
+                      )}
+                      {(g.creator_profiles?.studio_name || g.creator_profiles?.handle) && ` · Released ${formatDate(g.created_at)}`}
+                    </p>
                   </div>
                 </GradArt>
 
@@ -262,10 +296,28 @@ export default function LibraryPage() {
                   </div>
                 </div>
 
-                {/* News */}
+                {/* Version history */}
                 <div className="mt-4 bg-panel border border-line rounded-[10px]">
-                  <div className="px-6 py-4 border-b border-line font-bold text-[15px]">Updates & news from the creator</div>
-                  <div className="px-6 py-4 text-dim text-[13px]">No news posts yet.</div>
+                  <div className="px-6 py-4 border-b border-line font-bold text-[15px]">Version history</div>
+                  {history.length === 0 ? (
+                    <div className="px-6 py-4 text-dim text-[13px]">No release notes yet.</div>
+                  ) : (
+                    <div>
+                      {history.map((h) => (
+                        <div key={h.id} className="px-6 py-4 border-b border-line last:border-none">
+                          <div className="flex items-center gap-2.5 mb-1.5">
+                            <span className="text-[13px] font-semibold">{formatDate(h.created_at)}</span>
+                            {h.is_current && (
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-[.04em]" style={{ background: "rgba(123,194,74,.16)", color: "#a6e06a" }}>
+                                Current
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[13px] text-dim whitespace-pre-wrap">{h.changelog || "No release notes for this version."}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </>
             ) : !loading && (

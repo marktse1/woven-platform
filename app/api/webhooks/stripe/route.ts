@@ -36,7 +36,7 @@ export async function POST(request: Request) {
           payment_intent_id: intent.id,
           // If transfer_data is set, creator was paid immediately; otherwise held
           creator_paid_out: !!intent.transfer_data?.destination,
-          creator_amount_cents: Math.round(intent.amount * 0.88),
+          creator_amount_cents: Math.round(intent.amount * 0.80),
         }, { onConflict: "clerk_user_id,game_id" });
       }
       break;

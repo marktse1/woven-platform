@@ -315,7 +315,7 @@ function Step2({ s }: { s: SharedState }) {
 function Step3({ s }: { s: SharedState }) {
   const dollars = (Number(s.priceInput) || 0);
   const cents = Math.round(dollars * 100);
-  const creatorCut = cents ? (cents * 0.88 / 100).toFixed(2) : "0.00";
+  const creatorCut = cents ? (cents * 0.80 / 100).toFixed(2) : "0.00";
   return (
     <div className="grid gap-5 items-start" style={{ gridTemplateColumns: "1fr 320px" }}>
       <div className="bg-panel border border-line rounded-[10px] p-6">
@@ -327,7 +327,7 @@ function Step3({ s }: { s: SharedState }) {
           <div className="my-4">
             <label className="text-[13px] font-semibold text-muted block mb-1.5">Base price (USD)</label>
             <input className={inputCls("w-[160px]")} value={s.priceInput} onChange={(e) => s.setPriceInput(e.target.value.replace(/[^0-9.]/g, ""))} placeholder="15.99" />
-            <p className="text-[12px] text-dim mt-1.5">Woven keeps 12%. You earn <strong className="text-green">${creatorCut}</strong> per sale.</p>
+            <p className="text-[12px] text-dim mt-1.5">Woven keeps 20%. You earn <strong className="text-green">${creatorCut}</strong> per sale.</p>
           </div>
         )}
         <div className="h-px bg-line my-4" />
@@ -338,7 +338,7 @@ function Step3({ s }: { s: SharedState }) {
       </div>
       <div className="bg-panel border border-line rounded-[10px] p-6">
         <SectionLabel>Estimated payout</SectionLabel>
-        <div className="flex justify-between text-[14px] py-1.5"><span className="text-muted">Per sale (88%)</span><span className="font-semibold text-green">{s.isFree ? "—" : `$${creatorCut}`}</span></div>
+        <div className="flex justify-between text-[14px] py-1.5"><span className="text-muted">Per sale (80%)</span><span className="font-semibold text-green">{s.isFree ? "—" : `$${creatorCut}`}</span></div>
         <div className="flex justify-between text-[14px] py-1.5"><span className="text-muted">Pass · per hour played</span><span className="font-semibold">{s.passIncluded ? "~$0.04" : "—"}</span></div>
         <div className="h-px bg-line my-4" />
         <div className="flex gap-2.5 p-3.5 rounded-[9px] text-[13px] text-[#bcdcf3]"

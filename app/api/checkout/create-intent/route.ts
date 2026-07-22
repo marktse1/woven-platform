@@ -49,7 +49,7 @@ export async function POST(request: Request) {
 
   // If creator has a connected Stripe account, split automatically
   if (creatorAccountId && creatorChargesEnabled) {
-    intentParams.application_fee_amount = Math.round(priceCents * 0.12);
+    intentParams.application_fee_amount = Math.round(priceCents * 0.20);
     intentParams.transfer_data = { destination: creatorAccountId };
   }
   // Otherwise: full amount goes to platform; webhook tracks for later manual transfer

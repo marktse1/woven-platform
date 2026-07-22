@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
 import { unwrapAndBake } from "@/lib/retopo/bake";
 
@@ -9,8 +10,10 @@ const BUCKET = "creator-assets";
 
 export async function POST(req: NextRequest) {
   try {
+    const { userId } = await auth();
+    if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
     const body = (await req.json()) as {
-      userId: string;
       loResAssetId: string;
       bakeMaps?: string[];
       reAtlas?: boolean;
@@ -18,9 +21,9 @@ export async function POST(req: NextRequest) {
       sourceAssetId?: string;
     };
 
-    const { userId, loResAssetId, bakeMaps, reAtlas = true, ktx2 = true, sourceAssetId } = body;
-    if (!userId || !loResAssetId) {
-      return NextResponse.json({ error: "userId and loResAssetId required" }, { status: 400 });
+    const { loResAssetId, bakeMaps, reAtlas = true, ktx2 = true, sourceAssetId } = body;
+    if (!loResAssetId) {
+      return NextResponse.json({ error: "loResAssetId required" }, { status: 400 });
     }
 
     const admin = getSupabaseAdmin();

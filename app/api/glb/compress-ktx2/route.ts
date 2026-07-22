@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
 import { createWebIO } from "@/lib/gltf/io";
 import { compressGlbTextures } from "@/lib/textures/ktx2";
@@ -17,10 +18,13 @@ const BUCKET = "creator-assets";
 
 export async function POST(req: NextRequest) {
   try {
-    const body = (await req.json()) as { userId: string; assetId: string };
-    const { userId, assetId } = body;
-    if (!userId || !assetId) {
-      return NextResponse.json({ error: "userId and assetId required" }, { status: 400 });
+    const { userId } = await auth();
+    if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+    const body = (await req.json()) as { assetId: string };
+    const { assetId } = body;
+    if (!assetId) {
+      return NextResponse.json({ error: "assetId required" }, { status: 400 });
     }
 
     const admin = getSupabaseAdmin();

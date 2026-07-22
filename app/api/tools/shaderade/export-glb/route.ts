@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
 import sharp from "sharp";
 import { Document } from "@gltf-transform/core";
 import { dedup, prune } from "@gltf-transform/functions";
@@ -28,7 +29,6 @@ type ChannelInput3 = { kind: "texture"; assetId: string } | { kind: "literal"; r
 type ChannelInput1 = { kind: "texture"; assetId: string } | { kind: "literal"; value: number } | null;
 
 type ExportGlbBody = {
-  userId: string;
   materialName: string;
   shaderGraphAssetId: string;
   channels: {
@@ -47,15 +47,18 @@ type ExportGlbBody = {
 
 export async function POST(req: NextRequest) {
   try {
+    const { userId } = await auth();
+    if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
     const body = (await req.json()) as ExportGlbBody;
-    const { userId, materialName, shaderGraphAssetId, channels } = body;
+    const { materialName, shaderGraphAssetId, channels } = body;
     const normalYFlip = body.normalYFlip === true;
     const normalStrength = body.normalStrength ?? 1;
     const aoStrength = body.aoStrength ?? 1;
     const roughnessStrength = body.roughnessStrength ?? 1;
 
-    if (!userId || !materialName || !shaderGraphAssetId || !channels) {
-      return NextResponse.json({ error: "userId, materialName, shaderGraphAssetId, channels required" }, { status: 400 });
+    if (!materialName || !shaderGraphAssetId || !channels) {
+      return NextResponse.json({ error: "materialName, shaderGraphAssetId, channels required" }, { status: 400 });
     }
 
     const admin = getSupabaseAdmin();

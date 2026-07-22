@@ -7,8 +7,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
 import CreatorSubNav from "@/components/shell/CreatorSubNav";
-import { getSupabaseClient, getSupabaseEnvStatus } from "@/lib/supabase";
-import { getAutoApproveCreators } from "@/lib/platformSettings";
 
 const engineOptions = [
   { label: "Babylon.js", dot: "#bb464b" },
@@ -24,7 +22,7 @@ const engineOptions = [
 ];
 
 const benefits = [
-  { ico: "💸", title: "Keep 88%", body: "Flat split, no tiers. Payouts via Stripe in 30+ currencies, twice a month." },
+  { ico: "💸", title: "Keep 80%", body: "Flat split, no tiers. Payouts via Stripe in 30+ currencies, twice a month." },
   { ico: "🛠️", title: "Weave Forge, free", body: "Our in-browser world editor - terrain, skyboxes, weather - free forever." },
   { ico: "🎮", title: "Any engine", body: "Babylon, three.js, PlayCanvas, Phaser, Godot & Unity WebGL - if it runs in a browser, it runs on Woven." },
   { ico: "🌐", title: "Multiplayer built-in", body: "Drop-in WebRTC netcode & voice. Rooms, matchmaking and relay handled for you." },
@@ -100,47 +98,24 @@ export default function BecomeCreatorPage() {
       return;
     }
 
-    const supabase = getSupabaseClient();
-    if (!supabase) {
-      const env = getSupabaseEnvStatus();
-      setState("error");
-      setMessage(
-        env.missing.length
-          ? `Missing Supabase env vars: ${env.missing.join(", ")}.`
-          : "Supabase client could not initialize. Check the Woven Vercel env vars."
-      );
-      return;
-    }
-
     setSubmitting(true);
-    const autoApprove = await getAutoApproveCreators();
-    const { error } = await supabase
-      .from("creator_profiles")
-      .upsert(
-        {
-          clerk_user_id: user.id,
-          studio_name,
-          handle,
-          status: autoApprove ? "approved" : "pending",
-          country,
-          team_size,
-          about,
-          links,
-          engines: Array.from(engines),
-        },
-        { onConflict: "clerk_user_id" }
-      );
+    const res = await fetch("/api/creator/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ studio_name, handle, country, team_size, about, links, engines: Array.from(engines) }),
+    });
+    const resBody = await res.json().catch(() => ({}));
     setSubmitting(false);
 
-    if (error) {
+    if (!res.ok) {
       setState("error");
-      setMessage(error.message);
+      setMessage(resBody.error ?? "Could not submit your application.");
       return;
     }
 
     setState("success");
     setMessage(
-      autoApprove
+      resBody.autoApprove
         ? "Application approved automatically — creator access is unlocked."
         : "Application saved. A staff reviewer can now approve creator status."
     );
@@ -169,7 +144,7 @@ export default function BecomeCreatorPage() {
               </Link>
             </div>
             <div className="flex gap-8 mt-2">
-              {[["88%", "Revenue to you"], ["$0", "To list & to use Weave Forge"], ["~2 days", "Avg. review time"]].map(([n, l]) => (
+              {[["80%", "Revenue to you"], ["$0", "To list & to use Weave Forge"], ["~2 days", "Avg. review time"]].map(([n, l]) => (
                 <div key={l}>
                   <div className="text-[28px] font-extrabold tracking-[-0.02em]">{n}</div>
                   <div className="text-[12.5px] text-dim mt-0.5">{l}</div>

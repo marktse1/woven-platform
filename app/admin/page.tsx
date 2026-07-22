@@ -4,7 +4,6 @@ export const dynamic = "force-dynamic";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useUser } from "@clerk/nextjs";
-import { getSupabaseClient, getSupabaseEnvStatus } from "@/lib/supabase";
 import { getAutoApproveCreators, setAutoApproveCreators } from "@/lib/platformSettings";
 
 type CreatorProfile = {
@@ -162,34 +161,18 @@ export default function AdminReviewPage() {
         return;
       }
 
-      const supabase = getSupabaseClient();
-      if (!supabase) {
-        if (active) {
-          const env = getSupabaseEnvStatus();
-          setError(
-            env.missing.length
-              ? `Missing Supabase env vars: ${env.missing.join(", ")}.`
-              : "Supabase client could not initialize. Check the Woven Vercel env vars."
-          );
-          setLoading(false);
-        }
-        return;
-      }
-
-      const { data, error: loadError } = await supabase
-        .from("creator_profiles")
-        .select("id, clerk_user_id, status, studio_name, handle")
-        .order("id", { ascending: false });
+      const res = await fetch("/api/admin/creators");
+      const resBody = await res.json().catch(() => ({}));
 
       if (!active) return;
 
-      if (loadError) {
-        setError(loadError.message);
+      if (!res.ok) {
+        setError(resBody.error ?? "Failed to load creator applications.");
         setLoading(false);
         return;
       }
 
-      const rows = (data ?? []) as CreatorProfile[];
+      const rows = (resBody.profiles ?? []) as CreatorProfile[];
       setProfiles(rows);
       if (!selectedId && rows.length) setSelectedId(rows[0].id);
       setLoading(false);
@@ -265,24 +248,15 @@ export default function AdminReviewPage() {
 
   async function updateStatus(nextStatus: CreatorProfile["status"], reason: string) {
     if (!selected) return;
-    const supabase = getSupabaseClient();
-    if (!supabase) {
-      const env = getSupabaseEnvStatus();
-      setError(
-        env.missing.length
-          ? `Missing Supabase env vars: ${env.missing.join(", ")}.`
-          : "Supabase client could not initialize. Check the Woven Vercel env vars."
-      );
-      return;
-    }
+    const res = await fetch(`/api/admin/creators/${selected.id}/decide`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: nextStatus }),
+    });
+    const resBody = await res.json().catch(() => ({}));
 
-    const { error: updateError } = await supabase
-      .from("creator_profiles")
-      .update({ status: nextStatus })
-      .eq("id", selected.id);
-
-    if (updateError) {
-      setError(updateError.message);
+    if (!res.ok) {
+      setError(resBody.error ?? "Could not update this application.");
       return;
     }
 

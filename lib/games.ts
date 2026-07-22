@@ -17,7 +17,18 @@ export type GameRow = {
   status: string;
   creator_id: string | null;
   created_at: string;
+  rating: number | null;
   creator_profiles: { studio_name: string | null; handle: string | null } | null;
+};
+
+export type GameReviewRow = {
+  id: string;
+  game_id: string;
+  clerk_user_id: string;
+  rating: number;
+  body: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 export type GameBuildRow = {
@@ -59,7 +70,7 @@ export async function getGameBySlug(slug: string): Promise<GameRow | null> {
   const supabase = client();
   const { data, error } = await supabase
     .from("games")
-    .select("id, slug, title, short_description, price_cents, pass_included, tags, status, creator_id, created_at, creator_profiles(studio_name, handle)")
+    .select("id, slug, title, short_description, price_cents, pass_included, tags, status, creator_id, created_at, rating, creator_profiles(studio_name, handle)")
     .eq("slug", slug)
     .eq("status", "live")
     .maybeSingle<GameRow>();
@@ -148,5 +159,71 @@ export async function addFreeGameToLibrary(userId: string, gameId: string): Prom
   const { error } = await supabase
     .from("user_library")
     .insert({ clerk_user_id: userId, game_id: gameId, source: "grant" });
+  if (error) throw error;
+}
+
+/** Whether this user has actually launched this game at least once — the
+ * real gate for reviews (0029_game_reviews.sql), not just ownership. */
+export async function hasPlayedGame(userId: string, gameId: string): Promise<boolean> {
+  const supabase = client();
+  const { data, error } = await supabase
+    .from("user_library")
+    .select("first_played_at")
+    .eq("clerk_user_id", userId)
+    .eq("game_id", gameId)
+    .maybeSingle<{ first_played_at: string | null }>();
+  if (error) throw error;
+  return !!data?.first_played_at;
+}
+
+/** Marks a game as played, once — safe to call every time Play is pressed
+ * (the `is null` guard means only the first call ever actually writes). */
+export async function markGamePlayed(userId: string, gameId: string): Promise<void> {
+  const supabase = client();
+  const { error } = await supabase
+    .from("user_library")
+    .update({ first_played_at: new Date().toISOString() })
+    .eq("clerk_user_id", userId)
+    .eq("game_id", gameId)
+    .is("first_played_at", null);
+  if (error) throw error;
+}
+
+/** Every review for a game, newest first. game_reviews has RLS
+ * `for select using (true)` — a plain public read. */
+export async function getReviews(gameId: string): Promise<GameReviewRow[]> {
+  const supabase = client();
+  const { data, error } = await supabase
+    .from("game_reviews")
+    .select("id, game_id, clerk_user_id, rating, body, created_at, updated_at")
+    .eq("game_id", gameId)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function getMyReview(userId: string, gameId: string): Promise<GameReviewRow | null> {
+  const supabase = client();
+  const { data, error } = await supabase
+    .from("game_reviews")
+    .select("id, game_id, clerk_user_id, rating, body, created_at, updated_at")
+    .eq("game_id", gameId)
+    .eq("clerk_user_id", userId)
+    .maybeSingle<GameReviewRow>();
+  if (error) throw error;
+  return data;
+}
+
+/** Writes or edits the caller's own review. RLS enforces the "owned and
+ * played" rule (0029_game_reviews.sql) — this call fails outright if
+ * first_played_at isn't set yet, not just hidden by the UI. */
+export async function upsertReview(userId: string, gameId: string, rating: number, body: string): Promise<void> {
+  const supabase = client();
+  const { error } = await supabase
+    .from("game_reviews")
+    .upsert(
+      { game_id: gameId, clerk_user_id: userId, rating, body: body.trim() || null, updated_at: new Date().toISOString() },
+      { onConflict: "game_id,clerk_user_id" },
+    );
   if (error) throw error;
 }

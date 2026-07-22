@@ -7,7 +7,6 @@ const links = [
   { label: "Game Hubs",   href: "/community/hubs" },
   { label: "Workshop",    href: "/community/workshop" },
   { label: "Events",      href: "/community/events" },
-  { label: "Reviews",     href: "/community/reviews" },
   { label: "Guides",      href: "/community/guides" },
 ];
 

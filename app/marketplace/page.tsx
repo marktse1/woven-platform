@@ -1,6 +1,11 @@
-"use client";
+import type { Metadata } from "next";
 import CreatorSubNav from "@/components/shell/CreatorSubNav";
 import Link from "next/link";
+
+export const metadata: Metadata = {
+  title: "Asset Marketplace — Woven",
+  description: "Buy and sell game-ready assets made in Woven's tools — sculpted meshes, shader graphs, texture packs, and optimized 3D models. Launching soon.",
+};
 
 const UPCOMING = [
   {

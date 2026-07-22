@@ -1,6 +1,7 @@
 import { auth } from "@clerk/nextjs/server";
 import { stripe } from "@/lib/stripe";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
+import { getSiteUrl } from "@/lib/siteUrl";
 
 export async function POST() {
   const { userId } = await auth();
@@ -30,7 +31,7 @@ export async function POST() {
       .eq("clerk_user_id", userId);
   }
 
-  const origin = process.env.NEXT_PUBLIC_APP_URL ?? "https://woven.gg";
+  const origin = getSiteUrl();
   const link = await stripe.accountLinks.create({
     account: accountId,
     type: "account_onboarding",

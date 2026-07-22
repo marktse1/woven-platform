@@ -7,12 +7,28 @@ import MainNav from "@/components/shell/MainNav";
 import HeaderShell from "@/components/shell/HeaderShell";
 import AssetLibraryPanel from "@/components/assets/AssetLibraryPanel";
 import { ActiveLoaderProvider } from "@/components/assets/ActiveLoaderContext";
+import { getSiteUrl } from "@/lib/siteUrl";
 
 const inter = Inter({ subsets: ["latin"], weight: ["400", "500", "600", "700", "800"] });
 
+const siteTitle = "Woven — Web Games Platform";
+const siteDescription = "Browse and play browser-native games. Publish your worlds.";
+
 export const metadata: Metadata = {
-  title: "Woven — Web Games Platform",
-  description: "Browse and play browser-native games. Publish your worlds.",
+  metadataBase: new URL(getSiteUrl()),
+  title: siteTitle,
+  description: siteDescription,
+  openGraph: {
+    title: siteTitle,
+    description: siteDescription,
+    siteName: "Woven",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: siteTitle,
+    description: siteDescription,
+  },
 };
 
 export const viewport: Viewport = {

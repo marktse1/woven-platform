@@ -17,7 +17,7 @@ export async function GET() {
 
   const { data, error } = await admin
     .from("creator_profiles")
-    .select("id, clerk_user_id, status, studio_name, handle")
+    .select("id, clerk_user_id, status, studio_name, handle, rejection_note")
     .order("id", { ascending: false });
   if (error) return Response.json({ error: error.message }, { status: 500 });
 

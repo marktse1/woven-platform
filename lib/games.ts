@@ -18,7 +18,16 @@ export type GameRow = {
   creator_id: string | null;
   created_at: string;
   rating: number | null;
+  thumbnail_url: string | null;
+  banner_url: string | null;
+  video_url: string | null;
   creator_profiles: { studio_name: string | null; handle: string | null } | null;
+};
+
+export type GameScreenshotRow = {
+  id: string;
+  storage_path: string;
+  position: number;
 };
 
 export type GameReviewRow = {
@@ -56,8 +65,25 @@ export type CreatorProfileRow = {
   team_size: string | null;
   links: string | null;
   engines: string[] | null;
+  banner_url: string | null;
   created_at: string;
+  status?: "pending" | "approved" | "rejected";
+  rejection_note?: string | null;
 };
+
+/** Converts the 1-5 star average (games.rating, trigger-maintained from
+ * game_reviews) into a Metacritic-style 0-100 score. null when there are
+ * no reviews yet — a game with zero reviews shows no score, not a 0. */
+export function scoreOutOf100(rating: number | null): number | null {
+  if (rating == null) return null;
+  return Math.round((rating / 5) * 100);
+}
+
+export function scoreColor(score: number): string {
+  if (score >= 75) return "#5cb85c";
+  if (score >= 50) return "#f0c66a";
+  return "#e35c5c";
+}
 
 function client() {
   const c = getSupabaseClient();
@@ -70,9 +96,41 @@ export async function getGameBySlug(slug: string): Promise<GameRow | null> {
   const supabase = client();
   const { data, error } = await supabase
     .from("games")
-    .select("id, slug, title, short_description, price_cents, pass_included, tags, status, creator_id, created_at, rating, creator_profiles(studio_name, handle)")
+    .select("id, slug, title, short_description, price_cents, pass_included, tags, status, creator_id, created_at, rating, thumbnail_url, banner_url, video_url, creator_profiles(studio_name, handle)")
     .eq("slug", slug)
     .eq("status", "live")
+    .maybeSingle<GameRow>();
+  if (error) throw error;
+  return data;
+}
+
+/** A game's screenshot gallery, in creator-set order. game_screenshots has
+ * RLS `for select using (true)` — a plain public read. Returns full public
+ * URLs (constructed from the stored path) rather than making callers know
+ * the platform-media bucket name. */
+export async function getScreenshots(gameId: string): Promise<string[]> {
+  const supabase = client();
+  const { data, error } = await supabase
+    .from("game_screenshots")
+    .select("id, storage_path, position")
+    .eq("game_id", gameId)
+    .order("position", { ascending: true });
+  if (error) throw error;
+  const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  return (data ?? []).map((s: GameScreenshotRow) => `${base}/storage/v1/object/public/platform-media/${s.storage_path}`);
+}
+
+/** A game by id, regardless of status — for a creator editing their own
+ * (possibly not-yet-live) game. RLS (creator_read_own_games /
+ * public_read_live_games, 0030_game_media.sql) scopes this to either the
+ * caller's own game or any live one; a non-owner trying to open another
+ * creator's draft simply gets null back. */
+export async function getGameById(gameId: string): Promise<GameRow | null> {
+  const supabase = client();
+  const { data, error } = await supabase
+    .from("games")
+    .select("id, slug, title, short_description, price_cents, pass_included, tags, status, creator_id, created_at, rating, thumbnail_url, banner_url, video_url, creator_profiles(studio_name, handle)")
+    .eq("id", gameId)
     .maybeSingle<GameRow>();
   if (error) throw error;
   return data;
@@ -116,13 +174,27 @@ export async function getCreatorByHandle(handle: string): Promise<CreatorProfile
   const supabase = client();
   const { data, error } = await supabase
     .from("creator_profiles")
-    .select("id, studio_name, handle, about, country, team_size, links, engines, created_at")
+    .select("id, studio_name, handle, about, country, team_size, links, engines, banner_url, created_at")
     .eq("handle", handle)
     .eq("status", "approved")
     .order("created_at", { ascending: true })
     .limit(1);
   if (error) throw error;
   return data?.[0] ?? null;
+}
+
+/** The caller's own creator_profiles row, any status — for self-editing
+ * (contrast with getCreatorByHandle, which requires status='approved' and
+ * is for the public studio page, not self-management). */
+export async function getMyCreatorProfile(userId: string): Promise<CreatorProfileRow | null> {
+  const supabase = client();
+  const { data, error } = await supabase
+    .from("creator_profiles")
+    .select("id, studio_name, handle, about, country, team_size, links, engines, banner_url, created_at, status, rejection_note")
+    .eq("clerk_user_id", userId)
+    .maybeSingle<CreatorProfileRow>();
+  if (error) throw error;
+  return data;
 }
 
 /** A studio's live, publicly-visible games — for the studio profile page. */

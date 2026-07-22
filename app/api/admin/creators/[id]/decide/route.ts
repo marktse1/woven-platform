@@ -14,15 +14,22 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const { id } = await params;
   const body = await req.json().catch(() => ({}));
-  const { status } = body as { status: "approved" | "rejected" | "pending" };
+  const { status, note } = body as { status: "approved" | "rejected" | "pending"; note?: string };
   if (!["approved", "rejected", "pending"].includes(status)) {
     return Response.json({ error: "Invalid status" }, { status: 400 });
+  }
+  if (status === "rejected" && !note?.trim()) {
+    return Response.json({ error: "A reason is required to reject an application" }, { status: 400 });
   }
 
   const admin = getSupabaseAdmin();
   if (!admin) return Response.json({ error: "Storage not configured" }, { status: 503 });
 
-  const { error } = await admin.from("creator_profiles").update({ status }).eq("id", id);
+  const patch: Record<string, unknown> = { status };
+  if (status === "rejected") patch.rejection_note = note!.trim();
+  if (status === "approved") patch.rejection_note = null;
+
+  const { error } = await admin.from("creator_profiles").update(patch).eq("id", id);
   if (error) return Response.json({ error: error.message }, { status: 500 });
 
   return Response.json({ ok: true, status });

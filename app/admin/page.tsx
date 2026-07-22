@@ -12,6 +12,7 @@ type CreatorProfile = {
   status: "pending" | "approved" | "rejected";
   studio_name?: string | null;
   handle?: string | null;
+  rejection_note?: string | null;
   [key: string]: unknown;
 };
 
@@ -74,6 +75,7 @@ export default function AdminReviewPage() {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<"all" | "pending" | "approved" | "rejected">("pending");
   const [note, setNote] = useState("");
+  const [rejectReason, setRejectReason] = useState("");
   const [notesById, setNotesById] = useState<Record<string, Array<{ text: string; at: string }>>>({});
   const [activityById, setActivityById] = useState<Record<string, Array<{ text: string; at: string }>>>({});
   const [previewRole, setPreviewRole] = useState<TeamMember["role"]>("admin");
@@ -234,6 +236,10 @@ export default function AdminReviewPage() {
     }
   }, [filtered, selectedId]);
 
+  useEffect(() => {
+    setRejectReason("");
+  }, [selectedId]);
+
   const selected = profiles.find((row) => row.id === selectedId) ?? null;
   const currentRole = isBootstrapAdmin ? previewRole : "auditor";
   const canApprove = currentRole === "senior_reviewer" || currentRole === "admin";
@@ -246,12 +252,12 @@ export default function AdminReviewPage() {
     rejected: profiles.filter((row) => row.status === "rejected").length,
   };
 
-  async function updateStatus(nextStatus: CreatorProfile["status"], reason: string) {
+  async function updateStatus(nextStatus: CreatorProfile["status"], reason: string, note?: string) {
     if (!selected) return;
     const res = await fetch(`/api/admin/creators/${selected.id}/decide`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: nextStatus }),
+      body: JSON.stringify({ status: nextStatus, note }),
     });
     const resBody = await res.json().catch(() => ({}));
 
@@ -260,11 +266,18 @@ export default function AdminReviewPage() {
       return;
     }
 
-    setProfiles((prev) => prev.map((row) => (row.id === selected.id ? { ...row, status: nextStatus } : row)));
+    setProfiles((prev) =>
+      prev.map((row) =>
+        row.id === selected.id
+          ? { ...row, status: nextStatus, rejection_note: nextStatus === "rejected" ? note ?? null : nextStatus === "approved" ? null : row.rejection_note }
+          : row,
+      ),
+    );
     setActivityById((prev) => ({
       ...prev,
       [selected.id]: [{ text: reason, at: new Date().toLocaleString() }, ...(prev[selected.id] ?? [])],
     }));
+    if (nextStatus === "rejected") setRejectReason("");
   }
 
   function addNote() {
@@ -486,11 +499,17 @@ export default function AdminReviewPage() {
                 <div className="mt-4 p-4 rounded-[10px] border border-line bg-[#0a0e13] text-[13px] text-dim">
                   {reviewCopy(selected.status)}
                 </div>
+                {selected.status === "rejected" && selected.rejection_note ? (
+                  <div className="mt-3 p-4 rounded-[10px] border border-[rgba(232,136,136,.35)] bg-[rgba(232,136,136,.06)] text-[13px]">
+                    <div className="text-[11px] font-bold uppercase tracking-[.1em] text-[#e88] mb-1.5">Reason shown to applicant</div>
+                    <div className="text-[#f0d4d4] whitespace-pre-wrap">{selected.rejection_note}</div>
+                  </div>
+                ) : null}
               </div>
 
               <div className="p-6 border-b border-line">
                 <div className="text-[11px] font-bold tracking-[.12em] uppercase text-muted mb-3">Decision</div>
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap gap-2 mb-3">
                   <button
                     type="button"
                     onClick={() => updateStatus("approved", "Approved by staff console")}
@@ -514,10 +533,10 @@ export default function AdminReviewPage() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => updateStatus("rejected", "Rejected by staff console")}
-                    disabled={!canApprove}
+                    onClick={() => updateStatus("rejected", "Rejected by staff console", rejectReason)}
+                    disabled={!canApprove || !rejectReason.trim()}
                     className="px-4 py-2 rounded-[8px] border border-[rgba(232,136,136,.45)] bg-transparent text-[#e88] text-[13px] font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-                    title={canApprove ? "" : "Preview role cannot reject from this view"}
+                    title={canApprove ? (rejectReason.trim() ? "" : "Enter a reason before rejecting") : "Preview role cannot reject from this view"}
                   >
                     Reject
                   </button>
@@ -529,6 +548,16 @@ export default function AdminReviewPage() {
                   >
                     Reopen
                   </button>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[12px] font-semibold text-muted">Rejection reason (required to reject — shown to the applicant)</label>
+                  <textarea
+                    value={rejectReason}
+                    onChange={(e) => setRejectReason(e.target.value)}
+                    placeholder="e.g. Your portfolio links didn't load — please add a working build or video link and resubmit."
+                    rows={2}
+                    className="w-full bg-[#0a0e13] border border-line rounded-lg px-3 py-2 text-ink text-[13px] outline-none resize-none"
+                  />
                 </div>
               </div>
 

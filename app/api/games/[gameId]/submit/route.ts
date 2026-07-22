@@ -14,13 +14,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ gameId:
 
   const { gameId } = await params;
   const body = await req.json().catch(() => ({}));
-  const { priceCents, passIncluded, shortDescription, title, engine, changelog } = body as {
+  const { priceCents, passIncluded, shortDescription, title, engine, changelog, tags } = body as {
     priceCents?: number;
     passIncluded?: boolean;
     shortDescription?: string;
     title?: string;
     engine?: string;
     changelog?: string;
+    tags?: string[];
   };
 
   const admin = getSupabaseAdmin();
@@ -42,12 +43,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ gameId:
     return Response.json({ error: "Game not found or access denied" }, { status: 404 });
   }
 
-  if (typeof priceCents === "number" || typeof passIncluded === "boolean" || shortDescription || title) {
+  if (typeof priceCents === "number" || typeof passIncluded === "boolean" || shortDescription || title || Array.isArray(tags)) {
     const patch: Record<string, unknown> = {};
     if (typeof priceCents === "number" && priceCents >= 0) patch.price_cents = priceCents;
     if (typeof passIncluded === "boolean") patch.pass_included = passIncluded;
     if (shortDescription) patch.short_description = shortDescription;
     if (title) patch.title = title;
+    if (Array.isArray(tags)) patch.tags = tags;
     await admin.from("games").update(patch).eq("id", gameId);
   }
 

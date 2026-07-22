@@ -1,15 +1,18 @@
 "use client";
 export const dynamic = "force-dynamic";
-import { useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import CreatorSubNav from "@/components/shell/CreatorSubNav";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
 import { getSupabaseClient } from "@/lib/supabase";
+import RatingBadge from "@/components/RatingBadge";
+import type { CreatorProfileRow } from "@/lib/games";
 
 type Project = {
   id: string; name: string; type: string; a: string; b: string;
   status: string; statusClass: string; version: string;
-  plays: string; revenue: string; rating: string;
+  plays: string; revenue: string; rating: number | null;
 };
 
 const PAL: [string, string][] = [
@@ -33,6 +36,22 @@ function statusLabel(status: string): string {
 
 const filters = ["All", "Live", "In review", "Drafts"];
 
+const engineOptions = [
+  { label: "Babylon.js", dot: "#bb464b" },
+  { label: "three.js", dot: "#ffffff" },
+  { label: "PlayCanvas", dot: "#e5732b" },
+  { label: "Phaser", dot: "#8e44ad" },
+  { label: "PixiJS", dot: "#e91e63" },
+  { label: "Godot (web)", dot: "#478cbf" },
+  { label: "Unity (WebGL)", dot: "#cccccc" },
+  { label: "Construct", dot: "#00a8e8" },
+  { label: "Bevy / WASM", dot: "#cea05a" },
+  { label: "Custom WASM", dot: "#7bc24a" },
+];
+
+const inputCls =
+  "bg-[#0a0e13] border border-line rounded-lg px-3.5 py-3 text-ink text-[14px] w-full outline-none focus:border-accent focus:shadow-[0_0_0_3px_rgba(86,166,232,.14)] transition-all font-[inherit]";
+
 function GradArt({ a, b, className = "" }: { a: string; b: string; className?: string }) {
   return (
     <div className={`relative overflow-hidden ${className}`} style={{ background: `linear-gradient(140deg, ${a}, ${b})` }}>
@@ -43,11 +62,166 @@ function GradArt({ a, b, className = "" }: { a: string; b: string; className?: s
 }
 
 type StripeConnectStatus = "loading" | "not_started" | "pending" | "active";
+type CreatorStatus = "loading" | "none" | "pending" | "approved" | "rejected";
+
+/** Prefilled reapply form for a rejected applicant — same fields/endpoint
+ * as app/creator/page.tsx's first-time form (POST /api/creator/apply,
+ * which upserts on clerk_user_id and resets status to pending/approved).
+ * Kept local to this page rather than shared: the surrounding card/copy
+ * differs enough (rejection reason, "resubmit" framing) that extracting
+ * a shared component would mostly just be prop plumbing. */
+function ReapplyForm({ profile, onSubmitted }: { profile: CreatorProfileRow | null; onSubmitted: () => void }) {
+  const [engines, setEngines] = useState<Set<string>>(new Set());
+  const [submitting, setSubmitting] = useState(false);
+  const [message, setMessage] = useState("");
+  const [state, setState] = useState<"idle" | "success" | "error">("idle");
+
+  useEffect(() => {
+    if (profile?.engines) setEngines(new Set(profile.engines));
+  }, [profile]);
+
+  const toggleEngine = (label: string) =>
+    setEngines((prev) => {
+      const next = new Set(prev);
+      next.has(label) ? next.delete(label) : next.add(label);
+      return next;
+    });
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setState("idle");
+    setMessage("");
+
+    const form = new FormData(event.currentTarget);
+    const studio_name = String(form.get("studio_name") ?? "").trim();
+    const handle = String(form.get("handle") ?? "").trim();
+    const country = String(form.get("country") ?? "").trim();
+    const team_size = String(form.get("team_size") ?? "").trim();
+    const about = String(form.get("about") ?? "").trim();
+    const links = String(form.get("links") ?? "").trim();
+
+    if (!studio_name || !handle || !about) {
+      setState("error");
+      setMessage("Studio name, public handle, and studio description are required.");
+      return;
+    }
+
+    setSubmitting(true);
+    const res = await fetch("/api/creator/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ studio_name, handle, country, team_size, about, links, engines: Array.from(engines) }),
+    });
+    const resBody = await res.json().catch(() => ({}));
+    setSubmitting(false);
+
+    if (!res.ok) {
+      setState("error");
+      setMessage(resBody.error ?? "Could not resubmit your application.");
+      return;
+    }
+
+    setState("success");
+    setMessage(resBody.autoApprove ? "Approved automatically — reloading…" : "Resubmitted — a staff reviewer will take another look.");
+    onSubmitted();
+  }
+
+  return (
+    <form className="bg-panel border border-line rounded-[10px] p-6" onSubmit={handleSubmit}>
+      <div className="grid grid-cols-2 gap-3.5 mb-4">
+        <div className="flex flex-col gap-1.5">
+          <label className="text-[13px] font-semibold text-muted">Studio / creator name</label>
+          <input name="studio_name" defaultValue={profile?.studio_name ?? ""} className={inputCls} placeholder="Lantern Few" />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <label className="text-[13px] font-semibold text-muted">Public handle</label>
+          <input name="handle" defaultValue={profile?.handle ?? ""} className={inputCls} placeholder="@lanternfew" />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3.5 mb-4">
+        <div className="flex flex-col gap-1.5">
+          <label className="text-[13px] font-semibold text-muted">Country / region</label>
+          <select name="country" defaultValue={profile?.country ?? "United States"} className="bg-[#0a0e13] border border-line rounded-lg px-3.5 py-3 text-ink text-[14px] w-full outline-none focus:border-accent transition-all font-[inherit] cursor-pointer">
+            {["United States", "United Kingdom", "Canada", "Germany", "Brazil", "Japan"].map((c) => <option key={c}>{c}</option>)}
+          </select>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <label className="text-[13px] font-semibold text-muted">Team size</label>
+          <select name="team_size" defaultValue={profile?.team_size ?? "Just me"} className="bg-[#0a0e13] border border-line rounded-lg px-3.5 py-3 text-ink text-[14px] w-full outline-none focus:border-accent transition-all font-[inherit] cursor-pointer">
+            {["Just me", "2-5", "6-20", "20+"].map((s) => <option key={s}>{s}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-1.5 mb-4">
+        <label className="text-[13px] font-semibold text-muted">About your studio</label>
+        <textarea
+          name="about"
+          rows={3}
+          defaultValue={profile?.about ?? ""}
+          placeholder="What kind of games do you make? What are you working on now?"
+          className="bg-[#0a0e13] border border-line rounded-lg px-3.5 py-3 text-ink text-[14px] w-full outline-none focus:border-accent focus:shadow-[0_0_0_3px_rgba(86,166,232,.14)] transition-all font-[inherit] resize-none"
+        />
+      </div>
+
+      <div className="flex flex-col gap-1.5 mb-4">
+        <label className="text-[13px] font-semibold text-muted">Portfolio / links</label>
+        <input
+          name="links"
+          defaultValue={profile?.links ?? ""}
+          placeholder="itch.io, YouTube, a build link, your site..."
+          className={inputCls}
+        />
+      </div>
+
+      <div className="flex flex-col gap-1.5 mb-4">
+        <label className="text-[13px] font-semibold text-muted">Which engines do you build with?</label>
+        <div className="flex flex-wrap gap-2 mt-1">
+          {engineOptions.map((engine) => {
+            const on = engines.has(engine.label);
+            return (
+              <button
+                key={engine.label}
+                type="button"
+                onClick={() => toggleEngine(engine.label)}
+                className="inline-flex items-center gap-1.5 text-[13px] px-3 py-2 rounded-full border cursor-pointer select-none transition-all"
+                style={{
+                  background: on ? "rgba(86,166,232,.14)" : "#1b2836",
+                  borderColor: on ? "#56a6e8" : "#26384a",
+                  color: on ? "#cfe6fb" : "#e7eef4",
+                }}
+              >
+                {engine.dot ? <span className="w-2 h-2 rounded-full shrink-0" style={{ background: engine.dot }} /> : null}
+                {engine.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <button
+        type="submit"
+        disabled={submitting}
+        className="w-full py-3.5 rounded-[9px] font-bold text-[15px] cursor-pointer border-none disabled:opacity-50 disabled:cursor-not-allowed"
+        style={{ background: "linear-gradient(180deg, #56a6e8, #2c6aa0)", color: "#06121d" }}
+      >
+        {submitting ? "Resubmitting…" : "Resubmit application"}
+      </button>
+
+      {message ? (
+        <div className={`text-[12px] mt-3 ${state === "error" ? "text-[#e88]" : "text-[#a6e06a]"}`}>{message}</div>
+      ) : null}
+    </form>
+  );
+}
 
 export default function DashboardPage() {
   const { user, isLoaded } = useUser();
+  const router = useRouter();
   const [activeFilter, setActiveFilter] = useState("All");
-  const [creatorStatus, setCreatorStatus] = useState<"loading" | "none" | "pending" | "approved" | "rejected">("loading");
+  const [creatorStatus, setCreatorStatus] = useState<CreatorStatus>("loading");
+  const [profile, setProfile] = useState<CreatorProfileRow | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [stripeStatus, setStripeStatus] = useState<StripeConnectStatus>("loading");
   const [stripePendingCents, setStripePendingCents] = useState(0);
@@ -68,20 +242,21 @@ export default function DashboardPage() {
         return;
       }
 
-      const { data: profile } = await supabase
+      const { data: row } = await supabase
         .from("creator_profiles")
-        .select("id, status")
+        .select("id, studio_name, handle, about, country, team_size, links, engines, banner_url, created_at, status, rejection_note")
         .eq("clerk_user_id", user.id)
-        .maybeSingle<{ id: string; status: "pending" | "approved" | "rejected" }>();
+        .maybeSingle<CreatorProfileRow & { id: string }>();
 
       if (!active) return;
-      setCreatorStatus(profile?.status ?? "none");
+      setCreatorStatus(row?.status ?? "none");
+      setProfile(row ?? null);
 
-      if (profile?.id) {
+      if (row?.id && row.status === "approved") {
         const { data: games } = await supabase
           .from("games")
           .select("id, title, engine, status, plays, rating, created_at")
-          .eq("creator_id", profile.id)
+          .eq("creator_id", row.id)
           .order("created_at", { ascending: false });
 
         if (!active) return;
@@ -96,7 +271,7 @@ export default function DashboardPage() {
           version: "—",
           plays: g.plays > 0 ? String(g.plays) : "—",
           revenue: "—",
-          rating: g.rating != null ? String(g.rating) : "—",
+          rating: g.rating,
         }));
         setProjects(mapped);
       }
@@ -106,9 +281,14 @@ export default function DashboardPage() {
     return () => { active = false; };
   }, [isLoaded, user?.id]);
 
+  // Anyone who hasn't applied at all has nothing to see here.
+  useEffect(() => {
+    if (creatorStatus === "none") router.replace("/creator");
+  }, [creatorStatus, router]);
+
   // Load Stripe Connect status
   useEffect(() => {
-    if (!isLoaded || !user?.id) return;
+    if (!isLoaded || !user?.id || creatorStatus !== "approved") return;
     fetch("/api/stripe/connect/status")
       .then(r => r.json())
       .then((data: { status: string; pending_cents?: number }) => {
@@ -116,7 +296,7 @@ export default function DashboardPage() {
         setStripePendingCents(data.pending_cents ?? 0);
       })
       .catch(() => setStripeStatus("not_started"));
-  }, [isLoaded, user?.id]);
+  }, [isLoaded, user?.id, creatorStatus]);
 
   // On return from Stripe onboarding, trigger pending payout then refresh status
   useEffect(() => {
@@ -150,13 +330,6 @@ export default function DashboardPage() {
     }
   }
 
-  const creatorBadge = useMemo(() => {
-    if (creatorStatus === "approved") return { label: "Verified creator", color: "#a6e06a", bg: "rgba(123,194,74,.16)" };
-    if (creatorStatus === "pending") return { label: "Creator application pending", color: "#f0c66a", bg: "rgba(232,169,58,.16)" };
-    if (creatorStatus === "rejected") return { label: "Creator application rejected", color: "#e88", bg: "rgba(227,92,92,.16)" };
-    return { label: "Apply to become a creator", color: "#8fc6f0", bg: "rgba(86,166,232,.14)" };
-  }, [creatorStatus]);
-
   const filtered = projects.filter(p => {
     if (activeFilter === "All")       return true;
     if (activeFilter === "Live")      return p.status === "Live";
@@ -164,6 +337,71 @@ export default function DashboardPage() {
     if (activeFilter === "Drafts")    return p.status === "Draft" || p.status === "Changes requested";
     return true;
   });
+
+  if (creatorStatus === "loading" || creatorStatus === "none") {
+    return (
+      <main className="tool-min-h bg-[#070b11] text-ink flex items-center justify-center">
+        <div className="text-[13px] text-dim">{creatorStatus === "none" ? "Redirecting…" : "Loading…"}</div>
+      </main>
+    );
+  }
+
+  if (creatorStatus === "pending") {
+    return (
+      <>
+        <CreatorSubNav />
+        <div className="max-w-[720px] mx-auto px-4 sm:px-6 pt-10 pb-16">
+          <div className="flex items-center gap-3.5 mb-6">
+            <GradArt a="#2a6aa0" b="#7d4bd0" className="w-[52px] h-[52px] rounded-[13px] shrink-0" />
+            <div>
+              <h1 className="text-[24px] font-extrabold tracking-[-0.02em]">Developer Dashboard</h1>
+              <span className="text-[11px] font-bold px-2 py-0.5 rounded-full uppercase tracking-[.04em]" style={{ background: "rgba(232,169,58,.16)", color: "#f0c66a" }}>
+                Application pending review
+              </span>
+            </div>
+          </div>
+          <div className="bg-panel border border-line rounded-[10px] p-6">
+            <p className="text-[15px] font-bold mb-2">
+              {profile?.studio_name ?? "Your"} application is under review
+            </p>
+            <p className="text-[13.5px] text-dim leading-relaxed">
+              A staff reviewer typically responds in about 2 business days. Once approved, this page unlocks your
+              full project dashboard, uploads, and Weave Forge.
+            </p>
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  if (creatorStatus === "rejected") {
+    return (
+      <>
+        <CreatorSubNav />
+        <div className="max-w-[720px] mx-auto px-4 sm:px-6 pt-10 pb-16">
+          <div className="flex items-center gap-3.5 mb-6">
+            <GradArt a="#2a6aa0" b="#7d4bd0" className="w-[52px] h-[52px] rounded-[13px] shrink-0" />
+            <div>
+              <h1 className="text-[24px] font-extrabold tracking-[-0.02em]">Developer Dashboard</h1>
+              <span className="text-[11px] font-bold px-2 py-0.5 rounded-full uppercase tracking-[.04em]" style={{ background: "rgba(227,92,92,.16)", color: "#e88" }}>
+                Application rejected
+              </span>
+            </div>
+          </div>
+
+          {profile?.rejection_note ? (
+            <div className="mb-5 p-4 rounded-[10px] border border-[rgba(232,136,136,.35)] bg-[rgba(232,136,136,.06)]">
+              <div className="text-[11px] font-bold uppercase tracking-[.1em] text-[#e88] mb-1.5">Why it was rejected</div>
+              <div className="text-[13.5px] text-[#f0d4d4] whitespace-pre-wrap">{profile.rejection_note}</div>
+            </div>
+          ) : null}
+
+          <p className="text-[13.5px] text-dim mb-4">Update your details below and resubmit for another review.</p>
+          <ReapplyForm profile={profile} onSubmitted={() => window.location.reload()} />
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
@@ -177,22 +415,12 @@ export default function DashboardPage() {
               <h1 className="text-[27px] font-extrabold tracking-[-0.02em]">Developer Dashboard</h1>
               <div className="flex items-center gap-2 text-[13.5px] text-muted mt-0.5">
                 <span className="text-[11px] font-bold px-2 py-0.5 rounded-full uppercase tracking-[.04em]"
-                  style={{ background: creatorBadge.bg, color: creatorBadge.color }}>{creatorBadge.label}</span>
+                  style={{ background: "rgba(123,194,74,.16)", color: "#a6e06a" }}>Verified creator</span>
                 · 80% revenue share · payouts via <strong style={{ color: "#9aa8ff" }}>stripe</strong>
               </div>
             </div>
           </div>
           <div className="flex gap-2.5">
-            <Link href="/admin" className="px-5 py-2.5 rounded-[9px] font-bold text-[14px] bg-panel2 border border-line text-ink no-underline">Review applications</Link>
-            <Link
-              href="/forge"
-              className={[
-                "px-5 py-2.5 rounded-[9px] font-bold text-[14px] border text-ink no-underline",
-                creatorStatus === "approved" ? "bg-panel2 border-line" : "bg-panel2 border-line opacity-60 pointer-events-none",
-              ].join(" ")}
-            >
-              Open Weave Forge
-            </Link>
             <Link href="/upload" className="px-5 py-2.5 rounded-[9px] font-bold text-[14px] no-underline"
               style={{ background: "linear-gradient(180deg, #56a6e8, #2c6aa0)", color: "#06121d" }}>＋ New game</Link>
           </div>
@@ -262,19 +490,16 @@ export default function DashboardPage() {
                 </div>
                 <div className={`hidden lg:block font-bold text-[14px] ${p.plays === "—" ? "text-dim" : ""}`}>{p.plays}</div>
                 <div className={`hidden lg:block font-bold text-[14px] ${p.revenue === "—" ? "text-dim" : ""}`}>{p.revenue}</div>
-                <div className={`hidden lg:block ${p.rating === "—" ? "font-bold text-[14px] text-dim" : "font-bold text-[14px] text-[#f0c66a]"}`}>
-                  {p.rating === "—" ? "—" : `★ ${p.rating}`}
+                <div className="hidden lg:block">
+                  <RatingBadge rating={p.rating} />
+                  {p.rating == null && <span className="font-bold text-[14px] text-dim">—</span>}
                 </div>
                 <div className="text-right">
-                  {p.status === "Live" ? (
-                    <Link href="/upload" onClick={e => e.stopPropagation()}
-                      className="text-[11px] font-bold px-2.5 py-1.5 rounded-lg no-underline"
-                      style={{ background: "rgba(86,166,232,.14)", color: "#8fc6f0", border: "1px solid #2c6aa0" }}>
-                      Patch
-                    </Link>
-                  ) : (
-                    <span className="text-dim font-bold">›</span>
-                  )}
+                  <Link href={`/dashboard/games/${p.id}/edit`} onClick={e => e.stopPropagation()}
+                    className="text-[11px] font-bold px-2.5 py-1.5 rounded-lg no-underline"
+                    style={{ background: "rgba(86,166,232,.14)", color: "#8fc6f0", border: "1px solid #2c6aa0" }}>
+                    Edit
+                  </Link>
                 </div>
               </div>
             ))}
@@ -348,22 +573,6 @@ export default function DashboardPage() {
                 </div>
               </div>
             )}
-
-            {/* Apply card */}
-            <div className="border border-line rounded-[10px] p-5"
-              style={{ background: "linear-gradient(155deg, #1b2836, #16202c)" }}>
-              <div className="font-extrabold text-[16px] tracking-[-0.01em]">New here? Apply to publish</div>
-              <p className="text-[12.5px] text-muted mt-1.5 mb-3.5 leading-relaxed">Bringing another studio or your first game to Woven? Get a creator account — free to list, 80% to you.</p>
-              <Link href="/creator"
-                className="flex items-center justify-center w-full py-2.5 rounded-[9px] font-bold text-[14px] no-underline mb-2.5"
-                style={{ background: "linear-gradient(180deg, #56a6e8, #2c6aa0)", color: "#06121d" }}>
-              Apply to be a creator
-              </Link>
-              <Link href="/upload"
-                className="flex items-center justify-center w-full py-2.5 rounded-[9px] font-bold text-[14px] no-underline bg-transparent border border-line text-ink">
-                Upload a game build
-              </Link>
-            </div>
 
             {/* Activity feed */}
             <div className="bg-panel border border-line rounded-[10px]">

@@ -1,7 +1,9 @@
 "use client";
-import { useState } from "react";
+import { Suspense, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import CreatorSubNav from "@/components/shell/CreatorSubNav";
 import { uploadGameBuildZip, streamNdjson } from "@/lib/uploads";
+import { getGameById } from "@/lib/games";
 
 const STEPS = [
   { title: "Build & engine", sub: "Upload your zip"  },
@@ -32,7 +34,6 @@ const STAGE_LABEL: Record<string, string> = {
 };
 
 const tags = ["Exploration", "Atmospheric", "Singleplayer", "Hand-painted", "Cozy", "Underwater", "Story-rich"];
-const shotPalettes: [string, string][] = [["#3a7fc4","#7d4bd0"], ["#2aa6c4","#15527a"], ["#5cb85c","#1e7a4a"]];
 
 function inputCls(width = "w-full") {
   return `bg-[#0a0e13] border border-line rounded-lg px-3.5 py-3 text-ink text-[14px] ${width} outline-none focus:border-accent focus:shadow-[0_0_0_3px_rgba(86,166,232,.14)] transition-all font-[inherit]`;
@@ -107,6 +108,7 @@ type SharedState = {
   priceInput: string;
   passIncluded: boolean;
   changelog: string;
+  tags: Set<string>;
   submitStatus: "idle" | "submitting" | "submitted" | "error";
   submitError: string;
   onFile: (file: File) => void;
@@ -117,6 +119,7 @@ type SharedState = {
   setPriceInput: (v: string) => void;
   setPassIncluded: (v: boolean) => void;
   setChangelog: (v: string) => void;
+  toggleTag: (t: string) => void;
   onSubmit: () => void;
 };
 
@@ -267,7 +270,6 @@ function Step1({ s }: { s: SharedState }) {
 }
 
 function Step2({ s }: { s: SharedState }) {
-  const [activeTags, setActiveTags] = useState<Set<string>>(new Set(tags.slice(0, 4)));
   return (
     <div className="grid gap-5 items-start" style={{ gridTemplateColumns: "1fr 320px" }}>
       <div className="bg-panel border border-line rounded-[10px] p-6">
@@ -277,9 +279,9 @@ function Step2({ s }: { s: SharedState }) {
           <label className="text-[13px] font-semibold text-muted">Genre & tags</label>
           <div className="flex flex-wrap gap-2">
             {tags.map(t => {
-              const on = activeTags.has(t);
+              const on = s.tags.has(t);
               return (
-                <button key={t} onClick={() => setActiveTags(prev => { const n = new Set(prev); n.has(t) ? n.delete(t) : n.add(t); return n; })}
+                <button key={t} onClick={() => s.toggleTag(t)}
                   className="inline-flex items-center text-[13px] px-3 py-2 rounded-full border cursor-pointer transition-all"
                   style={{ background: on ? "rgba(86,166,232,.14)" : "#1b2836", borderColor: on ? "#56a6e8" : "#26384a", color: on ? "#cfe6fb" : "#e7eef4" }}>
                   {t}
@@ -287,25 +289,14 @@ function Step2({ s }: { s: SharedState }) {
               );
             })}
           </div>
-          <p className="text-[11.5px] text-dim mt-2">Tags aren&apos;t stored yet — coming in a later update.</p>
         </div>
       </div>
       <div className="flex flex-col gap-5">
         <div className="bg-panel border border-line rounded-[10px] p-6">
-          <SectionLabel>Capsule art</SectionLabel>
-          <div className="h-[150px] rounded-lg border border-dashed border-line2 flex items-center justify-center text-dim text-[12px] cursor-pointer relative overflow-hidden">
-            <span className="font-mono text-[12px] text-white/85 bg-black/35 px-2.5 py-1.5 rounded-[7px]">capsule · 3:4 · not wired up yet</span>
-          </div>
-          <p className="text-[12px] text-dim mt-2">Shown on the store grid & library. 600×900 PNG.</p>
-        </div>
-        <div className="bg-panel border border-line rounded-[10px] p-6">
-          <SectionLabel>Screenshots</SectionLabel>
-          <div className="grid grid-cols-4 gap-3">
-            {shotPalettes.map(([a, b], i) => (
-              <div key={i} className="h-24 rounded-lg overflow-hidden" style={{ background: `linear-gradient(140deg, ${a}, ${b})`, border: "1px solid #26384a" }} />
-            ))}
-            <div className="h-24 rounded-lg border border-dashed border-line2 flex items-center justify-center text-dim text-[12px] cursor-pointer">+ add</div>
-          </div>
+          <SectionLabel>Capsule art & screenshots</SectionLabel>
+          <p className="text-[12.5px] text-dim">
+            Add capsule art, a banner, a gameplay video, and screenshots from the Edit page once this build is live — reachable from your dashboard.
+          </p>
         </div>
       </div>
     </div>
@@ -428,6 +419,14 @@ function Step5({ s }: { s: SharedState }) {
 }
 
 export default function UploadPage() {
+  return (
+    <Suspense fallback={<div className="tool-min-h flex items-center justify-center text-[13px] text-dim">Loading…</div>}>
+      <UploadWizard />
+    </Suspense>
+  );
+}
+
+function UploadWizard() {
   const [current, setCurrent] = useState(0);
   const [completed, setCompleted] = useState<Set<number>>(new Set());
 
@@ -450,9 +449,38 @@ export default function UploadPage() {
   const [priceInput, setPriceInput] = useState("9.99");
   const [passIncluded, setPassIncluded] = useState(false);
   const [changelog, setChangelog] = useState("");
+  const [tags, setTags] = useState<Set<string>>(new Set());
 
   const [submitStatus, setSubmitStatus] = useState<"idle" | "submitting" | "submitted" | "error">("idle");
   const [submitError, setSubmitError] = useState("");
+
+  // ?gameId=... means "ship a new version of an existing game" — process
+  // already supports an existing gameId (adds a build, doesn't create a
+  // duplicate game); this just prefills the wizard and carries it through.
+  const searchParams = useSearchParams();
+  const existingGameId = searchParams.get("gameId");
+
+  useEffect(() => {
+    if (!existingGameId) return;
+    setGameId(existingGameId);
+    getGameById(existingGameId).then((g) => {
+      if (!g) return;
+      setTitle(g.title);
+      setShortDescription(g.short_description ?? "");
+      setIsFree(g.price_cents === 0);
+      if (g.price_cents) setPriceInput((g.price_cents / 100).toFixed(2));
+      setPassIncluded(g.pass_included);
+      setTags(new Set(g.tags ?? []));
+    }).catch(() => {});
+  }, [existingGameId]);
+
+  function toggleTag(t: string) {
+    setTags((prev) => {
+      const next = new Set(prev);
+      next.has(t) ? next.delete(t) : next.add(t);
+      return next;
+    });
+  }
 
   async function onFile(f: File) {
     setFile(f);
@@ -505,6 +533,7 @@ export default function UploadPage() {
           passIncluded,
           engine: engineOverride ?? undefined,
           changelog: changelog.trim() || undefined,
+          tags: Array.from(tags),
         }),
       });
       const body = await res.json().catch(() => ({}));
@@ -519,9 +548,9 @@ export default function UploadPage() {
   const shared: SharedState = {
     file, uploadPhase, uploadPct, stage, stageProgress, gameId, buildId,
     detectedEngine, entryFile, engineOverride, warnings, errorMsg,
-    title, shortDescription, isFree, priceInput, passIncluded, changelog,
+    title, shortDescription, isFree, priceInput, passIncluded, changelog, tags,
     submitStatus, submitError,
-    onFile, setEngineOverride, setTitle, setShortDescription, setIsFree, setPriceInput, setPassIncluded, setChangelog, onSubmit,
+    onFile, setEngineOverride, setTitle, setShortDescription, setIsFree, setPriceInput, setPassIncluded, setChangelog, toggleTag, onSubmit,
   };
 
   const goTo = (i: number) => { setCurrent(i); window.scrollTo({ top: 0 }); };
@@ -536,7 +565,7 @@ export default function UploadPage() {
       <div className="max-w-[1440px] mx-auto px-12 pt-6 pb-16">
         <div className="flex items-end justify-between mb-5">
           <div>
-            <p className="text-[12px] font-bold tracking-[.14em] uppercase text-accent">New submission</p>
+            <p className="text-[12px] font-bold tracking-[.14em] uppercase text-accent">{existingGameId ? "New version" : "New submission"}</p>
             <h1 className="text-[30px] font-extrabold tracking-[-0.02em] mt-1.5">{title ? `Upload "${title}"` : "Upload a game"}</h1>
           </div>
           <span className="text-[11px] font-bold px-2.5 py-1.5 rounded-full uppercase tracking-[.04em]"

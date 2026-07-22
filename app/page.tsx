@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import StoreSubNav from "@/components/shell/StoreSubNav";
 import { getSupabaseClient } from "@/lib/supabase";
+import RatingBadge from "@/components/RatingBadge";
 
 type GradPair = [string, string];
 const pal: GradPair[] = [
@@ -31,6 +32,7 @@ type Game = {
   price_cents: number;
   pass_included: boolean;
   tags: string[];
+  rating: number | null;
 };
 
 function formatPrice(priceCents: number, passIncluded: boolean): string {
@@ -56,7 +58,7 @@ export default function StorePage() {
     if (!supabase) { setLoading(false); return; }
     supabase
       .from("games")
-      .select("id, slug, title, short_description, price_cents, pass_included, tags")
+      .select("id, slug, title, short_description, price_cents, pass_included, tags, rating")
       .eq("status", "live")
       .order("created_at", { ascending: false })
       .then(({ data }) => {
@@ -103,7 +105,10 @@ export default function StorePage() {
               <div className="absolute inset-0" style={{ background: "linear-gradient(180deg, transparent 40%, rgba(5,8,11,.92))" }} />
               <div className="absolute left-6 right-6 bottom-5 flex items-end justify-between gap-5 z-10">
                 <div>
-                  <h2 className="text-[22px] sm:text-[28px] lg:text-[34px] font-extrabold tracking-[-0.02em]">{featuredGame.title}</h2>
+                  <div className="flex items-center gap-2.5">
+                    <h2 className="text-[22px] sm:text-[28px] lg:text-[34px] font-extrabold tracking-[-0.02em]">{featuredGame.title}</h2>
+                    <RatingBadge rating={featuredGame.rating} />
+                  </div>
                   {featuredGame.short_description && (
                     <p className="text-[#c2d2e0] text-sm mt-1.5 max-w-[420px]">{featuredGame.short_description}</p>
                   )}
@@ -138,7 +143,10 @@ export default function StorePage() {
                 className="flex gap-2.5 p-2 rounded-[7px] cursor-pointer items-center border transition-colors bg-panel border-transparent hover:bg-panel2 hover:border-line no-underline text-inherit">
                 <GradArt pair={pal[(i + 1) % pal.length]} className="w-[88px] h-12 rounded-md shrink-0" />
                 <div className="flex-1 min-w-0">
-                  <div className="text-[13px] font-semibold truncate">{g.title}</div>
+                  <div className="flex items-center gap-1.5">
+                    <div className="text-[13px] font-semibold truncate">{g.title}</div>
+                    <RatingBadge rating={g.rating} />
+                  </div>
                   <div className="text-[11px] text-dim mt-0.5">{g.tags.slice(0, 2).join(" · ")}</div>
                 </div>
                 <div className={`text-[13px] font-bold ${g.pass_included ? "text-accent text-[11px]" : ""}`}>
@@ -164,7 +172,10 @@ export default function StorePage() {
                   className="block bg-panel border border-line rounded-lg overflow-hidden cursor-pointer transition-[transform,box-shadow] hover:-translate-y-[3px] hover:shadow-[0_12px_30px_rgba(0,0,0,.5)] no-underline text-inherit">
                   <GradArt pair={pal[(i + 2) % pal.length]} className="h-[130px]" />
                   <div className="px-3 pt-2.5 pb-3">
-                    <div className="text-[14px] font-semibold truncate">{s.title}</div>
+                    <div className="flex items-center gap-1.5">
+                      <div className="text-[14px] font-semibold truncate">{s.title}</div>
+                      <RatingBadge rating={s.rating} />
+                    </div>
                     <div className="text-[11px] text-dim mt-1 mb-2.5">{s.tags.slice(0, 2).join(" · ")}</div>
                     <div className="flex items-center justify-end gap-2">
                       {s.pass_included ? (

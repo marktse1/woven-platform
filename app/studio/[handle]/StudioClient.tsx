@@ -10,11 +10,13 @@ const pal: GradPair[] = [
   ["#e8794b", "#b8431a"], ["#4b7fd0", "#2a3f7a"], ["#c44b9a", "#6a2a7a"],
 ];
 
-function GradArt({ pair, className = "", children }: { pair: GradPair; className?: string; children?: React.ReactNode }) {
+function GradArt({ pair, className = "", style, children }: { pair: GradPair; className?: string; style?: React.CSSProperties; children?: React.ReactNode }) {
   return (
     <div className={`relative overflow-hidden ${className}`}
-      style={{ background: `linear-gradient(140deg, ${pair[0]}, ${pair[1]})` }}>
-      <div className="absolute inset-0" style={{ background: "radial-gradient(70% 60% at 25% 14%, rgba(255,255,255,.30), transparent 60%)" }} />
+      style={{ background: `linear-gradient(140deg, ${pair[0]}, ${pair[1]})`, ...style }}>
+      {!style?.backgroundImage && (
+        <div className="absolute inset-0" style={{ background: "radial-gradient(70% 60% at 25% 14%, rgba(255,255,255,.30), transparent 60%)" }} />
+      )}
       <div className="absolute inset-0 opacity-[.12] mix-blend-overlay"
         style={{ backgroundImage: "repeating-linear-gradient(135deg, #fff 0 2px, transparent 2px 9px)" }} />
       {children}
@@ -83,7 +85,11 @@ export default function StudioClient({ params }: { params: Promise<{ handle: str
   return (
     <main className="tool-min-h bg-[#070b11] text-ink">
       <div className="max-w-[960px] mx-auto px-6 pt-8 pb-16">
-        <GradArt pair={pal[(creator.studio_name ?? creator.handle ?? "").length % pal.length]} className="rounded-[14px] border border-line h-[180px] sm:h-[220px]">
+        <GradArt
+          pair={pal[(creator.studio_name ?? creator.handle ?? "").length % pal.length]}
+          className="rounded-[14px] border border-line h-[180px] sm:h-[220px]"
+          style={creator.banner_url ? { backgroundImage: `url(${creator.banner_url})`, backgroundSize: "cover", backgroundPosition: "center" } : undefined}
+        >
           <div className="absolute inset-0" style={{ background: "linear-gradient(180deg, transparent 40%, rgba(5,8,11,.92))" }} />
           <div className="absolute left-6 right-6 bottom-5 z-10">
             <h1 className="text-[24px] sm:text-[32px] font-extrabold tracking-[-0.02em]">{creator.studio_name ?? creator.handle}</h1>

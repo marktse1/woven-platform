@@ -21,7 +21,8 @@ export async function PATCH(req: Request) {
   if (!profile) return Response.json({ error: "No creator profile" }, { status: 404 });
 
   const body = await req.json().catch(() => ({}));
-  const { about, links, country, team_size, engines } = body as {
+  const { studio_name, about, links, country, team_size, engines } = body as {
+    studio_name?: string;
     about?: string;
     links?: string;
     country?: string;
@@ -30,6 +31,10 @@ export async function PATCH(req: Request) {
   };
 
   const patch: Record<string, unknown> = {};
+  // studio_name is just a display label, safe to self-edit. handle is
+  // deliberately NOT editable here — it's the live URL slug (/studio/{handle})
+  // other pages and external bookmarks link to; changing it would break those.
+  if (typeof studio_name === "string" && studio_name.trim()) patch.studio_name = studio_name.trim();
   if (typeof about === "string") patch.about = about.trim();
   if (typeof links === "string") patch.links = links.trim();
   if (typeof country === "string") patch.country = country.trim();

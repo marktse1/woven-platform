@@ -1,12 +1,13 @@
 "use client";
 export const dynamic = "force-dynamic";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
 import CreatorSubNav from "@/components/shell/CreatorSubNav";
+import { useCreatorStatus } from "@/lib/useCreatorStatus";
 
 const engineOptions = [
   { label: "Babylon.js", dot: "#bb464b" },
@@ -53,6 +54,17 @@ const inputCls =
 export default function BecomeCreatorPage() {
   const router = useRouter();
   const { user, isLoaded } = useUser();
+  const creatorStatus = useCreatorStatus();
+
+  // Anyone who already has a profile (pending, approved, or rejected) has
+  // their own status view at /dashboard now — this page is only for
+  // first-time applicants (status "none").
+  useEffect(() => {
+    if (creatorStatus === "pending" || creatorStatus === "approved" || creatorStatus === "rejected") {
+      router.replace("/dashboard");
+    }
+  }, [creatorStatus, router]);
+
   const [engines, setEngines] = useState<Set<string>>(new Set(["Babylon.js", "three.js", "PlayCanvas"]));
   const [agreed, setAgreed] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -120,6 +132,14 @@ export default function BecomeCreatorPage() {
         : "Application saved. A staff reviewer can now approve creator status."
     );
     router.push("/dashboard");
+  }
+
+  if (creatorStatus === "pending" || creatorStatus === "approved" || creatorStatus === "rejected") {
+    return (
+      <main className="tool-min-h bg-[#070b11] text-ink flex items-center justify-center">
+        <div className="text-[13px] text-dim">Redirecting…</div>
+      </main>
+    );
   }
 
   return (

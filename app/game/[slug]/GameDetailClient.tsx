@@ -3,9 +3,11 @@
 import { useEffect, useState, use as usePromise } from "react";
 import { useUser } from "@clerk/nextjs";
 import Link from "next/link";
+import RatingBadge from "@/components/RatingBadge";
+import VideoEmbed from "@/components/VideoEmbed";
 import {
   getGameBySlug, getCurrentBuild, getBuildHistory, isInLibrary, addFreeGameToLibrary,
-  hasPlayedGame, markGamePlayed, getReviews, getMyReview, upsertReview,
+  hasPlayedGame, markGamePlayed, getReviews, getMyReview, upsertReview, getScreenshots,
   type GameRow, type GameBuildRow, type GameBuildHistoryRow, type GameReviewRow,
 } from "@/lib/games";
 
@@ -15,11 +17,13 @@ const pal: GradPair[] = [
   ["#e8794b", "#b8431a"], ["#4b7fd0", "#2a3f7a"], ["#c44b9a", "#6a2a7a"],
 ];
 
-function GradArt({ pair, className = "", children }: { pair: GradPair; className?: string; children?: React.ReactNode }) {
+function GradArt({ pair, className = "", style, children }: { pair: GradPair; className?: string; style?: React.CSSProperties; children?: React.ReactNode }) {
   return (
     <div className={`relative overflow-hidden ${className}`}
-      style={{ background: `linear-gradient(140deg, ${pair[0]}, ${pair[1]})` }}>
-      <div className="absolute inset-0" style={{ background: "radial-gradient(70% 60% at 25% 14%, rgba(255,255,255,.30), transparent 60%)" }} />
+      style={{ background: `linear-gradient(140deg, ${pair[0]}, ${pair[1]})`, ...style }}>
+      {!style?.backgroundImage && (
+        <div className="absolute inset-0" style={{ background: "radial-gradient(70% 60% at 25% 14%, rgba(255,255,255,.30), transparent 60%)" }} />
+      )}
       <div className="absolute inset-0 opacity-[.12] mix-blend-overlay"
         style={{ backgroundImage: "repeating-linear-gradient(135deg, #fff 0 2px, transparent 2px 9px)" }} />
       {children}
@@ -51,6 +55,7 @@ export default function GameDetailClient({ params }: { params: Promise<{ slug: s
   const [hasPlayed, setHasPlayed] = useState(false);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState("");
+  const [screenshots, setScreenshots] = useState<string[]>([]);
   const [reviews, setReviews] = useState<GameReviewRow[]>([]);
   const [myReview, setMyReview] = useState<GameReviewRow | null>(null);
   const [reviewRating, setReviewRating] = useState(5);
@@ -71,6 +76,7 @@ export default function GameDetailClient({ params }: { params: Promise<{ slug: s
         setBuild(b);
         getBuildHistory(g.id).then((h) => { if (active) setHistory(h); });
         getReviews(g.id).then((r) => { if (active) setReviews(r); });
+        getScreenshots(g.id).then((s) => { if (active) setScreenshots(s); });
         if (user?.id) {
           const inLib = await isInLibrary(user.id, g.id);
           if (!active) return;
@@ -194,7 +200,11 @@ export default function GameDetailClient({ params }: { params: Promise<{ slug: s
   return (
     <main className="tool-min-h bg-[#070b11] text-ink">
       <div className="max-w-[960px] mx-auto px-6 pt-8 pb-16">
-        <GradArt pair={pal[game.title.length % pal.length]} className="rounded-[14px] border border-line h-[280px] sm:h-[360px]">
+        <GradArt
+          pair={pal[game.title.length % pal.length]}
+          className="rounded-[14px] border border-line h-[280px] sm:h-[360px]"
+          style={game.banner_url ? { backgroundImage: `url(${game.banner_url})`, backgroundSize: "cover", backgroundPosition: "center" } : undefined}
+        >
           <div className="absolute inset-0" style={{ background: "linear-gradient(180deg, transparent 40%, rgba(5,8,11,.92))" }} />
           <div className="absolute left-6 right-6 bottom-5 z-10">
             <h1 className="text-[26px] sm:text-[36px] font-extrabold tracking-[-0.02em]">{game.title}</h1>
@@ -249,6 +259,20 @@ export default function GameDetailClient({ params }: { params: Promise<{ slug: s
 
         {error && <p className="text-[12px] text-red-400 mt-2">{error}</p>}
 
+        {game.video_url && (
+          <div className="mt-6">
+            <VideoEmbed url={game.video_url} className="h-[300px] sm:h-[420px]" />
+          </div>
+        )}
+
+        {screenshots.length > 0 && (
+          <div className="mt-6 grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {screenshots.map((url) => (
+              <div key={url} className="h-24 rounded-lg overflow-hidden border border-line" style={{ backgroundImage: `url(${url})`, backgroundSize: "cover", backgroundPosition: "center" }} />
+            ))}
+          </div>
+        )}
+
         <div className="mt-8 bg-panel border border-line rounded-[10px]">
           <div className="px-6 py-4 border-b border-line font-bold text-[15px]">Version history</div>
           {history.length === 0 ? (
@@ -275,8 +299,9 @@ export default function GameDetailClient({ params }: { params: Promise<{ slug: s
         <div className="mt-8 bg-panel border border-line rounded-[10px]">
           <div className="px-6 py-4 border-b border-line flex items-center gap-2.5">
             <span className="font-bold text-[15px]">Reviews</span>
+            <RatingBadge rating={game.rating} />
             {game.rating != null && (
-              <span className="text-[13px] text-dim">★ {game.rating.toFixed(1)} · {reviews.length} review{reviews.length === 1 ? "" : "s"}</span>
+              <span className="text-[13px] text-dim">{reviews.length} review{reviews.length === 1 ? "" : "s"}</span>
             )}
           </div>
 

@@ -55,7 +55,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ gameId:
 
   if (kind === "thumbnail" || kind === "banner") {
     const column = kind === "thumbnail" ? "thumbnail_url" : "banner_url";
-    const { error } = await admin.from("games").update({ [column]: publicUrl }).eq("id", gameId);
+    // A fresh banner image starts centered — any pan the creator dialed in
+    // for the previous image no longer applies to this one.
+    const patch: Record<string, unknown> = { [column]: publicUrl };
+    if (kind === "banner") { patch.banner_pos_x = 50; patch.banner_pos_y = 50; }
+    const { error } = await admin.from("games").update(patch).eq("id", gameId);
     if (error) return Response.json({ error: error.message }, { status: 500 });
     return Response.json({ ok: true, url: publicUrl });
   }

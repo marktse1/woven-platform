@@ -20,6 +20,8 @@ export type GameRow = {
   rating: number | null;
   thumbnail_url: string | null;
   banner_url: string | null;
+  banner_pos_x: number;
+  banner_pos_y: number;
   video_url: string | null;
   creator_profiles: { studio_name: string | null; handle: string | null } | null;
 };
@@ -66,6 +68,8 @@ export type CreatorProfileRow = {
   links: string | null;
   engines: string[] | null;
   banner_url: string | null;
+  banner_pos_x: number;
+  banner_pos_y: number;
   created_at: string;
   status?: "pending" | "approved" | "rejected";
   rejection_note?: string | null;
@@ -96,7 +100,7 @@ export async function getGameBySlug(slug: string): Promise<GameRow | null> {
   const supabase = client();
   const { data, error } = await supabase
     .from("games")
-    .select("id, slug, title, short_description, price_cents, pass_included, tags, status, creator_id, created_at, rating, thumbnail_url, banner_url, video_url, creator_profiles(studio_name, handle)")
+    .select("id, slug, title, short_description, price_cents, pass_included, tags, status, creator_id, created_at, rating, thumbnail_url, banner_url, banner_pos_x, banner_pos_y, video_url, creator_profiles(studio_name, handle)")
     .eq("slug", slug)
     .eq("status", "live")
     .maybeSingle<GameRow>();
@@ -129,7 +133,7 @@ export async function getGameById(gameId: string): Promise<GameRow | null> {
   const supabase = client();
   const { data, error } = await supabase
     .from("games")
-    .select("id, slug, title, short_description, price_cents, pass_included, tags, status, creator_id, created_at, rating, thumbnail_url, banner_url, video_url, creator_profiles(studio_name, handle)")
+    .select("id, slug, title, short_description, price_cents, pass_included, tags, status, creator_id, created_at, rating, thumbnail_url, banner_url, banner_pos_x, banner_pos_y, video_url, creator_profiles(studio_name, handle)")
     .eq("id", gameId)
     .maybeSingle<GameRow>();
   if (error) throw error;
@@ -174,7 +178,7 @@ export async function getCreatorByHandle(handle: string): Promise<CreatorProfile
   const supabase = client();
   const { data, error } = await supabase
     .from("creator_profiles")
-    .select("id, studio_name, handle, about, country, team_size, links, engines, banner_url, created_at")
+    .select("id, studio_name, handle, about, country, team_size, links, engines, banner_url, banner_pos_x, banner_pos_y, created_at")
     .eq("handle", handle)
     .eq("status", "approved")
     .order("created_at", { ascending: true })
@@ -190,7 +194,7 @@ export async function getMyCreatorProfile(userId: string): Promise<CreatorProfil
   const supabase = client();
   const { data, error } = await supabase
     .from("creator_profiles")
-    .select("id, studio_name, handle, about, country, team_size, links, engines, banner_url, created_at, status, rejection_note")
+    .select("id, studio_name, handle, about, country, team_size, links, engines, banner_url, banner_pos_x, banner_pos_y, created_at, status, rejection_note")
     .eq("clerk_user_id", userId)
     .maybeSingle<CreatorProfileRow>();
   if (error) throw error;

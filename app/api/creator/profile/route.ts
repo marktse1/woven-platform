@@ -21,13 +21,15 @@ export async function PATCH(req: Request) {
   if (!profile) return Response.json({ error: "No creator profile" }, { status: 404 });
 
   const body = await req.json().catch(() => ({}));
-  const { studio_name, about, links, country, team_size, engines } = body as {
+  const { studio_name, about, links, country, team_size, engines, banner_pos_x, banner_pos_y } = body as {
     studio_name?: string;
     about?: string;
     links?: string;
     country?: string;
     team_size?: string;
     engines?: string[];
+    banner_pos_x?: number;
+    banner_pos_y?: number;
   };
 
   const patch: Record<string, unknown> = {};
@@ -40,6 +42,8 @@ export async function PATCH(req: Request) {
   if (typeof country === "string") patch.country = country.trim();
   if (typeof team_size === "string") patch.team_size = team_size.trim();
   if (Array.isArray(engines)) patch.engines = engines;
+  if (typeof banner_pos_x === "number") patch.banner_pos_x = Math.max(0, Math.min(100, banner_pos_x));
+  if (typeof banner_pos_y === "number") patch.banner_pos_y = Math.max(0, Math.min(100, banner_pos_y));
 
   if (Object.keys(patch).length === 0) {
     return Response.json({ error: "No editable fields provided" }, { status: 400 });

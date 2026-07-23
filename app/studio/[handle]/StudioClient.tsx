@@ -88,7 +88,7 @@ export default function StudioClient({ params }: { params: Promise<{ handle: str
         <GradArt
           pair={pal[(creator.studio_name ?? creator.handle ?? "").length % pal.length]}
           className="rounded-[14px] border border-line h-[180px] sm:h-[220px]"
-          style={creator.banner_url ? { backgroundImage: `url(${creator.banner_url})`, backgroundSize: "cover", backgroundPosition: "center" } : undefined}
+          style={creator.banner_url ? { backgroundImage: `url(${creator.banner_url})`, backgroundSize: "cover", backgroundPosition: `${creator.banner_pos_x}% ${creator.banner_pos_y}%` } : undefined}
         >
           <div className="absolute inset-0" style={{ background: "linear-gradient(180deg, transparent 40%, rgba(5,8,11,.92))" }} />
           <div className="absolute left-6 right-6 bottom-5 z-10">

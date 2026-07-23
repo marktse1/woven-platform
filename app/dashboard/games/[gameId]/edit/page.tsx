@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useUser } from "@clerk/nextjs";
 import { getGameById, getScreenshots, type GameRow } from "@/lib/games";
 import VideoEmbed from "@/components/VideoEmbed";
+import BannerPositionPicker from "@/components/BannerPositionPicker";
 
 const TAG_OPTIONS = ["Exploration", "Atmospheric", "Singleplayer", "Hand-painted", "Cozy", "Underwater", "Story-rich", "Roguelike", "Multiplayer"];
 
@@ -113,12 +114,25 @@ export default function EditGamePage({ params }: { params: Promise<{ gameId: str
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? "Upload failed.");
       if (kind === "thumbnail") setGame((g) => (g ? { ...g, thumbnail_url: body.url } : g));
-      else if (kind === "banner") setGame((g) => (g ? { ...g, banner_url: body.url } : g));
+      else if (kind === "banner") setGame((g) => (g ? { ...g, banner_url: body.url, banner_pos_x: 50, banner_pos_y: 50 } : g));
       else setScreenshots((prev) => [...prev, body.url]);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Upload failed.");
     } finally {
       setUploadingKind(null);
+    }
+  }
+
+  async function handleBannerPosition(x: number, y: number) {
+    setGame((g) => (g ? { ...g, banner_pos_x: x, banner_pos_y: y } : g));
+    try {
+      await fetch(`/api/games/${gameId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ banner_pos_x: x, banner_pos_y: y }),
+      });
+    } catch {
+      // best-effort — the picker already reflects the chosen position locally
     }
   }
 
@@ -207,7 +221,27 @@ export default function EditGamePage({ params }: { params: Promise<{ gameId: str
             </div>
             <div>
               <label className="text-[12px] text-dim block mb-1.5">Banner (game page hero)</label>
-              <ImageTile url={game.banner_url} uploading={uploadingKind === "banner"} onFile={(f) => handleImageUpload("banner", f)} />
+              {game.banner_url ? (
+                <>
+                  <BannerPositionPicker
+                    imageUrl={game.banner_url}
+                    x={game.banner_pos_x}
+                    y={game.banner_pos_y}
+                    onCommit={handleBannerPosition}
+                  />
+                  <label className="text-[11.5px] text-accent hover:underline cursor-pointer inline-block ml-3">
+                    {uploadingKind === "banner" ? "Uploading…" : "Replace image"}
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/gif"
+                      className="hidden"
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) handleImageUpload("banner", f); }}
+                    />
+                  </label>
+                </>
+              ) : (
+                <ImageTile url={null} uploading={uploadingKind === "banner"} onFile={(f) => handleImageUpload("banner", f)} />
+              )}
             </div>
           </div>
           <label className="text-[12px] text-dim block mb-1.5">Screenshots</label>

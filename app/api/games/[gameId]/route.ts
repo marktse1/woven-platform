@@ -28,13 +28,15 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ gameId
   }
 
   const body = await req.json().catch(() => ({}));
-  const { title, short_description, price_cents, pass_included, tags, video_url } = body as {
+  const { title, short_description, price_cents, pass_included, tags, video_url, banner_pos_x, banner_pos_y } = body as {
     title?: string;
     short_description?: string;
     price_cents?: number;
     pass_included?: boolean;
     tags?: string[];
     video_url?: string;
+    banner_pos_x?: number;
+    banner_pos_y?: number;
   };
 
   const patch: Record<string, unknown> = {};
@@ -44,6 +46,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ gameId
   if (pass_included !== undefined) patch.pass_included = pass_included;
   if (tags !== undefined) patch.tags = tags;
   if (video_url !== undefined) patch.video_url = video_url.trim() || null;
+  if (banner_pos_x !== undefined) patch.banner_pos_x = Math.max(0, Math.min(100, banner_pos_x));
+  if (banner_pos_y !== undefined) patch.banner_pos_y = Math.max(0, Math.min(100, banner_pos_y));
 
   if (Object.keys(patch).length === 0) {
     return Response.json({ error: "No editable fields provided" }, { status: 400 });

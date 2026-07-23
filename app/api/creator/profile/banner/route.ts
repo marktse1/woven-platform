@@ -37,7 +37,12 @@ export async function POST(req: Request) {
   if (upErr) return Response.json({ error: upErr.message }, { status: 500 });
 
   const publicUrl = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/${BUCKET}/${path}`;
-  const { error } = await admin.from("creator_profiles").update({ banner_url: publicUrl }).eq("id", profile.id);
+  // A fresh banner image starts centered — any pan dialed in for the
+  // previous image no longer applies to this one.
+  const { error } = await admin
+    .from("creator_profiles")
+    .update({ banner_url: publicUrl, banner_pos_x: 50, banner_pos_y: 50 })
+    .eq("id", profile.id);
   if (error) return Response.json({ error: error.message }, { status: 500 });
 
   return Response.json({ ok: true, url: publicUrl });

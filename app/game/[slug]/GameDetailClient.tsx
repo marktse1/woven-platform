@@ -203,7 +203,7 @@ export default function GameDetailClient({ params }: { params: Promise<{ slug: s
         <GradArt
           pair={pal[game.title.length % pal.length]}
           className="rounded-[14px] border border-line h-[280px] sm:h-[360px]"
-          style={game.banner_url ? { backgroundImage: `url(${game.banner_url})`, backgroundSize: "cover", backgroundPosition: "center" } : undefined}
+          style={game.banner_url ? { backgroundImage: `url(${game.banner_url})`, backgroundSize: "cover", backgroundPosition: `${game.banner_pos_x}% ${game.banner_pos_y}%` } : undefined}
         >
           <div className="absolute inset-0" style={{ background: "linear-gradient(180deg, transparent 40%, rgba(5,8,11,.92))" }} />
           <div className="absolute left-6 right-6 bottom-5 z-10">

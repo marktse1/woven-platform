@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useUser } from "@clerk/nextjs";
 import { getMyCreatorProfile, type CreatorProfileRow } from "@/lib/games";
+import BannerPositionPicker from "@/components/BannerPositionPicker";
 
 export default function EditStudioPage() {
   const { user, isLoaded } = useUser();
@@ -78,11 +79,24 @@ export default function EditStudioPage() {
       const res = await fetch("/api/creator/profile/banner", { method: "POST", body: form });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? "Upload failed.");
-      setProfile((p) => (p ? { ...p, banner_url: body.url } : p));
+      setProfile((p) => (p ? { ...p, banner_url: body.url, banner_pos_x: 50, banner_pos_y: 50 } : p));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Upload failed.");
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function handleBannerPosition(x: number, y: number) {
+    setProfile((p) => (p ? { ...p, banner_pos_x: x, banner_pos_y: y } : p));
+    try {
+      await fetch("/api/creator/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ banner_pos_x: x, banner_pos_y: y }),
+      });
+    } catch {
+      // best-effort — the picker already reflects the chosen position locally
     }
   }
 
@@ -121,20 +135,40 @@ export default function EditStudioPage() {
 
         <div className="bg-panel border border-line rounded-[10px] p-6 mb-5">
           <p className="text-[11px] font-bold tracking-[.12em] uppercase text-muted mb-3">Banner</p>
-          <div
-            className="h-[160px] rounded-lg border border-dashed border-line2 flex items-center justify-center text-dim text-[12px] cursor-pointer overflow-hidden"
-            style={profile.banner_url ? { backgroundImage: `url(${profile.banner_url})`, backgroundSize: "cover", backgroundPosition: "center", borderStyle: "solid" } : undefined}
-            onClick={() => document.getElementById("studio-banner-input")?.click()}
-          >
-            {!profile.banner_url && <span>{uploading ? "Uploading…" : "+ upload banner"}</span>}
-            <input
-              id="studio-banner-input"
-              type="file"
-              accept="image/png,image/jpeg,image/webp,image/gif"
-              className="hidden"
-              onChange={(e) => { const f = e.target.files?.[0]; if (f) handleBannerUpload(f); }}
-            />
-          </div>
+          {profile.banner_url ? (
+            <>
+              <BannerPositionPicker
+                imageUrl={profile.banner_url}
+                x={profile.banner_pos_x}
+                y={profile.banner_pos_y}
+                heightClassName="h-[160px]"
+                onCommit={handleBannerPosition}
+              />
+              <label className="text-[11.5px] text-accent hover:underline cursor-pointer inline-block ml-3">
+                {uploading ? "Uploading…" : "Replace image"}
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  className="hidden"
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) handleBannerUpload(f); }}
+                />
+              </label>
+            </>
+          ) : (
+            <div
+              className="h-[160px] rounded-lg border border-dashed border-line2 flex items-center justify-center text-dim text-[12px] cursor-pointer overflow-hidden"
+              onClick={() => document.getElementById("studio-banner-input")?.click()}
+            >
+              <span>{uploading ? "Uploading…" : "+ upload banner"}</span>
+              <input
+                id="studio-banner-input"
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif"
+                className="hidden"
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) handleBannerUpload(f); }}
+              />
+            </div>
+          )}
         </div>
 
         <div className="bg-panel border border-line rounded-[10px] p-6 mb-5">

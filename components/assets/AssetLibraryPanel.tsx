@@ -3,7 +3,7 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
-import { listMyAssets, deleteAssets, type AssetRow } from "@/lib/assets";
+import { listMyAssets, listPurchasedAssets, deleteAssets, type AssetRow } from "@/lib/assets";
 import { useRegisteredLoader } from "./ActiveLoaderContext";
 import { NATIVE_TOOLS } from "@/lib/tools/registry";
 import AssetLibraryRow from "./AssetLibraryRow";
@@ -70,6 +70,7 @@ export default function AssetLibraryPanel() {
   const { user, isLoaded } = useUser();
   const [open, setOpen] = useState(false);
   const [assets, setAssets] = useState<AssetRow[]>([]);
+  const [purchasedAssets, setPurchasedAssets] = useState<AssetRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectMode, setSelectMode] = useState(false);
@@ -106,7 +107,9 @@ export default function AssetLibraryPanel() {
     setLoading(true);
     setError(null);
     try {
-      setAssets(await listMyAssets(user.id));
+      const [mine, purchased] = await Promise.all([listMyAssets(user.id), listPurchasedAssets(user.id)]);
+      setAssets(mine);
+      setPurchasedAssets(purchased);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load assets.");
     } finally {
@@ -283,6 +286,24 @@ export default function AssetLibraryPanel() {
               </div>
             );
           })
+        )}
+        {!loading && purchasedAssets.length > 0 && (
+          <>
+            <div className="px-3.5 py-2 border-t border-b border-line font-bold text-[11px] uppercase tracking-[.06em] text-dim sticky top-9" style={{ background: "var(--color-panel)" }}>
+              Purchased
+            </div>
+            {purchasedAssets.map((a) => (
+              <AssetLibraryRow
+                key={a.id}
+                asset={a}
+                onChange={refresh}
+                onLoad={loader?.onLoad}
+                loadable={loader ? (loader.accepts ? loader.accepts(a) : true) : false}
+                accent={accent}
+                readOnly
+              />
+            ))}
+          </>
         )}
       </div>
     </>

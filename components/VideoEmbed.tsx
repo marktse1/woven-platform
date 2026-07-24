@@ -21,10 +21,15 @@ function toEmbedSrc(url: string): string | null {
   return null;
 }
 
+const DIRECT_VIDEO_RE = /\.(mp4|webm|mov)(\?|#|$)/i;
+
 export default function VideoEmbed({ url, className = "" }: { url: string | null | undefined; className?: string }) {
   if (!url) return null;
   const src = toEmbedSrc(url);
   if (!src) {
+    if (DIRECT_VIDEO_RE.test(url.trim())) {
+      return <video src={url} controls className={`w-full rounded-[10px] ${className}`} />;
+    }
     return (
       <div className={`flex items-center justify-center bg-panel2 border border-line rounded-[10px] text-[12.5px] text-dim ${className}`}>
         Couldn&apos;t recognize this video link — for Rumble, use the Share → Embed URL, not the video page link.

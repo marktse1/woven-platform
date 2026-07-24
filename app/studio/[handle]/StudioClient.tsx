@@ -2,7 +2,14 @@
 
 import { useEffect, useState, use as usePromise } from "react";
 import Link from "next/link";
-import { getCreatorByHandle, getGamesByCreator, type CreatorProfileRow, type GameRow } from "@/lib/games";
+import { useUser } from "@clerk/nextjs";
+import {
+  getCreatorByHandle, getGamesByCreator,
+  isFollowingCreator, getFollowerCount, followCreator, unfollowCreator,
+  type CreatorProfileRow, type GameRow,
+} from "@/lib/games";
+import { getPostsByCreator, type StudioPostRow } from "@/lib/studioPosts";
+import { StudioPostBody } from "@/components/StudioPostBody";
 
 type GradPair = [string, string];
 const pal: GradPair[] = [
@@ -30,6 +37,96 @@ function formatPrice(priceCents: number, passIncluded: boolean): string {
   return `$${(priceCents / 100).toFixed(2)}`;
 }
 
+function relativeTime(iso: string) {
+  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs} hr${hrs === 1 ? "" : "s"} ago`;
+  return `${Math.floor(hrs / 24)} days ago`;
+}
+
+function FollowButton({ creatorId }: { creatorId: string }) {
+  const { user, isLoaded } = useUser();
+  const [following, setFollowing] = useState(false);
+  const [count, setCount] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    async function load() {
+      try {
+        const c = await getFollowerCount(creatorId);
+        if (active) setCount(c);
+      } catch { /* best-effort */ }
+      if (user?.id) {
+        try {
+          const f = await isFollowingCreator(user.id, creatorId);
+          if (active) setFollowing(f);
+        } catch { /* best-effort */ }
+      }
+    }
+    if (isLoaded) load();
+    return () => { active = false; };
+  }, [creatorId, user?.id, isLoaded]);
+
+  async function toggle() {
+    if (!user?.id || busy) return;
+    setBusy(true);
+    const next = !following;
+    setFollowing(next);
+    setCount((c) => (c == null ? c : c + (next ? 1 : -1)));
+    try {
+      if (next) await followCreator(user.id, creatorId);
+      else await unfollowCreator(user.id, creatorId);
+    } catch {
+      setFollowing(!next);
+      setCount((c) => (c == null ? c : c - (next ? 1 : -1)));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (isLoaded && !user) {
+    return (
+      <Link href="/sign-in"
+        className="px-4 py-2 rounded-[9px] font-bold text-[13px] no-underline border shrink-0"
+        style={{ borderColor: "#2c6aa0", color: "#cfe6fb", background: "rgba(86,166,232,.12)" }}>
+        ＋ Follow
+      </Link>
+    );
+  }
+
+  return (
+    <button onClick={toggle} disabled={busy || !isLoaded}
+      className="px-4 py-2 rounded-[9px] font-bold text-[13px] cursor-pointer border disabled:opacity-60 shrink-0"
+      style={following
+        ? { borderColor: "#26384a", background: "#1b2836", color: "#e7eef4" }
+        : { borderColor: "transparent", background: "linear-gradient(180deg, #56a6e8, #2c6aa0)", color: "#06121d" }}>
+      {following ? "✓ Following" : "＋ Follow"}
+      {count != null && <span className="ml-1.5 font-normal opacity-80">· {count.toLocaleString()}</span>}
+    </button>
+  );
+}
+
+const postTypeLabel: Record<StudioPostRow["type"], string> = {
+  news: "News", image: "Image", video: "Video", promo: "Promo",
+};
+
+function PostCard({ post }: { post: StudioPostRow }) {
+  return (
+    <div className="bg-panel border border-line rounded-[10px] p-4">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-[11px] font-bold px-2 py-0.5 rounded-md tracking-[.02em] bg-[rgba(86,166,232,.14)] text-[#8fc6f0]">
+          {postTypeLabel[post.type]}
+        </span>
+        <span className="text-[11px] text-dim">{relativeTime(post.created_at)}</span>
+      </div>
+      <StudioPostBody post={post} />
+    </div>
+  );
+}
+
 type Phase = "loading" | "not-found" | "ready";
 
 export default function StudioClient({ params }: { params: Promise<{ handle: string }> }) {
@@ -38,6 +135,7 @@ export default function StudioClient({ params }: { params: Promise<{ handle: str
   const [phase, setPhase] = useState<Phase>("loading");
   const [creator, setCreator] = useState<CreatorProfileRow | null>(null);
   const [games, setGames] = useState<GameRow[]>([]);
+  const [posts, setPosts] = useState<StudioPostRow[]>([]);
 
   useEffect(() => {
     let active = true;
@@ -47,9 +145,10 @@ export default function StudioClient({ params }: { params: Promise<{ handle: str
         if (!active) return;
         if (!c) { setPhase("not-found"); return; }
         setCreator(c);
-        const g = await getGamesByCreator(c.id);
+        const [g, p] = await Promise.all([getGamesByCreator(c.id), getPostsByCreator(c.id)]);
         if (!active) return;
         setGames(g);
+        setPosts(p);
         setPhase("ready");
       } catch {
         if (!active) return;
@@ -91,11 +190,14 @@ export default function StudioClient({ params }: { params: Promise<{ handle: str
           style={creator.banner_url ? { backgroundImage: `url(${creator.banner_url})`, backgroundSize: "cover", backgroundPosition: `${creator.banner_pos_x}% ${creator.banner_pos_y}%` } : undefined}
         >
           <div className="absolute inset-0" style={{ background: "linear-gradient(180deg, transparent 40%, rgba(5,8,11,.92))" }} />
-          <div className="absolute left-6 right-6 bottom-5 z-10">
-            <h1 className="text-[24px] sm:text-[32px] font-extrabold tracking-[-0.02em]">{creator.studio_name ?? creator.handle}</h1>
-            <p className="text-[13px] text-[#c2d2e0] mt-1">
-              {[creator.country, creator.team_size ? `${creator.team_size} people` : null].filter(Boolean).join(" · ")}
-            </p>
+          <div className="absolute left-6 right-6 bottom-5 z-10 flex items-end justify-between gap-3 flex-wrap">
+            <div>
+              <h1 className="text-[24px] sm:text-[32px] font-extrabold tracking-[-0.02em]">{creator.studio_name ?? creator.handle}</h1>
+              <p className="text-[13px] text-[#c2d2e0] mt-1">
+                {[creator.country, creator.team_size ? `${creator.team_size} people` : null].filter(Boolean).join(" · ")}
+              </p>
+            </div>
+            <FollowButton creatorId={creator.id} />
           </div>
         </GradArt>
 
@@ -134,6 +236,21 @@ export default function StudioClient({ params }: { params: Promise<{ handle: str
                   </div>
                 </Link>
               ))}
+            </div>
+          )}
+        </div>
+
+        <div className="mt-8">
+          <p className="text-[13px] font-bold tracking-[.12em] uppercase text-muted mb-3.5">
+            Studio updates
+          </p>
+          {posts.length === 0 ? (
+            <div className="rounded-lg border border-line bg-panel py-10 flex items-center justify-center text-dim text-[13px]">
+              No updates yet.
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3.5">
+              {posts.map((p) => <PostCard key={p.id} post={p} />)}
             </div>
           )}
         </div>

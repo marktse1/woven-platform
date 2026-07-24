@@ -23,10 +23,10 @@ export async function POST(request: Request) {
   const supabase = getSupabaseAdmin();
 
   switch (event.type) {
-    // Game purchase completed
+    // Game or asset purchase completed
     case "payment_intent.succeeded": {
       const intent = event.data.object as Stripe.PaymentIntent;
-      const { clerk_user_id, game_id } = intent.metadata ?? {};
+      const { clerk_user_id, game_id, asset_id } = intent.metadata ?? {};
       if (clerk_user_id && game_id && supabase) {
         await supabase.from("user_library").upsert({
           clerk_user_id,
@@ -38,6 +38,16 @@ export async function POST(request: Request) {
           creator_paid_out: !!intent.transfer_data?.destination,
           creator_amount_cents: Math.round(intent.amount * 0.80),
         }, { onConflict: "clerk_user_id,game_id" });
+      } else if (clerk_user_id && asset_id && supabase) {
+        await supabase.from("marketplace_purchases").upsert({
+          clerk_user_id,
+          item_type: "asset",
+          item_id: asset_id,
+          price_paid_cents: intent.amount,
+          stripe_payment_intent_id: intent.id,
+          creator_paid_out: !!intent.transfer_data?.destination,
+          creator_amount_cents: Math.round(intent.amount * 0.80),
+        }, { onConflict: "clerk_user_id,item_type,item_id" });
       }
       break;
     }

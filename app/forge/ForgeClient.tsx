@@ -9,6 +9,7 @@ import { useUser } from "@clerk/nextjs";
 import { getSupabaseClient, getSupabaseEnvStatus } from "@/lib/supabase";
 import { mergeHostedTools, type ApprovedHostedTool } from "@/lib/tools/registry";
 import { motion } from "framer-motion";
+import SubmitToolModal from "@/components/tools/SubmitToolModal";
 
 type ToolRow = {
   id: string;
@@ -79,6 +80,7 @@ export default function ForgeClient() {
   const [activeTool, setActiveTool] = useState<ToolRow | null>(null);
   const [iframeSrc, setIframeSrc] = useState<string | null>(null);
   const [approvedHostedTools, setApprovedHostedTools] = useState<ApprovedHostedTool[]>([]);
+  const [showSubmitModal, setShowSubmitModal] = useState(false);
   const devTools = useMemo(() => mergeHostedTools(approvedHostedTools), [approvedHostedTools]);
 
   const handoffParams = useMemo(() => {
@@ -337,13 +339,13 @@ export default function ForgeClient() {
               >
                 ☕ Buy me a coffee
               </a>
-              <Link
-                href="/tools/submit"
-                className="px-3.5 py-2 rounded-[8px] font-bold text-[12.5px] no-underline"
+              <button
+                onClick={() => setShowSubmitModal(true)}
+                className="px-3.5 py-2 rounded-[8px] font-bold text-[12.5px] cursor-pointer border-none"
                 style={{ background: "linear-gradient(180deg,#56a6e8,#2c6aa0)", color: "#06121d" }}
               >
                 Submit a tool
-              </Link>
+              </button>
             </div>
           </div>
           <h2 className="text-[22px] font-extrabold tracking-[-0.02em] mb-1">Optimize & prep your assets</h2>
@@ -410,6 +412,7 @@ export default function ForgeClient() {
           <Link href="/creator" className="text-accent font-semibold no-underline">Update your creator profile →</Link>
         </div>
       </div>
+      {showSubmitModal && <SubmitToolModal onClose={() => setShowSubmitModal(false)} />}
     </main>
   );
 }

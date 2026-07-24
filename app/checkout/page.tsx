@@ -20,6 +20,8 @@ type Game = {
   pass_included: boolean;
 };
 
+type ItemKind = "game" | "asset";
+
 function GradArt({ className = "" }: { className?: string }) {
   return (
     <div className={`relative overflow-hidden ${className}`}
@@ -41,11 +43,13 @@ function SecureLine({ className = "" }: { className?: string }) {
 // Inner form — must be inside <Elements>
 function CheckoutForm({
   game,
+  itemKind,
   passAddon,
   setPassAddon,
   isPassOnly,
 }: {
   game: Game | null;
+  itemKind: ItemKind;
   passAddon: boolean;
   setPassAddon: (v: boolean) => void;
   isPassOnly: boolean;
@@ -65,7 +69,7 @@ function CheckoutForm({
     setStatus("processing");
     setErrorMsg("");
 
-    const returnUrl = `${window.location.origin}/library`;
+    const returnUrl = `${window.location.origin}${itemKind === "asset" ? "/marketplace" : "/library"}`;
 
     const result = isPassOnly
       ? await stripe.confirmSetup({
@@ -98,12 +102,14 @@ function CheckoutForm({
         <div className="text-muted text-[13px] mt-1">
           {isPassOnly
             ? "Your 14-day free trial has started. A receipt was sent to your email."
-            : `${game?.title ?? "Your game"} is in your Library. A receipt was sent to your email.`}
+            : itemKind === "asset"
+              ? `${game?.title ?? "Your asset"} is ready to download from your Assets tab. A receipt was sent to your email.`
+              : `${game?.title ?? "Your game"} is in your Library. A receipt was sent to your email.`}
         </div>
-        <a href="/library">
+        <a href={itemKind === "asset" ? "/marketplace" : "/library"}>
           <button className="w-full mt-4 py-3 rounded-[9px] font-bold cursor-pointer border-none"
             style={{ background: "linear-gradient(180deg, #56a6e8, #2c6aa0)", color: "#06121d" }}>
-            ▶ Go to Library
+            {itemKind === "asset" ? "▶ Back to Marketplace" : "▶ Go to Library"}
           </button>
         </a>
       </div>
@@ -138,14 +144,14 @@ function CheckoutForm({
             <GradArt className="w-[78px] h-12 rounded-md shrink-0" />
             <div className="flex-1">
               <div className="font-semibold text-[14px]">{game.title}</div>
-              <div className="text-[12px] text-dim mt-0.5">Base game</div>
+              <div className="text-[12px] text-dim mt-0.5">{itemKind === "asset" ? "Digital asset" : "Base game"}</div>
             </div>
             <div className="font-bold text-right">{fmt(game.price_cents)}</div>
           </div>
         )}
 
-        {/* Pass addon */}
-        {!isPassOnly && (
+        {/* Pass addon — games only, doesn't make sense on an asset purchase */}
+        {!isPassOnly && itemKind === "game" && (
           <button onClick={() => setPassAddon(!passAddon)}
             className="flex items-center gap-3 w-full px-3.5 py-3 my-3.5 rounded-[9px] text-left cursor-pointer transition-colors"
             style={{ border: "1px dashed #324a61", background: "transparent" }}>
@@ -217,6 +223,7 @@ function CheckoutForm({
 // Outer page — fetches clientSecret, then renders Elements wrapper
 export default function CheckoutPage() {
   const [game, setGame] = useState<Game | null>(null);
+  const [itemKind, setItemKind] = useState<ItemKind>("game");
   const [passAddon, setPassAddon] = useState(false);
   const [clientSecret, setClientSecret] = useState<string | null>(null);
   const [isPassOnly, setIsPassOnly] = useState(false);
@@ -225,7 +232,8 @@ export default function CheckoutPage() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const gameId = params.get("gameId");
-    const passOnly = params.get("pass") === "true" && !gameId;
+    const assetId = params.get("assetId");
+    const passOnly = params.get("pass") === "true" && !gameId && !assetId;
     setIsPassOnly(passOnly);
 
     if (passOnly) {
@@ -239,6 +247,37 @@ export default function CheckoutPage() {
         .catch(() => setLoadError("Network error. Please try again."));
       return;
     }
+
+    if (assetId) {
+      setItemKind("asset");
+      const supabase = getSupabaseClient();
+      if (!supabase) { setLoadError("Marketplace unavailable."); return; }
+
+      supabase
+        .from("creator_assets")
+        .select("id, name, price_cents, visibility")
+        .eq("id", assetId)
+        .eq("visibility", "sellable")
+        .maybeSingle()
+        .then(async ({ data }) => {
+          if (!data) { setLoadError("Asset not found or no longer for sale."); return; }
+          setGame({ id: data.id, title: data.name, price_cents: data.price_cents, pass_included: false });
+
+          // No priceCents sent — create-intent derives the charge from the
+          // asset's own price_cents server-side for this branch.
+          const res = await fetch("/api/checkout/create-intent", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ assetId: data.id }),
+          });
+          const d = await res.json();
+          if (d.clientSecret) setClientSecret(d.clientSecret);
+          else setLoadError(d.error ?? "Could not create payment.");
+        });
+      return;
+    }
+
+    setItemKind("game");
 
     if (!gameId) {
       setLoadError("No game selected. Return to the store.");
@@ -311,6 +350,7 @@ export default function CheckoutPage() {
         >
           <CheckoutForm
             game={game}
+            itemKind={itemKind}
             passAddon={passAddon}
             setPassAddon={setPassAddon}
             isPassOnly={isPassOnly}

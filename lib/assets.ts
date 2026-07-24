@@ -180,6 +180,54 @@ export async function listMyAssets(userId: string): Promise<AssetRow[]> {
   return data ?? [];
 }
 
+export type MarketplaceSort = "newest" | "price_asc" | "price_desc";
+
+/** Public/sellable assets across all creators, for the /marketplace grid — works signed-out, unlike every other list helper in this file. */
+export async function listMarketplaceAssets(opts: { kind?: string; sort?: MarketplaceSort } = {}): Promise<AssetRow[]> {
+  const supabase = client();
+  let query = supabase.from("creator_assets").select("*").in("visibility", ["public", "sellable"]);
+  if (opts.kind) query = query.eq("kind", opts.kind);
+  if (opts.sort === "price_asc") query = query.order("price_cents", { ascending: true });
+  else if (opts.sort === "price_desc") query = query.order("price_cents", { ascending: false });
+  else query = query.order("created_at", { ascending: false });
+  const { data, error } = await query.returns<AssetRow[]>();
+  if (error) throw error;
+  return data ?? [];
+}
+
+/** Studio names/handles for a batch of clerk_user_ids — creator_assets.clerk_user_id has no FK to creator_profiles, so this can't be a Postgrest embed. */
+export async function getCreatorDisplayNames(clerkUserIds: string[]): Promise<Record<string, { studio_name: string | null; handle: string | null }>> {
+  if (clerkUserIds.length === 0) return {};
+  const supabase = client();
+  const { data, error } = await supabase
+    .from("creator_profiles")
+    .select("clerk_user_id, studio_name, handle")
+    .in("clerk_user_id", clerkUserIds)
+    .returns<{ clerk_user_id: string; studio_name: string | null; handle: string | null }[]>();
+  if (error) throw error;
+  const map: Record<string, { studio_name: string | null; handle: string | null }> = {};
+  for (const row of data ?? []) map[row.clerk_user_id] = { studio_name: row.studio_name, handle: row.handle };
+  return map;
+}
+
+/** Assets this user has purchased on the marketplace — item_id has no FK (same as group_id), so this is a two-step fetch rather than a Postgrest embed. */
+export async function listPurchasedAssets(userId: string): Promise<AssetRow[]> {
+  const supabase = client();
+  const { data: purchases, error: purchaseErr } = await supabase
+    .from("marketplace_purchases")
+    .select("item_id")
+    .eq("clerk_user_id", userId)
+    .eq("item_type", "asset")
+    .returns<{ item_id: string }[]>();
+  if (purchaseErr) throw purchaseErr;
+  const ids = (purchases ?? []).map((p) => p.item_id);
+  if (ids.length === 0) return [];
+
+  const { data, error } = await supabase.from("creator_assets").select("*").in("id", ids).returns<AssetRow[]>();
+  if (error) throw error;
+  return data ?? [];
+}
+
 export async function setAssetVisibility(
   id: string,
   visibility: Visibility,

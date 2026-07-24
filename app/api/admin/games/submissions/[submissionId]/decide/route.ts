@@ -27,6 +27,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ submiss
   if ((decision === "approved" || decision === "rejected") && !canApprove(staff.role)) {
     return Response.json({ error: "Your role cannot approve or reject submissions" }, { status: 403 });
   }
+  if ((decision === "rejected" || decision === "changes_requested") && !reviewNotes?.trim()) {
+    return Response.json({ error: "A reason is required to reject or request changes" }, { status: 400 });
+  }
 
   const admin = getSupabaseAdmin();
   if (!admin) return Response.json({ error: "Storage not configured" }, { status: 503 });

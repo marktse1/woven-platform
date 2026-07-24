@@ -6,6 +6,58 @@
 
 import { getSupabaseClient } from "@/lib/supabase";
 
+export type UploadProgress = { loaded: number; total: number; pct: number };
+
+async function signTrailerUpload(gameId: string, fileName: string, fileSizeBytes: number): Promise<{ path: string; signedUrl: string }> {
+  const res = await fetch("/api/uploads/games/trailer/sign", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ gameId, fileName, fileSizeBytes }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? `Failed to get an upload URL (${res.status})`);
+  }
+  return res.json();
+}
+
+function putTrailerWithProgress(url: string, file: File, onProgress?: (p: UploadProgress) => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url, true);
+    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    xhr.upload.onprogress = (e) => {
+      if (!onProgress || !e.lengthComputable) return;
+      onProgress({ loaded: e.loaded, total: e.total, pct: e.total > 0 ? e.loaded / e.total : 0 });
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else reject(new Error(`Upload failed (${xhr.status})`));
+    };
+    xhr.onerror = () => reject(new Error("Upload failed — network error"));
+    xhr.send(file);
+  });
+}
+
+/** Uploads a game trailer video directly to Storage via a signed URL, then saves it as the game's video_url. Returns the new public URL. */
+export async function uploadGameTrailer(
+  gameId: string,
+  file: File,
+  onProgress?: (p: UploadProgress) => void,
+): Promise<{ url: string }> {
+  const { path, signedUrl } = await signTrailerUpload(gameId, file.name, file.size);
+  await putTrailerWithProgress(signedUrl, file, onProgress);
+  const res = await fetch(`/api/games/${gameId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ video_path: path }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error ?? "Could not save the uploaded trailer.");
+  const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  return { url: `${base}/storage/v1/object/public/platform-media/${path}` };
+}
+
 export type GameRow = {
   id: string;
   slug: string;
@@ -212,6 +264,61 @@ export async function getGamesByCreator(creatorId: string): Promise<GameRow[]> {
     .order("created_at", { ascending: false });
   if (error) throw error;
   return (data ?? []) as GameRow[];
+}
+
+/** Studio names/handles for a batch of creator_profiles ids — used to render a real studio identity (avatar, link) wherever posted_as_studio_id shows up (threads, studio_post_comments), instead of just a bare uuid. */
+export async function getCreatorProfilesByIds(ids: string[]): Promise<Record<string, { studio_name: string | null; handle: string | null }>> {
+  if (ids.length === 0) return {};
+  const supabase = client();
+  const { data, error } = await supabase
+    .from("creator_profiles")
+    .select("id, studio_name, handle")
+    .in("id", ids)
+    .returns<{ id: string; studio_name: string | null; handle: string | null }[]>();
+  if (error) throw error;
+  const map: Record<string, { studio_name: string | null; handle: string | null }> = {};
+  for (const row of data ?? []) map[row.id] = { studio_name: row.studio_name, handle: row.handle };
+  return map;
+}
+
+export async function isFollowingCreator(userId: string, creatorId: string): Promise<boolean> {
+  const supabase = client();
+  const { data, error } = await supabase
+    .from("creator_follows")
+    .select("id")
+    .eq("clerk_user_id", userId)
+    .eq("creator_id", creatorId)
+    .maybeSingle();
+  if (error) throw error;
+  return !!data;
+}
+
+export async function getFollowerCount(creatorId: string): Promise<number> {
+  const supabase = client();
+  const { count, error } = await supabase
+    .from("creator_follows")
+    .select("*", { count: "exact", head: true })
+    .eq("creator_id", creatorId);
+  if (error) throw error;
+  return count ?? 0;
+}
+
+export async function followCreator(userId: string, creatorId: string): Promise<void> {
+  const supabase = client();
+  const { error } = await supabase
+    .from("creator_follows")
+    .insert({ clerk_user_id: userId, creator_id: creatorId });
+  if (error) throw error;
+}
+
+export async function unfollowCreator(userId: string, creatorId: string): Promise<void> {
+  const supabase = client();
+  const { error } = await supabase
+    .from("creator_follows")
+    .delete()
+    .eq("clerk_user_id", userId)
+    .eq("creator_id", creatorId);
+  if (error) throw error;
 }
 
 export async function isInLibrary(userId: string, gameId: string): Promise<boolean> {

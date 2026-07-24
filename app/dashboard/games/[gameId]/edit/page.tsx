@@ -2,10 +2,13 @@
 
 import { useEffect, useState, use as usePromise } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
-import { getGameById, getScreenshots, type GameRow } from "@/lib/games";
+import { getGameById, getScreenshots, uploadGameTrailer, type GameRow, type UploadProgress } from "@/lib/games";
 import VideoEmbed from "@/components/VideoEmbed";
 import BannerPositionPicker from "@/components/BannerPositionPicker";
+
+type ModerationAction = { action: string; reason: string; created_at: string };
 
 const TAG_OPTIONS = ["Exploration", "Atmospheric", "Singleplayer", "Hand-painted", "Cozy", "Underwater", "Story-rich", "Roguelike", "Multiplayer"];
 
@@ -19,10 +22,15 @@ function pillStyle(on: boolean) {
 export default function EditGamePage({ params }: { params: Promise<{ gameId: string }> }) {
   const { gameId } = usePromise(params);
   const { user, isLoaded } = useUser();
+  const router = useRouter();
 
   const [game, setGame] = useState<GameRow | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+
+  const [moderation, setModeration] = useState<ModerationAction | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const [title, setTitle] = useState("");
   const [shortDescription, setShortDescription] = useState("");
@@ -31,6 +39,9 @@ export default function EditGamePage({ params }: { params: Promise<{ gameId: str
   const [passIncluded, setPassIncluded] = useState(false);
   const [tags, setTags] = useState<Set<string>>(new Set());
   const [videoUrl, setVideoUrl] = useState("");
+  const [videoMode, setVideoMode] = useState<"link" | "upload">("link");
+  const [trailerProgress, setTrailerProgress] = useState<UploadProgress | null>(null);
+  const [uploadingTrailer, setUploadingTrailer] = useState(false);
 
   const [screenshots, setScreenshots] = useState<string[]>([]);
   const [uploadingKind, setUploadingKind] = useState<string | null>(null);
@@ -57,6 +68,12 @@ export default function EditGamePage({ params }: { params: Promise<{ gameId: str
         const shots = await getScreenshots(g.id);
         if (active) setScreenshots(shots);
         setLoading(false);
+        if (g.status === "rejected") {
+          fetch(`/api/creator/games/${g.id}/moderation`)
+            .then((r) => (r.ok ? r.json() : null))
+            .then((body: { action: ModerationAction } | null) => { if (active && body) setModeration(body.action); })
+            .catch(() => {});
+        }
       } catch (e) {
         if (!active) return;
         setError(e instanceof Error ? e.message : "Failed to load game.");
@@ -103,6 +120,21 @@ export default function EditGamePage({ params }: { params: Promise<{ gameId: str
     }
   }
 
+  async function handleTrailerUpload(file: File) {
+    setUploadingTrailer(true);
+    setError("");
+    try {
+      setTrailerProgress({ loaded: 0, total: file.size, pct: 0 });
+      const { url } = await uploadGameTrailer(gameId, file, setTrailerProgress);
+      setVideoUrl(url);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Upload failed.");
+    } finally {
+      setUploadingTrailer(false);
+      setTrailerProgress(null);
+    }
+  }
+
   async function handleImageUpload(kind: "thumbnail" | "banner" | "screenshot", file: File) {
     setUploadingKind(kind);
     setError("");
@@ -120,6 +152,22 @@ export default function EditGamePage({ params }: { params: Promise<{ gameId: str
       setError(e instanceof Error ? e.message : "Upload failed.");
     } finally {
       setUploadingKind(null);
+    }
+  }
+
+  async function handleDelete() {
+    if (!confirmingDelete) { setConfirmingDelete(true); return; }
+    setDeleting(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/games/${gameId}`, { method: "DELETE" });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? "Could not delete this game.");
+      router.push("/dashboard");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not delete this game.");
+      setDeleting(false);
+      setConfirmingDelete(false);
     }
   }
 
@@ -169,6 +217,15 @@ export default function EditGamePage({ params }: { params: Promise<{ gameId: str
         {error && <div className="mb-4 p-3 rounded-[9px] border text-[13px]" style={{ borderColor: "rgba(227,92,92,.4)", background: "rgba(227,92,92,.08)", color: "#f0a6a6" }}>{error}</div>}
         {message && <div className="mb-4 p-3 rounded-[9px] border text-[13px] text-green" style={{ borderColor: "rgba(123,194,74,.4)", background: "rgba(123,194,74,.08)" }}>{message}</div>}
 
+        {game.status === "rejected" && (
+          <div className="mb-5 p-4 rounded-[10px] border border-[rgba(232,136,136,.35)] bg-[rgba(232,136,136,.06)]">
+            <div className="text-[11px] font-bold uppercase tracking-[.1em] text-[#e88] mb-1.5">Why this was rejected</div>
+            <div className="text-[13.5px] text-[#f0d4d4] whitespace-pre-wrap">
+              {moderation ? moderation.reason : "Loading…"}
+            </div>
+          </div>
+        )}
+
         <div className="bg-panel border border-line rounded-[10px] p-6 mb-5">
           <p className="text-[11px] font-bold tracking-[.12em] uppercase text-muted mb-3">Store details</p>
           <div className="flex flex-col gap-1.5 mb-4">
@@ -203,12 +260,38 @@ export default function EditGamePage({ params }: { params: Promise<{ gameId: str
 
         <div className="bg-panel border border-line rounded-[10px] p-6 mb-5">
           <p className="text-[11px] font-bold tracking-[.12em] uppercase text-muted mb-3">Gameplay video</p>
-          <input
-            value={videoUrl}
-            onChange={(e) => setVideoUrl(e.target.value)}
-            placeholder="YouTube, Vimeo, or Rumble embed URL"
-            className="w-full bg-[#0a0e13] border border-line rounded-lg px-3.5 py-3 text-ink text-[14px] outline-none focus:border-accent mb-3"
-          />
+          <div className="flex gap-1 p-1 rounded-lg border border-line w-max mb-3" style={{ background: "#16202c" }}>
+            {(["link", "upload"] as const).map((m) => (
+              <button key={m} type="button" onClick={() => setVideoMode(m)}
+                className="px-3.5 py-1.5 rounded-md text-[12.5px] font-bold cursor-pointer transition-colors"
+                style={{ background: videoMode === m ? "#223345" : "transparent", color: videoMode === m ? "#e7eef4" : "#8aa0b4" }}>
+                {m === "link" ? "Link" : "Upload file"}
+              </button>
+            ))}
+          </div>
+          {videoMode === "link" ? (
+            <input
+              value={videoUrl}
+              onChange={(e) => setVideoUrl(e.target.value)}
+              placeholder="YouTube, Vimeo, or Rumble embed URL"
+              className="w-full bg-[#0a0e13] border border-line rounded-lg px-3.5 py-3 text-ink text-[14px] outline-none focus:border-accent mb-3"
+            />
+          ) : (
+            <div className="mb-3">
+              <input
+                type="file"
+                accept="video/mp4,video/webm,video/quicktime"
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) handleTrailerUpload(f); }}
+                className="text-[13px] text-dim"
+              />
+              {trailerProgress && (
+                <div className="h-1.5 rounded-full bg-panel2 overflow-hidden mt-2 max-w-[300px]">
+                  <div className="h-full bg-accent transition-[width]" style={{ width: `${Math.round(trailerProgress.pct * 100)}%` }} />
+                </div>
+              )}
+              {uploadingTrailer && !trailerProgress && <p className="text-[12px] text-dim mt-2">Saving…</p>}
+            </div>
+          )}
           {videoUrl && <VideoEmbed url={videoUrl} className="h-[220px]" />}
         </div>
 
@@ -262,6 +345,17 @@ export default function EditGamePage({ params }: { params: Promise<{ gameId: str
           >
             {saving ? "Saving…" : "Save changes"}
           </button>
+
+          {(game.status === "draft" || game.status === "rejected") && (
+            <button
+              onClick={handleDelete}
+              disabled={deleting}
+              className="px-5 py-3 rounded-[9px] font-bold text-[14px] cursor-pointer border disabled:opacity-50 ml-auto"
+              style={{ borderColor: "rgba(232,136,136,.45)", color: "#e88", background: confirmingDelete ? "rgba(227,92,92,.14)" : "transparent" }}
+            >
+              {deleting ? "Deleting…" : confirmingDelete ? "Confirm delete" : "Delete this game"}
+            </button>
+          )}
         </div>
 
         <div className="bg-panel border border-line rounded-[10px] p-6">

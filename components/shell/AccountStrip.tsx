@@ -2,8 +2,7 @@
 import { SignInButton, SignUpButton, UserButton, useUser } from "@clerk/nextjs";
 import Link from "next/link";
 import { useCreatorStatus } from "@/lib/useCreatorStatus";
-
-const ADMIN_EMAIL = "starfox.and.mark@gmail.com";
+import { useStaffRole } from "@/lib/useStaffRole";
 
 function CreatorBadge() {
   const { isSignedIn } = useUser();
@@ -20,8 +19,9 @@ function CreatorBadge() {
 }
 
 export default function AccountStrip() {
-  const { isSignedIn, user } = useUser();
-  const isAdmin = isSignedIn && user?.primaryEmailAddress?.emailAddress === ADMIN_EMAIL;
+  const { isSignedIn } = useUser();
+  const { role } = useStaffRole();
+  const isAdmin = isSignedIn && !!role;
 
   return (
     <div className="flex items-center gap-2 px-4 sm:gap-3 sm:px-6 lg:gap-[18px] lg:px-12 py-2 text-xs text-dim"

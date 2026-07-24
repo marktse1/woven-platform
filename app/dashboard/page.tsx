@@ -1,13 +1,16 @@
 "use client";
 export const dynamic = "force-dynamic";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, MouseEvent, useEffect, useMemo, useState } from "react";
 import CreatorSubNav from "@/components/shell/CreatorSubNav";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
 import { getSupabaseClient } from "@/lib/supabase";
 import RatingBadge from "@/components/RatingBadge";
+import StudioProfileSection from "@/components/dashboard/StudioProfileSection";
 import type { CreatorProfileRow } from "@/lib/games";
+
+type DashboardTab = "projects" | "studio";
 
 type Project = {
   id: string; name: string; type: string; a: string; b: string;
@@ -23,18 +26,86 @@ const PAL: [string, string][] = [
 function statusToClass(status: string): string {
   if (status === "live")              return "badge-green";
   if (status === "in_review")         return "badge-info";
-  if (status === "rejected")          return "badge-warn";
+  if (status === "rejected")          return "badge-error";
   return "badge-dim";
 }
 
 function statusLabel(status: string): string {
   if (status === "live")      return "Live";
   if (status === "in_review") return "In review";
-  if (status === "rejected")  return "Changes requested";
+  if (status === "rejected")  return "Rejected";
   return "Draft";
 }
 
 const filters = ["All", "Live", "In review", "Drafts"];
+
+function ProjectRow({ project: p, onDeleted }: { project: Project; onDeleted: (id: string) => void }) {
+  const deletable = p.status === "Draft" || p.status === "Rejected";
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  async function handleDelete(e: MouseEvent) {
+    e.stopPropagation();
+    if (!confirming) { setConfirming(true); return; }
+    setDeleting(true);
+    try {
+      const res = await fetch(`/api/games/${p.id}`, { method: "DELETE" });
+      if (!res.ok) { setDeleting(false); setConfirming(false); return; }
+      onDeleted(p.id);
+    } catch {
+      setDeleting(false);
+      setConfirming(false);
+    }
+  }
+
+  return (
+    <div
+      className="grid items-center px-4.5 py-3.5 border-b border-line last:border-none cursor-pointer hover:bg-white/[.025] transition-colors gap-3 grid-cols-[1fr_auto_auto] lg:grid-cols-[1fr_132px_88px_98px_70px_auto]">
+      <div className="flex items-center gap-3 min-w-0">
+        <GradArt a={p.a} b={p.b} className="w-[62px] h-10 rounded-[7px] shrink-0" />
+        <div className="min-w-0">
+          <div className="font-bold text-[14.5px] truncate">{p.name}</div>
+          <div className="text-[11.5px] text-dim mt-0.5">{p.type} · {p.version}</div>
+        </div>
+      </div>
+      <div>
+        <span className={`text-[11px] font-bold px-2 py-1 rounded-full uppercase tracking-[.04em] ${
+          p.statusClass === "badge-green" ? "bg-[rgba(123,194,74,.16)] text-[#a6e06a]" :
+          p.statusClass === "badge-info"  ? "bg-[rgba(86,166,232,.14)] text-[#8fc6f0]" :
+          p.statusClass === "badge-warn"  ? "bg-[rgba(232,169,58,.16)] text-[#f0c66a]" :
+          p.statusClass === "badge-error" ? "bg-[rgba(227,92,92,.16)] text-[#e88]" :
+          "bg-[rgba(255,255,255,.06)] text-[#8aa0b4]"}`}>
+          {p.status}
+        </span>
+      </div>
+      <div className={`hidden lg:block font-bold text-[14px] ${p.plays === "—" ? "text-dim" : ""}`}>{p.plays}</div>
+      <div className={`hidden lg:block font-bold text-[14px] ${p.revenue === "—" ? "text-dim" : ""}`}>{p.revenue}</div>
+      <div className="hidden lg:block">
+        <RatingBadge rating={p.rating} />
+        {p.rating == null && <span className="font-bold text-[14px] text-dim">—</span>}
+      </div>
+      <div className="text-right flex items-center gap-1.5 justify-end">
+        <Link href={`/dashboard/games/${p.id}/edit`} onClick={e => e.stopPropagation()}
+          className="text-[11px] font-bold px-2.5 py-1.5 rounded-lg no-underline"
+          style={{ background: "rgba(86,166,232,.14)", color: "#8fc6f0", border: "1px solid #2c6aa0" }}>
+          Edit
+        </Link>
+        {deletable && (
+          <button onClick={handleDelete} disabled={deleting}
+            title={confirming ? "Click again to confirm" : "Delete or withdraw"}
+            className="text-[11px] font-bold px-2.5 py-1.5 rounded-lg cursor-pointer disabled:opacity-50"
+            style={{
+              background: confirming ? "rgba(227,92,92,.16)" : "transparent",
+              color: "#e88",
+              border: "1px solid rgba(232,136,136,.45)",
+            }}>
+            {deleting ? "…" : confirming ? "Confirm" : "🗑"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 const engineOptions = [
   { label: "Babylon.js", dot: "#bb464b" },
@@ -220,6 +291,7 @@ export default function DashboardPage() {
   const { user, isLoaded } = useUser();
   const router = useRouter();
   const [activeFilter, setActiveFilter] = useState("All");
+  const [activeTab, setActiveTab] = useState<DashboardTab>("projects");
   const [creatorStatus, setCreatorStatus] = useState<CreatorStatus>("loading");
   const [profile, setProfile] = useState<CreatorProfileRow | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -286,6 +358,15 @@ export default function DashboardPage() {
     if (creatorStatus === "none") router.replace("/creator");
   }, [creatorStatus, router]);
 
+  // Deep link from /dashboard/studio/edit's redirect (or any ?tab=studio link)
+  useEffect(() => {
+    async function readTab() {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("tab") === "studio") setActiveTab("studio");
+    }
+    readTab();
+  }, []);
+
   // Load Stripe Connect status
   useEffect(() => {
     if (!isLoaded || !user?.id || creatorStatus !== "approved") return;
@@ -334,7 +415,7 @@ export default function DashboardPage() {
     if (activeFilter === "All")       return true;
     if (activeFilter === "Live")      return p.status === "Live";
     if (activeFilter === "In review") return p.status === "In review";
-    if (activeFilter === "Drafts")    return p.status === "Draft" || p.status === "Changes requested";
+    if (activeFilter === "Drafts")    return p.status === "Draft" || p.status === "Rejected";
     return true;
   });
 
@@ -420,11 +501,29 @@ export default function DashboardPage() {
               </div>
             </div>
           </div>
-          <div className="flex gap-2.5">
-            <Link href="/upload" className="px-5 py-2.5 rounded-[9px] font-bold text-[14px] no-underline"
-              style={{ background: "linear-gradient(180deg, #56a6e8, #2c6aa0)", color: "#06121d" }}>＋ New game</Link>
-          </div>
+          {activeTab === "projects" && (
+            <div className="flex gap-2.5">
+              <Link href="/upload" className="px-5 py-2.5 rounded-[9px] font-bold text-[14px] no-underline"
+                style={{ background: "linear-gradient(180deg, #56a6e8, #2c6aa0)", color: "#06121d" }}>＋ New game</Link>
+            </div>
+          )}
         </div>
+
+        {/* Tabs */}
+        <div className="flex items-center gap-1 p-1 rounded-[10px] border border-line w-max mb-6" style={{ background: "#16202c" }}>
+          {([["projects", "Projects"], ["studio", "Studio Profile"]] as const).map(([value, label]) => (
+            <button key={value} onClick={() => setActiveTab(value)}
+              className="px-4 py-2 rounded-[7px] text-[13px] font-bold cursor-pointer transition-colors"
+              style={{ background: activeTab === value ? "#223345" : "transparent", color: activeTab === value ? "#e7eef4" : "#8aa0b4" }}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {activeTab === "studio" && <StudioProfileSection />}
+
+        {activeTab === "projects" && (
+        <>
 
         {/* Stats */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
@@ -464,44 +563,13 @@ export default function DashboardPage() {
             </div>
 
             {/* Table head */}
-            <div className="grid px-4.5 py-3 text-[11px] font-bold tracking-[.08em] uppercase text-dim border-b border-line grid-cols-[1fr_auto_auto] lg:grid-cols-[1fr_132px_88px_98px_70px_40px]">
+            <div className="grid px-4.5 py-3 text-[11px] font-bold tracking-[.08em] uppercase text-dim border-b border-line grid-cols-[1fr_auto_auto] lg:grid-cols-[1fr_132px_88px_98px_70px_auto]">
               <div>Game</div><div>Status</div><div className="hidden lg:block">Plays</div><div className="hidden lg:block">Revenue</div><div className="hidden lg:block">Rating</div><div />
             </div>
 
             {/* Rows */}
             {filtered.map(p => (
-              <div key={p.name}
-                className="grid items-center px-4.5 py-3.5 border-b border-line last:border-none cursor-pointer hover:bg-white/[.025] transition-colors gap-3 grid-cols-[1fr_auto_auto] lg:grid-cols-[1fr_132px_88px_98px_70px_40px]">
-                <div className="flex items-center gap-3 min-w-0">
-                  <GradArt a={p.a} b={p.b} className="w-[62px] h-10 rounded-[7px] shrink-0" />
-                  <div className="min-w-0">
-                    <div className="font-bold text-[14.5px] truncate">{p.name}</div>
-                    <div className="text-[11.5px] text-dim mt-0.5">{p.type} · {p.version}</div>
-                  </div>
-                </div>
-                <div>
-                  <span className={`text-[11px] font-bold px-2 py-1 rounded-full uppercase tracking-[.04em] ${
-                    p.statusClass === "badge-green" ? "bg-[rgba(123,194,74,.16)] text-[#a6e06a]" :
-                    p.statusClass === "badge-info"  ? "bg-[rgba(86,166,232,.14)] text-[#8fc6f0]" :
-                    p.statusClass === "badge-warn"  ? "bg-[rgba(232,169,58,.16)] text-[#f0c66a]" :
-                    "bg-[rgba(255,255,255,.06)] text-[#8aa0b4]"}`}>
-                    {p.status}
-                  </span>
-                </div>
-                <div className={`hidden lg:block font-bold text-[14px] ${p.plays === "—" ? "text-dim" : ""}`}>{p.plays}</div>
-                <div className={`hidden lg:block font-bold text-[14px] ${p.revenue === "—" ? "text-dim" : ""}`}>{p.revenue}</div>
-                <div className="hidden lg:block">
-                  <RatingBadge rating={p.rating} />
-                  {p.rating == null && <span className="font-bold text-[14px] text-dim">—</span>}
-                </div>
-                <div className="text-right">
-                  <Link href={`/dashboard/games/${p.id}/edit`} onClick={e => e.stopPropagation()}
-                    className="text-[11px] font-bold px-2.5 py-1.5 rounded-lg no-underline"
-                    style={{ background: "rgba(86,166,232,.14)", color: "#8fc6f0", border: "1px solid #2c6aa0" }}>
-                    Edit
-                  </Link>
-                </div>
-              </div>
+              <ProjectRow key={p.id} project={p} onDeleted={(id) => setProjects((prev) => prev.filter((x) => x.id !== id))} />
             ))}
           </div>
 
@@ -581,6 +649,8 @@ export default function DashboardPage() {
             </div>
           </aside>
         </div>
+        </>
+        )}
       </div>
     </>
   );

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { setAssetVisibility, deleteAsset, renameAsset, type AssetRow, type Visibility } from "@/lib/assets";
+import { setAssetVisibility, deleteAsset, renameAsset, signedAssetUrl, type AssetRow, type Visibility } from "@/lib/assets";
 
 // Named *Row, not AssetRow, to avoid colliding with the AssetRow type this
 // file imports from lib/assets. Visual pattern (select styling, chip
@@ -35,9 +35,12 @@ export default function AssetLibraryRow({
   onJumpToSource,
   highlighted = false,
   setRowRef,
+  readOnly = false,
 }: {
   asset: AssetRow;
   onChange: () => void;
+  /** Purchased-from-the-marketplace assets: no rename/delete/visibility controls, just a Download action. */
+  readOnly?: boolean;
   /** Present when a tool is mounted and registered as the active loader. */
   onLoad?: (asset: AssetRow) => void;
   /** Whether the active tool's `accepts` predicate passed for this asset. */
@@ -98,6 +101,16 @@ export default function AssetLibraryRow({
     const cents = Number.isFinite(dollars) ? Math.max(0, Math.round(dollars * 100)) : 0;
     setPriceInput((cents / 100).toFixed(2));
     if (cents !== asset.price_cents) await updateVisibility(asset.visibility, cents);
+  }
+
+  async function handleDownload() {
+    setSaving(true);
+    try {
+      const url = await signedAssetUrl(asset.storage_path);
+      window.open(url, "_blank");
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function handleDelete() {
@@ -168,7 +181,7 @@ export default function AssetLibraryRow({
         ) : (
           <span className="text-[13px] text-ink truncate" title={asset.name}>{asset.name}</span>
         )}
-        {!selectMode && !renaming && (
+        {!selectMode && !renaming && !readOnly && (
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -181,13 +194,23 @@ export default function AssetLibraryRow({
             ✎
           </button>
         )}
-        {!selectMode && (
+        {!selectMode && !readOnly && (
           <button
             onClick={handleDelete}
             disabled={saving}
             className="text-[12px] text-dim hover:text-[#e88] shrink-0 disabled:opacity-40"
           >
             ✕
+          </button>
+        )}
+        {readOnly && (
+          <button
+            onClick={handleDownload}
+            disabled={saving}
+            className="text-[11px] font-bold px-2 py-1 rounded shrink-0 disabled:opacity-40"
+            style={{ background: "rgba(86,166,232,.14)", color: "#8fc6f0" }}
+          >
+            {saving ? "…" : "Download"}
           </button>
         )}
       </div>
@@ -208,17 +231,21 @@ export default function AssetLibraryRow({
             </button>
           )}
         </span>
-        <select
-          value={asset.visibility}
-          disabled={saving}
-          onChange={(e) => updateVisibility(e.target.value as Visibility)}
-          className="bg-panel2 border border-line rounded-md px-1.5 py-1 text-[11.5px] text-ink disabled:opacity-60"
-        >
-          <option value="private">Private</option>
-          <option value="shared">Shared</option>
-          <option value="public">Public</option>
-          <option value="sellable">Sellable</option>
-        </select>
+        {readOnly ? (
+          <span className="text-[10.5px] text-dim">Purchased</span>
+        ) : (
+          <select
+            value={asset.visibility}
+            disabled={saving}
+            onChange={(e) => updateVisibility(e.target.value as Visibility)}
+            className="bg-panel2 border border-line rounded-md px-1.5 py-1 text-[11.5px] text-ink disabled:opacity-60"
+          >
+            <option value="private">Private</option>
+            <option value="shared">Shared</option>
+            <option value="public">Public</option>
+            <option value="sellable">Sellable</option>
+          </select>
+        )}
       </div>
       <div className="flex items-center gap-1.5 flex-wrap">
         <span className="text-[10.5px] text-dim">{formatBytes(asset.file_bytes)}</span>
@@ -255,7 +282,7 @@ export default function AssetLibraryRow({
           derived from {derivedFromName}
         </button>
       )}
-      {asset.visibility === "sellable" && (
+      {!readOnly && asset.visibility === "sellable" && (
         <div className="flex items-center gap-1.5 mt-0.5">
           <span className="text-[12px] font-semibold" style={{ color: "var(--color-buy1)" }}>$</span>
           <input

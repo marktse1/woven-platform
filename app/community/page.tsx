@@ -1,9 +1,17 @@
 "use client";
 export const dynamic = "force-dynamic";
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import { useUser } from "@clerk/nextjs";
 import CommunitySubNav from "@/components/shell/CommunitySubNav";
 import { supabase } from "@/lib/supabase";
+import { useMyStudio } from "@/lib/useMyStudio";
+import { getCreatorProfilesByIds } from "@/lib/games";
+
+const pal: [string, string][] = [
+  ["#3a7fc4", "#7d4bd0"], ["#2aa6c4", "#15527a"], ["#5cb85c", "#1e7a4a"],
+  ["#e8794b", "#b8431a"], ["#4b7fd0", "#2a3f7a"], ["#c44b9a", "#6a2a7a"],
+];
 
 const hubs = ["Hollow Tide", "Mossglow", "Weave Forge", "Tin Can Kingdom", "Foxfire Relay", "Help & Support", "Off-topic", "Multiplayer"];
 const threadCategories = ["Help & Support", "Builds & Showcase", "Bug Reports", "Off-topic", "Multiplayer", "Weave Forge"];
@@ -13,6 +21,8 @@ function NewThreadModal({ onClose, onPost, authorName }: { onClose: () => void; 
   const [body, setBody]       = useState("");
   const [hub, setHub]         = useState(hubs[0]);
   const [category, setCategory] = useState(threadCategories[0]);
+  const [postAsStudio, setPostAsStudio] = useState(false);
+  const myStudio = useMyStudio();
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -22,11 +32,12 @@ function NewThreadModal({ onClose, onPost, authorName }: { onClose: () => void; 
 
   const handleSubmit = () => {
     if (!title.trim() || !body.trim()) return;
+    const asStudio = postAsStudio && !!myStudio;
     onPost({
       tags: [],
       title: title.trim(),
       excerpt: body.trim(),
-      author: authorName,
+      author: asStudio ? (myStudio!.studio_name ?? myStudio!.handle ?? authorName) : authorName,
       hub,
       category,
       hubColors: ["#56a6e8", "#2c6aa0"],
@@ -34,6 +45,7 @@ function NewThreadModal({ onClose, onPost, authorName }: { onClose: () => void; 
       replies: 0,
       time: "just now",
       pinned: false,
+      posted_as_studio_id: asStudio ? myStudio!.id : null,
     });
     onClose();
   };
@@ -81,6 +93,21 @@ function NewThreadModal({ onClose, onPost, authorName }: { onClose: () => void; 
               placeholder="Share context, steps to reproduce, screenshots, links…"
               className={inputCls + " resize-none"} />
           </div>
+
+          {myStudio && (
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[13px] font-semibold text-muted">Post as</label>
+              <div className="flex gap-1 p-1 rounded-lg border border-line w-max" style={{ background: "#16202c" }}>
+                {[false, true].map((asStudio) => (
+                  <button key={String(asStudio)} type="button" onClick={() => setPostAsStudio(asStudio)}
+                    className="px-3.5 py-1.5 rounded-md text-[12.5px] font-bold cursor-pointer transition-colors"
+                    style={{ background: postAsStudio === asStudio ? "#223345" : "transparent", color: postAsStudio === asStudio ? "#e7eef4" : "#8aa0b4" }}>
+                    {asStudio ? (myStudio.studio_name ?? myStudio.handle) : authorName}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Footer */}
@@ -116,6 +143,7 @@ type Thread = {
   replies: number;
   time: string;
   pinned: boolean;
+  posted_as_studio_id: string | null;
 };
 
 const hubColorMap: Record<string, [string, string]> = {
@@ -153,6 +181,7 @@ function rowToThread(row: any): Thread {
     replies: row.replies,
     pinned: row.pinned,
     time: relativeTime(row.created_at),
+    posted_as_studio_id: row.posted_as_studio_id ?? null,
   };
 }
 
@@ -218,6 +247,7 @@ export default function CommunityPage() {
   const [activeSort, setActiveSort] = useState("🔥 Hot");
   const [showModal, setShowModal] = useState(false);
   const [threadList, setThreadList] = useState<Thread[]>([]);
+  const [studioById, setStudioById] = useState<Record<string, { studio_name: string | null; handle: string | null }>>({});
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
 
@@ -226,8 +256,13 @@ export default function CommunityPage() {
       .from("threads")
       .select("*")
       .order("created_at", { ascending: false })
-      .then(({ data }) => {
-        if (data) setThreadList(data.map(rowToThread));
+      .then(async ({ data }) => {
+        if (data) {
+          const threads = data.map(rowToThread);
+          setThreadList(threads);
+          const studioIds = Array.from(new Set(threads.map((t) => t.posted_as_studio_id).filter((id): id is string => !!id)));
+          if (studioIds.length > 0) setStudioById(await getCreatorProfilesByIds(studioIds));
+        }
         setLoading(false);
       });
   }, []);
@@ -236,6 +271,8 @@ export default function CommunityPage() {
     const { data } = await supabase
       .from("threads")
       .insert({
+        clerk_user_id: user?.id ?? null,
+        posted_as_studio_id: t.posted_as_studio_id,
         title: t.title,
         excerpt: t.excerpt,
         author: t.author,
@@ -346,8 +383,20 @@ export default function CommunityPage() {
                     </div>
                     <p className="text-[13px] text-muted mt-1.5 leading-relaxed line-clamp-2">{t.excerpt}</p>
                     <div className="flex items-center gap-2 text-[12px] text-dim mt-2.5 flex-wrap">
-                      <GradAvatar a={t.hubColors[0]} b={t.hubColors[1]} className="w-5 h-5 rounded-full" />
-                      <a className="text-muted font-semibold cursor-pointer">@{t.author}</a>
+                      {(() => {
+                        const studio = t.posted_as_studio_id ? studioById[t.posted_as_studio_id] : null;
+                        const identityPair = pal[t.author.length % pal.length];
+                        return (
+                          <>
+                            <GradAvatar a={identityPair[0]} b={identityPair[1]} className="w-5 h-5 rounded-full" />
+                            {studio?.handle ? (
+                              <Link href={`/studio/${studio.handle}`} className="text-muted font-semibold no-underline hover:text-accent" onClick={(e) => e.stopPropagation()}>@{t.author}</Link>
+                            ) : (
+                              <a className="text-muted font-semibold cursor-pointer">@{t.author}</a>
+                            )}
+                          </>
+                        );
+                      })()}
                       <span className="w-[3px] h-[3px] rounded-full bg-line2" />
                       <span>in</span>
                       <a className="text-accent font-bold cursor-pointer">{t.hub}</a>

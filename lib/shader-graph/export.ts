@@ -7,6 +7,8 @@ type Compiled = {
   fragmentShader: string;
   uniforms: Record<string, UniformSpec>;
   transparent: boolean;
+  skinned: boolean;
+  outline?: { vertexShader: string; fragmentShader: string; uniforms: Record<string, UniformSpec> };
 };
 
 // u_backfaceDepth only means something once something renders the mesh's
@@ -43,13 +45,36 @@ const BACKFACE_DEPTH_NOTE_GLSL = ` *
  *   u_resolution/u_camNear/u_camFar from your real camera/viewport every
  *   frame.`;
 
+// u_lightDir is frozen at whatever direction was set in Shaderade's
+// preview (default or wherever the light gizmo was dragged) — it's just a
+// uniform value like any other, nothing keeps it in sync with a real
+// scene light automatically. Toon/banded lighting in particular will look
+// static/wrong the moment your actual light moves unless you update this
+// yourself, same as u_time already needs.
+const LIGHT_DIR_NOTE_THREE = `  // Update every frame to match your real scene light, e.g.:
+  // material.uniforms.u_lightDir.value.copy(sunDirection);
+`;
+const LIGHT_DIR_NOTE_BABYLON = `// Update every frame to match your real scene light, e.g.:
+// shaderMaterial.setVector3("u_lightDir", sunDirection);
+`;
+const LIGHT_DIR_NOTE_PLAYCANVAS = `// Update every frame to match your real scene light, e.g.:
+// material.setParameter("u_lightDir", [sun.x, sun.y, sun.z]);
+`;
+const LIGHT_DIR_NOTE_GLSL = ` *
+ *   u_lightDir won't track a moving light on its own — update it every
+ *   frame from your real scene light direction, the same way you'd
+ *   already need to update u_time.`;
+
 function uniformsToThree(uniforms: Record<string, UniformSpec>): string {
   const entries = Object.entries(uniforms).map(([name, spec]) => {
     let value = "null";
     let prefix = "";
     if (spec.type === "float") value = `{ value: ${spec.value ?? 0} }`;
     else if (spec.type === "vec2") value = `{ value: new THREE.Vector2(${(spec.value as number[] ?? [0, 0]).join(", ")}) }`;
-    else if (spec.type === "vec3") value = `{ value: new THREE.Vector3(${(spec.value as number[] ?? [0, 0, 0]).join(", ")}) }`;
+    else if (spec.type === "vec3") {
+      value = `{ value: new THREE.Vector3(${(spec.value as number[] ?? [0, 0, 0]).join(", ")}) }`;
+      if (name === "u_lightDir") prefix = LIGHT_DIR_NOTE_THREE;
+    }
     else if (spec.type === "vec4") value = `{ value: new THREE.Vector4(${(spec.value as number[] ?? [0, 0, 0, 1]).join(", ")}) }`;
     else if (spec.type === "sampler2D") {
       const url = typeof spec.value === "string" ? spec.value : null;
@@ -81,13 +106,36 @@ ${compiled.fragmentShader}
   uniforms: ${uniformsToThree(compiled.uniforms)},
   transparent: ${compiled.transparent},
 });
-
+${compiled.skinned ? `
+// This material expects a THREE.SkinnedMesh (skinIndex/skinWeight
+// attributes + a real skeleton) — skinning=true is what makes Three.js
+// actually bind bindMatrix/bindMatrixInverse/boneTexture for it each frame.
+material.skinning = true;
+` : ''}
 // Apply to a mesh:
 // mesh.material = material;
 
 // Animate (inside your render loop):
 // material.uniforms.u_time.value = clock.getElapsedTime();
-`;
+${compiled.outline ? `
+// Toon outline — a second, slightly-extruded, back-face-only copy of the
+// SAME mesh rendered behind the main one, so only its silhouette peeks
+// out as a rim.
+const outlineMaterial = new THREE.ShaderMaterial({
+  vertexShader: \`
+${compiled.outline.vertexShader}
+\`,
+  fragmentShader: \`
+${compiled.outline.fragmentShader}
+\`,
+  side: THREE.BackSide,
+});
+
+// Apply alongside the main material, reusing the same mesh's geometry
+// (replace \`mesh\` with whatever you assigned \`material\` to above):
+// const outlineMesh = new THREE.Mesh(mesh.geometry, outlineMaterial);
+// mesh.add(outlineMesh); // rides along with the main mesh's own transform
+` : ''}`;
 }
 
 // Babylon's ShaderMaterial doesn't take uniform values inline — you declare
@@ -105,6 +153,7 @@ function babylonSetterCalls(uniforms: Record<string, UniformSpec>): string {
       lines.push(`shaderMaterial.setVector2("${name}", new BABYLON.Vector2(${v.join(", ")}));`);
     } else if (spec.type === "vec3") {
       const v = spec.value as number[] ?? [0, 0, 0];
+      if (name === "u_lightDir") lines.push(LIGHT_DIR_NOTE_BABYLON.trimEnd());
       lines.push(`shaderMaterial.setVector3("${name}", new BABYLON.Vector3(${v.join(", ")}));`);
     } else if (spec.type === "vec4") {
       const v = spec.value as number[] ?? [0, 0, 0, 1];
@@ -125,13 +174,21 @@ function babylonSetterCalls(uniforms: Record<string, UniformSpec>): string {
   return lines.join("\n");
 }
 
+const SKINNING_NOTE_BABYLON = `// NOTE: this shader's skinning code (skinIndex/skinWeight attributes,
+// bindMatrix/boneTexture uniforms) is written in Three.js's convention —
+// Babylon.js skins meshes completely differently (matricesIndices/
+// matricesWeights attributes, its own bone uniform buffer via
+// BABYLON.Skeleton). The vertex shader below will need real adaptation to
+// Babylon's skinning API, not just a rename.
+`;
+
 export function exportBabylon(compiled: Compiled): string {
   const uniformNames = Object.keys(compiled.uniforms);
   const samplers = uniformNames.filter((n) => compiled.uniforms[n].type === "sampler2D");
   const scalars = uniformNames.filter((n) => compiled.uniforms[n].type !== "sampler2D");
 
   return `// Babylon.js — paste into your scene setup
-const shaderMaterial = new BABYLON.ShaderMaterial("shaderade", scene, {
+${compiled.skinned ? SKINNING_NOTE_BABYLON : ''}const shaderMaterial = new BABYLON.ShaderMaterial("shaderade", scene, {
   vertexSource: \`
 ${compiled.vertexShader}
 \`,
@@ -149,7 +206,26 @@ ${babylonSetterCalls(compiled.uniforms)}
 
 // Apply to a mesh:
 // mesh.material = shaderMaterial;
-`;
+${compiled.outline ? `
+// Toon outline — a second, slightly-extruded copy of the same mesh so
+// only its silhouette peeks out as a rim behind the main material. The
+// shader itself is simple/portable GLSL; wiring the second draw call is
+// Babylon-specific:
+//
+// const outlineMaterial = new BABYLON.ShaderMaterial("outline", scene, {
+//   vertexSource: \`${compiled.outline.vertexShader}\`,
+//   fragmentSource: \`${compiled.outline.fragmentShader}\`,
+// }, { attributes: ["position", "normal"], uniforms: [] });
+// const outlineMesh = mesh.clone("outline");
+// outlineMesh.material = outlineMaterial;
+//
+// This needs Babylon's equivalent of THREE.BackSide — i.e. render only
+// this shell's back faces, not both/front — which Babylon controls via
+// sideOrientation/cull-mode, not a simple boolean. Check Babylon's current
+// docs for the right call in your version rather than guessing here;
+// getting this wrong shows the outline over the whole surface instead of
+// just as a rim.
+` : ''}`;
 }
 
 // PlayCanvas custom-shader materials take uniform values via
@@ -168,6 +244,7 @@ function playcanvasParamCalls(uniforms: Record<string, UniformSpec>): string {
       lines.push(`material.setParameter("${name}", [${v.join(", ")}]);`);
     } else if (spec.type === "vec3") {
       const v = spec.value as number[] ?? [0, 0, 0];
+      if (name === "u_lightDir") lines.push(LIGHT_DIR_NOTE_PLAYCANVAS.trimEnd());
       lines.push(`material.setParameter("${name}", [${v.join(", ")}]);`);
     } else if (spec.type === "vec4") {
       const v = spec.value as number[] ?? [0, 0, 0, 1];
@@ -188,9 +265,17 @@ function playcanvasParamCalls(uniforms: Record<string, UniformSpec>): string {
   return lines.join("\n");
 }
 
+const SKINNING_NOTE_PLAYCANVAS = `// NOTE: this shader's skinning code (skinIndex/skinWeight attributes,
+// bindMatrix/boneTexture uniforms) is written in Three.js's convention —
+// PlayCanvas skins meshes completely differently (its own pc.Skin /
+// bone-matrix-palette attribute and uniform conventions). The vertex
+// shader below will need real adaptation to PlayCanvas's skinning API,
+// not just a rename.
+`;
+
 export function exportPlayCanvas(compiled: Compiled): string {
   return `// PlayCanvas — paste into a Script component
-const device = app.graphicsDevice;
+${compiled.skinned ? SKINNING_NOTE_PLAYCANVAS : ''}const device = app.graphicsDevice;
 
 const shader = new pc.Shader(device, {
   attributes: { aPosition: pc.SEMANTIC_POSITION, aNormal: pc.SEMANTIC_NORMAL, aUv0: pc.SEMANTIC_TEXCOORD0 },
@@ -208,7 +293,26 @@ ${compiled.transparent ? 'material.blendType = pc.BLEND_NORMAL;\n' : ''}// entit
 
 // Uniform/texture values, as currently wired in Shaderade:
 ${playcanvasParamCalls(compiled.uniforms)}
-`;
+${compiled.outline ? `
+// Toon outline — a second, slightly-extruded copy of the same mesh so
+// only its silhouette peeks out as a rim behind the main material.
+const outlineShader = new pc.Shader(device, {
+  attributes: { aPosition: pc.SEMANTIC_POSITION, aNormal: pc.SEMANTIC_NORMAL },
+  vshader: \`
+${compiled.outline.vertexShader}
+\`,
+  fshader: \`
+${compiled.outline.fragmentShader}
+\`,
+});
+const outlineMaterial = new pc.Material();
+outlineMaterial.shader = outlineShader;
+outlineMaterial.cull = pc.CULLFACE_FRONT; // render only back faces — the
+  // outline shell's front faces should hide behind the main mesh's surface
+// Apply outlineMaterial to a second mesh instance sharing the same
+// geometry (a cloned/duplicated entity), same pattern as the main
+// material above.
+` : ''}`;
 }
 
 // Raw GLSL has no uniform-binding syntax of its own to hang real values
@@ -225,19 +329,45 @@ function glslUniformComment(uniforms: Record<string, UniformSpec>): string {
       const url = typeof spec.value === "string" ? spec.value : null;
       return ` *   ${name}: ${url ?? "(no texture wired)"}`;
     }
+    if (spec.type === "vec3" && name === "u_lightDir") {
+      return ` *   ${name}: ${JSON.stringify(spec.value)}\n${LIGHT_DIR_NOTE_GLSL}`;
+    }
     return ` *   ${name}: ${JSON.stringify(spec.value)}`;
   });
   return `/* Uniform values, as currently wired in Shaderade:\n${lines.join("\n")}\n */\n\n`;
 }
 
+const SKINNING_NOTE_GLSL = `/* NOTE: this shader's skinning code (skinIndex/skinWeight attributes,
+   bindMatrix/boneTexture uniforms) is written in Three.js's convention.
+   Other engines skin meshes differently — adapt the attribute/uniform
+   names and bone-matrix lookup to whatever actually consumes this. */
+
+`;
+
 export function exportGlsl(compiled: Compiled): string {
   const transparencyNote = compiled.transparent
     ? "/* This fragment shader writes a non-1.0 alpha (transmission > 0) — enable\n   alpha blending on whatever material/pipeline you attach it to. */\n\n"
     : "";
-  return `${transparencyNote}${glslUniformComment(compiled.uniforms)}/* ── vertex.glsl ── */
+  const skinningNote = compiled.skinned ? SKINNING_NOTE_GLSL : "";
+  const outlineBlock = compiled.outline
+    ? `\n/* ── outline (toon rim) ──
+ *   A second, slightly-extruded copy of the same mesh rendered BEHIND the
+ *   main material so only its silhouette peeks out as a rim. Needs its own
+ *   draw call with back-face-only culling (THREE.BackSide or your engine's
+ *   equivalent) — rendering both sides shows it over the whole surface
+ *   instead of just as a rim.
+ */
+/* ── outline.vertex.glsl ── */
+${compiled.outline.vertexShader}
+
+/* ── outline.fragment.glsl ── */
+${compiled.outline.fragmentShader}
+`
+    : "";
+  return `${transparencyNote}${skinningNote}${glslUniformComment(compiled.uniforms)}/* ── vertex.glsl ── */
 ${compiled.vertexShader}
 
 /* ── fragment.glsl ── */
 ${compiled.fragmentShader}
-`;
+${outlineBlock}`;
 }

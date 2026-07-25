@@ -30,6 +30,15 @@ const ShaderPreview = dynamic(() => import("./ShaderPreview"), {
   loading: () => <div className="w-full h-full bg-[#0e0b08]" />,
 });
 
+// Experimental WebGPU tech demo — not a node-graph-compiled material like
+// everything else here (see RTGlassPreview.tsx for why), so it's its own
+// separate preview swapped in by a toggle rather than something the graph
+// canvas/Load dropdown knows about.
+const RTGlassPreview = dynamic(() => import("./RTGlassPreview"), {
+  ssr: false,
+  loading: () => <div className="w-full h-full bg-[#0e0b08]" />,
+});
+
 const ExportPanel = dynamic(() => import("./ExportPanel"), { ssr: false });
 
 // ── GLB export channel classification ────────────────────────────────────
@@ -145,6 +154,10 @@ export default function ShaderadeClient() {
   const [graphName, setGraphName] = useState("My Shader");
   const [savedAssets, setSavedAssets] = useState<AssetRow[]>([]);
   const [loadMenuOpen, setLoadMenuOpen] = useState(false);
+  // Experimental WebGPU demo mode — not part of the node-graph/compiled
+  // material system at all (see RTGlassPreview.tsx), so it's a standalone
+  // toggle rather than something wired through compiled/loadGraph.
+  const [rtGlassMode, setRtGlassMode] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importMsg, setImportMsg] = useState("");
   const [bgLightness, setBgLightness] = useState(0.05);
@@ -613,6 +626,20 @@ export default function ShaderadeClient() {
           {exporting ? "Exporting…" : "Export GLB"}
         </button>
 
+        {/* RT Glass — experimental WebGPU tech demo, not a node-graph
+            material: separate toggle rather than a Load/Templates entry. */}
+        <button
+          onClick={() => setRtGlassMode((v) => !v)}
+          title="Experimental: real screen-space ray-marched reflection/refraction via WebGPU. Not a node-graph material, not exportable — needs a WebGPU-capable browser."
+          className={`px-3 py-1.5 rounded border text-[11px] transition-colors ${
+            rtGlassMode
+              ? "bg-[#c47be8] border-[#c47be8] text-[#0e0b08] font-semibold"
+              : "bg-[#18141c] border-[#2a2320] text-dim hover:text-ink"
+          }`}
+        >
+          {rtGlassMode ? "RT Glass (on)" : "RT Glass (experimental)"}
+        </button>
+
       </div>
 
       {/* Status messages — their own row, not truncated: the export/import
@@ -650,7 +677,7 @@ export default function ShaderadeClient() {
           {/* 3D preview sphere */}
           <div className="flex-1 min-h-0 flex flex-col">
             <div className="flex-1 min-h-0">
-              <ShaderPreview compiled={compiled} bgLightness={bgLightness} />
+              {rtGlassMode ? <RTGlassPreview /> : <ShaderPreview compiled={compiled} bgLightness={bgLightness} />}
             </div>
             <div className="flex items-center gap-2 px-3 py-1.5 border-t border-[#2a2320] shrink-0">
               <span className="text-[10px] text-dim uppercase tracking-wider">Background</span>

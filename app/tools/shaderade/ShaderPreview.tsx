@@ -19,6 +19,7 @@ export default function ShaderPreview({ compiled, bgLightness = 0.05 }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const materialRef = useRef<THREE.ShaderMaterial | null>(null);
+  const outlineMeshRef = useRef<THREE.Mesh | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const clockRef = useRef(new THREE.Clock());
   const prevTexturesRef = useRef<THREE.Texture[]>([]);
@@ -93,6 +94,15 @@ export default function ShaderPreview({ compiled, bgLightness = 0.05 }: Props) {
     // MeshBasicMaterial.
     const mesh: THREE.Mesh<THREE.SphereGeometry, THREE.Material> = new THREE.Mesh(geo, mat);
     scene.add(mesh);
+
+    // Toon outline (Output Toon Outline node) — a second, slightly-
+    // extruded, back-face-only copy of the same geometry, created once
+    // and hidden by default; the "update material" effect below swaps in
+    // a real material and shows it whenever compiled.outline exists.
+    const outlineMesh: THREE.Mesh<THREE.SphereGeometry, THREE.Material> = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ visible: false }));
+    outlineMesh.visible = false;
+    scene.add(outlineMesh);
+    outlineMeshRef.current = outlineMesh;
 
     // Back-face depth pass for thickness-aware glass (Output PBR's
     // "Thickness-Aware Absorption" toggle). Fixed resolution, decoupled
@@ -245,6 +255,8 @@ export default function ShaderPreview({ compiled, bgLightness = 0.05 }: Props) {
         ground.visible = false;
         for (const p of props) p.visible = false;
         lightGizmo.visible = false;
+        const prevOutlineVisible = outlineMesh.visible;
+        outlineMesh.visible = false;
         const prevMeshMaterial = mesh.material;
         mesh.material = backfaceMat;
         renderer.setRenderTarget(backfaceTarget);
@@ -253,6 +265,7 @@ export default function ShaderPreview({ compiled, bgLightness = 0.05 }: Props) {
         mesh.material = prevMeshMaterial;
         ground.visible = true;
         for (const p of props) p.visible = true;
+        outlineMesh.visible = prevOutlineVisible;
         lightGizmo.visible = !!mat.uniforms.u_lightDir;
 
         mat.uniforms.u_backfaceDepth.value = backfaceTarget.depthTexture;
@@ -293,6 +306,7 @@ export default function ShaderPreview({ compiled, bgLightness = 0.05 }: Props) {
       renderer.dispose();
       geo.dispose();
       mat.dispose();
+      (outlineMesh.material as THREE.Material).dispose();
       lightGeo.dispose();
       lightMat.dispose();
       groundGeo.dispose();
@@ -407,6 +421,27 @@ export default function ShaderPreview({ compiled, bgLightness = 0.05 }: Props) {
     }
     mat.uniforms = next;
     mat.needsUpdate = true;
+
+    // Toon outline — swap in a real material (built fresh each time since
+    // it's a handful of literal-baked lines, no uniforms to preserve) and
+    // show/hide the pre-created outline mesh depending on whether this
+    // compile actually has one.
+    const outlineMesh = outlineMeshRef.current;
+    if (outlineMesh) {
+      const prevOutlineMat = outlineMesh.material as THREE.Material;
+      if (compiled.outline) {
+        outlineMesh.material = new THREE.ShaderMaterial({
+          vertexShader: compiled.outline.vertexShader,
+          fragmentShader: compiled.outline.fragmentShader,
+          side: THREE.BackSide,
+        });
+        outlineMesh.visible = true;
+      } else {
+        outlineMesh.material = new THREE.MeshBasicMaterial({ visible: false });
+        outlineMesh.visible = false;
+      }
+      prevOutlineMat.dispose();
+    }
   }, [compiled]);
 
   return <div ref={mountRef} className="w-full h-full" />;

@@ -324,7 +324,14 @@ export const NODE_TYPES: NodeTypeDef[] = [
     category: "output",
     inputs: [{ id: "color", label: "Color", type: "vec4" }],
     outputs: [],
-    defaultData: { outputMode: "unlit" },
+    defaultData: { outputMode: "unlit", skinned: false },
+    params: [
+      // Off by default — unskinned graphs compile identically to before
+      // this existed. On: the vertex shader gains real (Three.js
+      // bone-texture-convention) skinning math, for materials applied to
+      // an animated THREE.SkinnedMesh instead of a static mesh.
+      { key: "skinned", label: "Skinned Mesh", type: "boolean", default: false },
+    ],
   },
   {
     type: "OutputPBR",
@@ -352,8 +359,14 @@ export const NODE_TYPES: NodeTypeDef[] = [
       transmission: 0,
       thicknessAware: false,
       absorptionDensity: 1.2,
+      skinned: false,
     },
     params: [
+      // Off by default — unskinned graphs compile identically to before
+      // this existed. On: the vertex shader gains real (Three.js
+      // bone-texture-convention) skinning math, for materials applied to
+      // an animated THREE.SkinnedMesh instead of a static mesh.
+      { key: "skinned", label: "Skinned Mesh", type: "boolean", default: false },
       { key: "normalStrength", label: "Normal Strength", type: "number", min: 0, max: 2, step: 0.05, default: 1 },
       { key: "aoStrength", label: "AO Strength", type: "number", min: 0, max: 1, step: 0.05, default: 1 },
       { key: "roughnessStrength", label: "Roughness Strength", type: "number", min: 0, max: 2, step: 0.05, default: 1 },
@@ -375,6 +388,27 @@ export const NODE_TYPES: NodeTypeDef[] = [
       // creator explicitly opts in.
       { key: "thicknessAware", label: "Thickness-Aware Absorption", type: "boolean", default: false },
       { key: "absorptionDensity", label: "Absorption Density", type: "number", min: 0, max: 5, step: 0.05, default: 1.2 },
+    ],
+  },
+  // A real inverted-hull toon outline: a second, slightly-extruded,
+  // back-face-only copy of the mesh in a flat color, rendered behind the
+  // main material so it peeks out as a rim. Can coexist in the same graph
+  // as an OutputUnlit/OutputPBR node — compiler.ts compiles this into its
+  // own separate small shader pair rather than folding it into the main
+  // one (a single fragment shader can't draw an outline around itself).
+  {
+    type: "OutputToonOutline",
+    label: "Output (Toon Outline)",
+    category: "output",
+    // Only a directly-wired Color node is read for the outline's fill —
+    // it's meant to be a simple flat color, not a computed expression;
+    // anything else falls back to a default near-black outline. See
+    // compiler.ts's resolveOutlineColor().
+    inputs: [{ id: "color", label: "Color", type: "vec3" }],
+    outputs: [],
+    defaultData: { outputMode: "outline", thickness: 0.02 },
+    params: [
+      { key: "thickness", label: "Thickness", type: "number", min: 0, max: 0.2, step: 0.001, default: 0.02 },
     ],
   },
 ];

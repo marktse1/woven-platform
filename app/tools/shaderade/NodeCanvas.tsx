@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
   ReactFlow,
   Background,
@@ -39,6 +39,26 @@ const TYPE_COLORS: Record<string, string> = {
   vec4: "#e8875a",
   sampler2D: "#c47be8",
 };
+
+// Color node channels go 0-4 (HDR headroom for emissive overdrive — see
+// nodes.ts) but a native color picker only ever represents 0-1, so this
+// clamps for display/picking; the numeric sliders in the inspector still
+// handle anything beyond that range.
+const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+const channelToHex = (v: number) => Math.round(clamp01(v) * 255).toString(16).padStart(2, "0");
+function colorDataToHex(data: Record<string, unknown>): string {
+  const r = channelToHex((data.r as number) ?? 1);
+  const g = channelToHex((data.g as number) ?? 1);
+  const b = channelToHex((data.b as number) ?? 1);
+  return `#${r}${g}${b}`;
+}
+function hexToColorData(hex: string): { r: number; g: number; b: number } {
+  return {
+    r: parseInt(hex.slice(1, 3), 16) / 255,
+    g: parseInt(hex.slice(3, 5), 16) / 255,
+    b: parseInt(hex.slice(5, 7), 16) / 255,
+  };
+}
 
 function ShaderNode({ id, data, type, selected }: NodeProps & { type: string }) {
   const def: NodeTypeDef | undefined = getNodeDef(type);
@@ -99,9 +119,28 @@ function ShaderNode({ id, data, type, selected }: NodeProps & { type: string }) 
           </div>
         )}
 
-        {/* Color swatch */}
+        {/* Color swatch + picker. The native <input type="color"> only ever
+            covers 0-1 per channel — picking a color always sets r/g/b into
+            that range; the inspector's numeric sliders are still there for
+            HDR (>1) emissive overdrive or precise values. */}
         {type === "Color" && (
-          <div style={{ margin: "4px 10px", height: 16, borderRadius: 4, background: `rgba(${Math.round((data.r as number ?? 1) * 255)},${Math.round((data.g as number ?? 1) * 255)},${Math.round((data.b as number ?? 1) * 255)},${data.a as number ?? 1})` }} />
+          <div style={{ margin: "4px 10px", display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              type="color"
+              title="Pick a color"
+              value={colorDataToHex(data)}
+              onChange={(e) => updateNodeData(id, hexToColorData(e.target.value))}
+              style={{ width: 28, height: 20, padding: 0, border: "none", borderRadius: 4, cursor: "pointer", background: "none", flexShrink: 0 }}
+            />
+            <div
+              style={{
+                flex: 1,
+                height: 16,
+                borderRadius: 4,
+                background: `rgba(${Math.round((data.r as number ?? 1) * 255)},${Math.round((data.g as number ?? 1) * 255)},${Math.round((data.b as number ?? 1) * 255)},${data.a as number ?? 1})`,
+              }}
+            />
+          </div>
         )}
 
         {/* Texture2D image picker */}
@@ -419,6 +458,23 @@ export default function NodeCanvas({ onGraphChange, handleRef }: Props) {
     { label: "Output", key: "output" },
   ];
 
+  // A static defaultEdgeOptions.style previously overrode React Flow's own
+  // built-in "this edge is selected" highlight (inline styles always beat
+  // stylesheet rules) — so clicking an edge gave zero visible feedback
+  // before pressing Delete/Backspace, even though the deletion itself
+  // already worked. Computing the stroke from edge.selected instead makes
+  // the selection actually visible.
+  const styledEdges = useMemo(
+    () =>
+      edges.map((e) => ({
+        ...e,
+        style: e.selected
+          ? { stroke: "#e8875a", strokeWidth: 2.5 }
+          : { stroke: "#554455", strokeWidth: 1.5 },
+      })),
+    [edges],
+  );
+
   return (
     <div className="flex h-full">
       {/* Node palette */}
@@ -446,17 +502,17 @@ export default function NodeCanvas({ onGraphChange, handleRef }: Props) {
       <div className="flex-1" style={{ background: "#0e0b08" }}>
         <ReactFlow
           nodes={nodes}
-          edges={edges}
+          edges={styledEdges}
           onNodesChange={handleNodesChange}
           onEdgesChange={handleEdgesChange}
           onConnect={handleConnect}
           onReconnectStart={onReconnectStart}
           onReconnect={handleReconnect}
           onReconnectEnd={handleReconnectEnd}
+          reconnectRadius={22}
           nodeTypes={RF_NODE_TYPES}
           fitView
           style={{ background: "#0e0b08" }}
-          defaultEdgeOptions={{ style: { stroke: "#554455", strokeWidth: 1.5 } }}
         >
           <Background color="#2a2430" variant={BackgroundVariant.Dots} gap={20} size={1} />
           <Controls style={{ background: "#18141c", borderColor: "#2a2320", color: "#888" }} />

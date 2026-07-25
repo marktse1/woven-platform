@@ -34,7 +34,78 @@ export function buildCelshadeGraph(): { nodes: Node[]; edges: Edge[] } {
   return { nodes, edges };
 }
 
-// -- Best Glass ---------------------------------------------------------
+// -- Celshade + Outline ------------------------------------------------------
+// The same 2-band celshade recipe, plus a wired OutputToonOutline node —
+// a real second output in the same graph, compiled by compiler.ts into its
+// own separate shader pair (a real inverted-hull outline, not a Fresnel
+// fake edge). A complete, load-and-go toon-with-outline example.
+export function buildCelshadeOutlineGraph(): { nodes: Node[]; edges: Edge[] } {
+  const nodes: Node[] = [
+    { id: "co_normal", type: "WorldNormal", position: { x: 0, y: 0 }, data: {} },
+    { id: "co_light", type: "LightDirection", position: { x: 0, y: 140 }, data: {} },
+    { id: "co_dot", type: "Dot", position: { x: 260, y: 60 }, data: {} },
+    { id: "co_threshold", type: "Float", position: { x: 260, y: 240 }, data: { value: 0.5 } },
+    { id: "co_step", type: "Step", position: { x: 520, y: 60 }, data: {} },
+    { id: "co_shadow", type: "Color", position: { x: 260, y: 400 }, data: { r: 0.16, g: 0.18, b: 0.32, a: 1 } },
+    { id: "co_lit", type: "Color", position: { x: 260, y: 560 }, data: { r: 1.0, g: 0.92, b: 0.68, a: 1 } },
+    { id: "co_mix", type: "Mix", position: { x: 780, y: 320 }, data: {} },
+    { id: "co_out", type: "OutputUnlit", position: { x: 1040, y: 260 }, data: { outputMode: "unlit" } },
+    { id: "co_outlineColor", type: "Color", position: { x: 780, y: 560 }, data: { r: 0.03, g: 0.03, b: 0.05, a: 1 } },
+    { id: "co_outline", type: "OutputToonOutline", position: { x: 1040, y: 560 }, data: { outputMode: "outline", thickness: 0.025 } },
+  ];
+  const edges: Edge[] = [
+    { id: "co_e1", source: "co_normal", sourceHandle: "normal", target: "co_dot", targetHandle: "a" },
+    { id: "co_e2", source: "co_light", sourceHandle: "dir", target: "co_dot", targetHandle: "b" },
+    { id: "co_e3", source: "co_dot", sourceHandle: "result", target: "co_step", targetHandle: "x" },
+    { id: "co_e4", source: "co_threshold", sourceHandle: "value", target: "co_step", targetHandle: "edge" },
+    { id: "co_e5", source: "co_shadow", sourceHandle: "color", target: "co_mix", targetHandle: "a" },
+    { id: "co_e6", source: "co_lit", sourceHandle: "color", target: "co_mix", targetHandle: "b" },
+    { id: "co_e7", source: "co_step", sourceHandle: "result", target: "co_mix", targetHandle: "t" },
+    { id: "co_e8", source: "co_mix", sourceHandle: "result", target: "co_out", targetHandle: "color" },
+    { id: "co_e9", source: "co_outlineColor", sourceHandle: "color", target: "co_outline", targetHandle: "color" },
+  ];
+  return { nodes, edges };
+}
+
+// -- Celshade + Texture ------------------------------------------------------
+// Same Dot->Step banding, but instead of swapping between two flat colors,
+// multiplies an actual albedo texture by a shadow/lit tint factor — the
+// texture supplies the real per-pixel color (skin, clothing, etc.), the
+// band just darkens/tints it in shadow. Upload your own image into the
+// Texture2D node after loading this — there's no real asset to bake into
+// a generated template.
+export function buildCelshadeTexturedGraph(): { nodes: Node[]; edges: Edge[] } {
+  const nodes: Node[] = [
+    { id: "ct_uv", type: "UV", position: { x: 0, y: 0 }, data: {} },
+    { id: "ct_tex", type: "Texture2D", position: { x: 260, y: 0 }, data: { uniformName: "" } },
+    { id: "ct_normal", type: "WorldNormal", position: { x: 0, y: 180 }, data: {} },
+    { id: "ct_light", type: "LightDirection", position: { x: 0, y: 320 }, data: {} },
+    { id: "ct_dot", type: "Dot", position: { x: 260, y: 240 }, data: {} },
+    { id: "ct_threshold", type: "Float", position: { x: 260, y: 420 }, data: { value: 0.5 } },
+    { id: "ct_step", type: "Step", position: { x: 520, y: 240 }, data: {} },
+    { id: "ct_shadowTint", type: "Color", position: { x: 520, y: 420 }, data: { r: 0.55, g: 0.6, b: 0.75, a: 1 } },
+    { id: "ct_litTint", type: "Color", position: { x: 520, y: 560 }, data: { r: 1, g: 1, b: 1, a: 1 } },
+    { id: "ct_tintMix", type: "Mix", position: { x: 780, y: 460 }, data: {} },
+    { id: "ct_multiply", type: "Multiply", position: { x: 1040, y: 200 }, data: {} },
+    { id: "ct_out", type: "OutputUnlit", position: { x: 1300, y: 200 }, data: { outputMode: "unlit" } },
+  ];
+  const edges: Edge[] = [
+    { id: "ct_e1", source: "ct_uv", sourceHandle: "uv", target: "ct_tex", targetHandle: "uv" },
+    { id: "ct_e2", source: "ct_normal", sourceHandle: "normal", target: "ct_dot", targetHandle: "a" },
+    { id: "ct_e3", source: "ct_light", sourceHandle: "dir", target: "ct_dot", targetHandle: "b" },
+    { id: "ct_e4", source: "ct_dot", sourceHandle: "result", target: "ct_step", targetHandle: "x" },
+    { id: "ct_e5", source: "ct_threshold", sourceHandle: "value", target: "ct_step", targetHandle: "edge" },
+    { id: "ct_e6", source: "ct_shadowTint", sourceHandle: "color", target: "ct_tintMix", targetHandle: "a" },
+    { id: "ct_e7", source: "ct_litTint", sourceHandle: "color", target: "ct_tintMix", targetHandle: "b" },
+    { id: "ct_e8", source: "ct_step", sourceHandle: "result", target: "ct_tintMix", targetHandle: "t" },
+    { id: "ct_e9", source: "ct_tex", sourceHandle: "color", target: "ct_multiply", targetHandle: "a" },
+    { id: "ct_e10", source: "ct_tintMix", sourceHandle: "result", target: "ct_multiply", targetHandle: "b" },
+    { id: "ct_e11", source: "ct_multiply", sourceHandle: "result", target: "ct_out", targetHandle: "color" },
+  ];
+  return { nodes, edges };
+}
+
+// -- Non-RT Glass ---------------------------------------------------------
 // A tuned Output (PBR) glass setup: subtle tint (not pure white — that's
 // what read as flat/plastic before), low roughness, real IOR/transmission,
 // and thickness-aware absorption for real center-vs-edge falloff now that
@@ -75,9 +146,11 @@ export function buildGlassGraph(): { nodes: Node[]; edges: Edge[] } {
   return { nodes, edges };
 }
 
-export type TemplateKey = "celshade" | "glass";
+export type TemplateKey = "celshade" | "celshade-texture" | "celshade-outline" | "glass";
 
 export const TEMPLATES: { key: TemplateKey; label: string; build: () => { nodes: Node[]; edges: Edge[] } }[] = [
   { key: "celshade", label: "Celshade (2-Band)", build: buildCelshadeGraph },
-  { key: "glass", label: "Best Glass", build: buildGlassGraph },
+  { key: "celshade-texture", label: "Celshade + Texture", build: buildCelshadeTexturedGraph },
+  { key: "celshade-outline", label: "Celshade + Outline", build: buildCelshadeOutlineGraph },
+  { key: "glass", label: "Non-RT Glass", build: buildGlassGraph },
 ];

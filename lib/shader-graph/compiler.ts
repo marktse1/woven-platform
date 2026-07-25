@@ -10,7 +10,18 @@ export type ShaderGraph = {
 };
 
 export type CompileResult =
-  | { ok: true; fragmentShader: string; vertexShader: string; uniforms: Record<string, UniformSpec>; transparent: boolean }
+  | {
+      ok: true;
+      fragmentShader: string;
+      vertexShader: string;
+      uniforms: Record<string, UniformSpec>;
+      transparent: boolean;
+      skinned: boolean;
+      // Present only when the graph also has an OutputToonOutline node —
+      // a separate small shader pair for the inverted-hull outline pass,
+      // rendered as a second mesh alongside the main material.
+      outline?: { vertexShader: string; fragmentShader: string; uniforms: Record<string, UniformSpec> };
+    }
   | { ok: false; error: string };
 
 export type UniformSpec = {
@@ -149,6 +160,12 @@ export function compile(graph: ShaderGraph): CompileResult {
   const uniforms: Record<string, UniformSpec> = {};
   const lines: string[] = [];
   let outputNode: Node | null = null;
+  // A graph can have a main output (Unlit/PBR) AND an outline output at
+  // the same time — they compile into two separate shader programs (a
+  // single fragment shader can't draw an outline around itself), so this
+  // is tracked separately rather than letting a second output node
+  // silently overwrite the first the way it used to.
+  let outlineNode: Node | null = null;
 
   // Noise's hash/value-noise helper is emitted at most once regardless of
   // how many Noise nodes are in the graph.
@@ -161,7 +178,8 @@ export function compile(graph: ShaderGraph): CompileResult {
     const data = (node.data ?? {}) as Record<string, unknown>;
 
     if (def.category === "output") {
-      outputNode = node;
+      if (node.type === "OutputToonOutline") outlineNode = node;
+      else outputNode = node;
       continue;
     }
 
@@ -704,26 +722,118 @@ export function compile(graph: ShaderGraph): CompileResult {
     "}",
   ].join("\n");
 
+  // Off by default (unskinned graphs get byte-identical vertex shaders to
+  // before this existed). On: real skinning math using Three.js's own
+  // bone-texture convention (matching what MeshStandardMaterial actually
+  // does), not hand-rolled bone math — for materials meant to go on an
+  // animated THREE.SkinnedMesh rather than a static mesh. Requires the
+  // consuming material to also set `material.skinning = true` (a Three.js
+  // material flag, not shader code) so the renderer actually binds
+  // bindMatrix/bindMatrixInverse/boneTexture — noted in the Three.js
+  // export wrapper.
+  const skinned = (outputData.skinned as boolean) === true;
+
+  const skinningDecls = skinned ? [
+    "attribute vec4 skinIndex;",
+    "attribute vec4 skinWeight;",
+    "uniform mat4 bindMatrix;",
+    "uniform mat4 bindMatrixInverse;",
+    "uniform highp sampler2D boneTexture;",
+    "mat4 getBoneMatrix(const in float i) {",
+    "  int size = textureSize(boneTexture, 0).x;",
+    "  int j = int(i) * 4;",
+    "  int x = j % size;",
+    "  int y = j / size;",
+    "  vec4 v1 = texelFetch(boneTexture, ivec2(x, y), 0);",
+    "  vec4 v2 = texelFetch(boneTexture, ivec2(x + 1, y), 0);",
+    "  vec4 v3 = texelFetch(boneTexture, ivec2(x + 2, y), 0);",
+    "  vec4 v4 = texelFetch(boneTexture, ivec2(x + 3, y), 0);",
+    "  return mat4(v1, v2, v3, v4);",
+    "}",
+  ] : [];
+
+  const skinningApply = skinned ? [
+    "mat4 boneMatX = getBoneMatrix(skinIndex.x);",
+    "mat4 boneMatY = getBoneMatrix(skinIndex.y);",
+    "mat4 boneMatZ = getBoneMatrix(skinIndex.z);",
+    "mat4 boneMatW = getBoneMatrix(skinIndex.w);",
+    "vec4 skinVertex = bindMatrix * vec4(transformed, 1.0);",
+    "vec4 skinnedPos = vec4(0.0);",
+    "skinnedPos += boneMatX * skinVertex * skinWeight.x;",
+    "skinnedPos += boneMatY * skinVertex * skinWeight.y;",
+    "skinnedPos += boneMatZ * skinVertex * skinWeight.z;",
+    "skinnedPos += boneMatW * skinVertex * skinWeight.w;",
+    "transformed = (bindMatrixInverse * skinnedPos).xyz;",
+    "mat4 skinMatrix = mat4(0.0);",
+    "skinMatrix += skinWeight.x * boneMatX;",
+    "skinMatrix += skinWeight.y * boneMatY;",
+    "skinMatrix += skinWeight.z * boneMatZ;",
+    "skinMatrix += skinWeight.w * boneMatW;",
+    "skinMatrix = bindMatrixInverse * skinMatrix * bindMatrix;",
+    "objectNormal = (skinMatrix * vec4(objectNormal, 0.0)).xyz;",
+  ] : [];
+
   const vertexShader = [
+    ...skinningDecls,
     "varying vec2 vUv;",
     "varying vec3 vNormal;",
     "varying vec3 vWorldPos;",
     "varying vec3 vViewDir;",
     "void main() {",
     "  vUv = uv;",
+    "  vec3 transformed = position;",
+    "  vec3 objectNormal = normal;",
+    ...skinningApply.map((l) => `  ${l}`),
     // True world-space normal (assumes uniform scale — modelMatrix's
     // upper-left 3x3 is not inverse-transposed here, which would matter
     // for non-uniform scale). Previously used `normalMatrix`, which is
     // view-space in a raw ShaderMaterial — mismatched with vWorldPos/
     // vViewDir (both world-space), which the WorldNormal node and Fresnel
     // node were silently relying on despite the name promising "world".
-    "  vNormal = normalize(mat3(modelMatrix) * normal);",
-    "  vec4 worldPos = modelMatrix * vec4(position, 1.0);",
+    "  vNormal = normalize(mat3(modelMatrix) * objectNormal);",
+    "  vec4 worldPos = modelMatrix * vec4(transformed, 1.0);",
     "  vWorldPos = worldPos.xyz;",
     "  vViewDir = normalize(cameraPosition - worldPos.xyz);",
-    "  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);",
+    "  gl_Position = projectionMatrix * modelViewMatrix * vec4(transformed, 1.0);",
     "}",
   ].join("\n");
 
-  return { ok: true, fragmentShader, vertexShader, uniforms, transparent };
+  // Real inverted-hull toon outline, compiled as its own tiny separate
+  // shader pair (not folded into the main one — a single fragment shader
+  // can't draw an outline around itself). Only a directly-wired Color
+  // node is read for the fill color; anything else (a computed
+  // expression) falls back to a default near-black outline — the outline
+  // is meant to be a simple flat color, not a full shading graph.
+  let outline: { vertexShader: string; fragmentShader: string; uniforms: Record<string, UniformSpec> } | undefined;
+  if (outlineNode) {
+    const outlineData = (outlineNode.data ?? {}) as Record<string, unknown>;
+    const thickness = (outlineData.thickness as number) ?? 0.02;
+
+    const link = targetToSource.get(`${outlineNode.id}::color`);
+    const srcNode = link ? nodes.find((n) => n.id === link.source) : undefined;
+    const srcData = (srcNode?.data ?? {}) as Record<string, unknown>;
+    const [cr, cg, cb] = srcNode?.type === "Color"
+      ? [(srcData.r as number) ?? 0, (srcData.g as number) ?? 0, (srcData.b as number) ?? 0]
+      : [0.05, 0.05, 0.05];
+
+    const outlineVertexShader = [
+      "void main() {",
+      // Extruding in local (pre-modelMatrix) space along the vertex
+      // normal, then rendered with side: THREE.BackSide — front-facing
+      // parts of this shell hide behind the main mesh's own surface, only
+      // the silhouette edges poke out, the standard inverted-hull outline.
+      `  vec3 extruded = position + normalize(normal) * ${formatFloat(thickness)};`,
+      "  gl_Position = projectionMatrix * modelViewMatrix * vec4(extruded, 1.0);",
+      "}",
+    ].join("\n");
+
+    const outlineFragmentShader = [
+      "precision mediump float;",
+      `void main() { gl_FragColor = vec4(${formatFloat(cr)}, ${formatFloat(cg)}, ${formatFloat(cb)}, 1.0); }`,
+    ].join("\n");
+
+    outline = { vertexShader: outlineVertexShader, fragmentShader: outlineFragmentShader, uniforms: {} };
+  }
+
+  return { ok: true, fragmentShader, vertexShader, uniforms, transparent, skinned, outline };
 }

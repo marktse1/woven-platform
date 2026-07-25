@@ -381,7 +381,17 @@ export default function MeshSculptClient() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         setGlbData(await res.arrayBuffer());
       } catch (e) {
-        setLoadError(e instanceof Error ? e.message : "Failed to fetch asset.");
+        const message = e instanceof Error ? e.message : "Failed to fetch asset.";
+        // Supabase Storage's createSignedUrl() (inside signedAssetUrl) throws
+        // this exact string when the object backing this row's storage_path
+        // is gone from the bucket — the DB row is fine, the file isn't. Give
+        // a recovery path instead of the raw string: AssetLibraryRow already
+        // has a working delete button for exactly this case.
+        setLoadError(
+          message === "Object not found"
+            ? "This file is missing from storage (it may have been removed outside the app). Remove it from My Assets (✕) and try a different one."
+            : message,
+        );
       } finally { setLoadingAsset(false); }
     })();
   }, [selectedAsset]);

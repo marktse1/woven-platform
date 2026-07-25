@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef } from "react";
 import {
   ReactFlow,
   Background,
@@ -10,7 +10,6 @@ import {
   reconnectEdge,
   useNodesState,
   useEdgesState,
-  useReactFlow,
   type Connection,
   type Node,
   type Edge,
@@ -40,10 +39,12 @@ const TYPE_COLORS: Record<string, string> = {
   sampler2D: "#c47be8",
 };
 
-// Color node channels go 0-4 (HDR headroom for emissive overdrive — see
-// nodes.ts) but a native color picker only ever represents 0-1, so this
-// clamps for display/picking; the numeric sliders in the inspector still
-// handle anything beyond that range.
+// Color node channels can technically hold values outside 0-1 (HDR
+// emissive overdrive — see nodes.ts) but a native color picker only ever
+// represents 0-1, and it's now the sole R/G/B editor (Inspector only shows
+// Alpha for Color nodes — see NodeInspector.tsx), so this clamps for
+// display/picking; anything HDR would need editing the saved graph JSON
+// directly, which is an acceptable rare-case tradeoff for a much simpler UI.
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 const channelToHex = (v: number) => Math.round(clamp01(v) * 255).toString(16).padStart(2, "0");
 function colorDataToHex(data: Record<string, unknown>): string {
@@ -60,9 +61,16 @@ function hexToColorData(hex: string): { r: number; g: number; b: number } {
   };
 }
 
+// Node cards need to patch their own node's data (color picker, texture
+// upload) without going through React Flow's own `updateNodeData` — see
+// the comment on `patchNodeData` in NodeCanvas for why. Context carries it
+// down through the nodeTypes-rendered tree, which isn't a direct child of
+// NodeCanvas's own JSX.
+const PatchNodeDataContext = createContext<(id: string, patch: Record<string, unknown>) => void>(() => {});
+
 function ShaderNode({ id, data, type, selected }: NodeProps & { type: string }) {
   const def: NodeTypeDef | undefined = getNodeDef(type);
-  const { updateNodeData } = useReactFlow();
+  const patchNodeData = useContext(PatchNodeDataContext);
   if (!def) return null;
   const accent = CATEGORY_COLORS[def.category] ?? "#888";
 
@@ -119,17 +127,15 @@ function ShaderNode({ id, data, type, selected }: NodeProps & { type: string }) 
           </div>
         )}
 
-        {/* Color swatch + picker. The native <input type="color"> only ever
-            covers 0-1 per channel — picking a color always sets r/g/b into
-            that range; the inspector's numeric sliders are still there for
-            HDR (>1) emissive overdrive or precise values. */}
+        {/* Color swatch + picker — the sole R/G/B editor for Color nodes;
+            the Inspector only shows Alpha for this node type. */}
         {type === "Color" && (
           <div style={{ margin: "4px 10px", display: "flex", alignItems: "center", gap: 8 }}>
             <input
               type="color"
               title="Pick a color"
               value={colorDataToHex(data)}
-              onChange={(e) => updateNodeData(id, hexToColorData(e.target.value))}
+              onChange={(e) => patchNodeData(id, hexToColorData(e.target.value))}
               style={{ width: 28, height: 20, padding: 0, border: "none", borderRadius: 4, cursor: "pointer", background: "none", flexShrink: 0 }}
             />
             <div
@@ -165,7 +171,7 @@ function ShaderNode({ id, data, type, selected }: NodeProps & { type: string }) 
                       const file = e.target.files?.[0];
                       if (!file) return;
                       const reader = new FileReader();
-                      reader.onload = () => updateNodeData(id, { imageUrl: reader.result as string });
+                      reader.onload = () => patchNodeData(id, { imageUrl: reader.result as string });
                       reader.readAsDataURL(file);
                     }}
                   />
@@ -193,7 +199,7 @@ function ShaderNode({ id, data, type, selected }: NodeProps & { type: string }) 
                     const file = e.target.files?.[0];
                     if (!file) return;
                     const reader = new FileReader();
-                    reader.onload = () => updateNodeData(id, { imageUrl: reader.result as string });
+                    reader.onload = () => patchNodeData(id, { imageUrl: reader.result as string });
                     reader.readAsDataURL(file);
                   }}
                 />
@@ -226,7 +232,7 @@ function ShaderNode({ id, data, type, selected }: NodeProps & { type: string }) 
                       const file = e.target.files?.[0];
                       if (!file) return;
                       const reader = new FileReader();
-                      reader.onload = () => updateNodeData(id, { imageUrl: reader.result as string });
+                      reader.onload = () => patchNodeData(id, { imageUrl: reader.result as string });
                       reader.readAsDataURL(file);
                     }}
                   />
@@ -254,7 +260,7 @@ function ShaderNode({ id, data, type, selected }: NodeProps & { type: string }) 
                     const file = e.target.files?.[0];
                     if (!file) return;
                     const reader = new FileReader();
-                    reader.onload = () => updateNodeData(id, { imageUrl: reader.result as string });
+                    reader.onload = () => patchNodeData(id, { imageUrl: reader.result as string });
                     reader.readAsDataURL(file);
                   }}
                 />
@@ -451,6 +457,26 @@ export default function NodeCanvas({ onGraphChange, handleRef }: Props) {
     [edges, onGraphChange, setNodes],
   );
 
+  // Node cards (color picker, texture upload) need to patch their own data
+  // by id, not just whichever node is selected. React Flow's own
+  // `useReactFlow().updateNodeData()` looks like the obvious tool for this,
+  // but it writes straight to React Flow's internal store, bypassing
+  // `onNodesChange`/`onGraphChange` entirely — since this component's graph
+  // is controlled state (useNodesState), that update never reaches the
+  // compiler upstream, so the 3D preview silently stops updating. Routing
+  // through setNodes + onGraphChange here (same pattern as every other
+  // handler in this file) keeps it live.
+  const patchNodeData = useCallback(
+    (id: string, patch: Record<string, unknown>) => {
+      setNodes((ns) => {
+        const next = ns.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...patch } } : n));
+        setTimeout(() => onGraphChange(next, edges), 0);
+        return next;
+      });
+    },
+    [edges, onGraphChange, setNodes],
+  );
+
   const categories: Array<{ label: string; key: string }> = [
     { label: "Inputs", key: "input" },
     { label: "Math", key: "math" },
@@ -500,24 +526,26 @@ export default function NodeCanvas({ onGraphChange, handleRef }: Props) {
 
       {/* Canvas */}
       <div className="flex-1" style={{ background: "#0e0b08" }}>
-        <ReactFlow
-          nodes={nodes}
-          edges={styledEdges}
-          onNodesChange={handleNodesChange}
-          onEdgesChange={handleEdgesChange}
-          onConnect={handleConnect}
-          onReconnectStart={onReconnectStart}
-          onReconnect={handleReconnect}
-          onReconnectEnd={handleReconnectEnd}
-          reconnectRadius={22}
-          nodeTypes={RF_NODE_TYPES}
-          fitView
-          style={{ background: "#0e0b08" }}
-        >
-          <Background color="#2a2430" variant={BackgroundVariant.Dots} gap={20} size={1} />
-          <Controls style={{ background: "#18141c", borderColor: "#2a2320", color: "#888" }} />
-          <MiniMap style={{ background: "#18141c", borderColor: "#2a2320" }} nodeColor="#c47be8" maskColor="#0e0b0888" />
-        </ReactFlow>
+        <PatchNodeDataContext.Provider value={patchNodeData}>
+          <ReactFlow
+            nodes={nodes}
+            edges={styledEdges}
+            onNodesChange={handleNodesChange}
+            onEdgesChange={handleEdgesChange}
+            onConnect={handleConnect}
+            onReconnectStart={onReconnectStart}
+            onReconnect={handleReconnect}
+            onReconnectEnd={handleReconnectEnd}
+            reconnectRadius={22}
+            nodeTypes={RF_NODE_TYPES}
+            fitView
+            style={{ background: "#0e0b08" }}
+          >
+            <Background color="#2a2430" variant={BackgroundVariant.Dots} gap={20} size={1} />
+            <Controls style={{ background: "#18141c", borderColor: "#2a2320", color: "#888" }} />
+            <MiniMap style={{ background: "#18141c", borderColor: "#2a2320" }} nodeColor="#c47be8" maskColor="#0e0b0888" />
+          </ReactFlow>
+        </PatchNodeDataContext.Provider>
       </div>
 
       <NodeInspector node={selectedNode} onChange={updateSelectedNodeData} />

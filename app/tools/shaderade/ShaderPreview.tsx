@@ -34,9 +34,10 @@ export default function ShaderPreview({ compiled, bgLightness = 0.05 }: Props) {
 
     const scene = new THREE.Scene();
     // Sky-ish default so glass refraction has a blue dome to bend against.
-    // bgLightness still tints via a dimmable overlay color when the user
-    // wants a flat studio backdrop instead.
-    scene.background = new THREE.Color().setRGB(0.55, 0.68, 0.88).multiplyScalar(0.35 + bgLightness * 0.9);
+    // bgLightness scales that color from true black (0) up to a bright sky
+    // (1) — same RGB ratio throughout, so it stays tinted rather than gray
+    // at every level except pure black.
+    scene.background = new THREE.Color().setRGB(0.55, 0.68, 0.88).multiplyScalar(bgLightness * 1.3);
     sceneRef.current = scene;
 
     const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
@@ -323,13 +324,11 @@ export default function ShaderPreview({ compiled, bgLightness = 0.05 }: Props) {
   }, []);
 
   // Live-update the background without tearing down the whole scene.
-  // Keep a sky-tinted backdrop (not pure gray) so glass refraction reads
-  // against something with color even when the user cranks lightness.
   useEffect(() => {
     if (sceneRef.current) {
       sceneRef.current.background = new THREE.Color()
         .setRGB(0.55, 0.68, 0.88)
-        .multiplyScalar(0.35 + bgLightness * 0.9);
+        .multiplyScalar(bgLightness * 1.3);
     }
   }, [bgLightness]);
 

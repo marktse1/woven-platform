@@ -104,7 +104,13 @@ export default function NodeInspector({ node, onChange }: Props) {
   }
 
   const def = getNodeDef(node.type as string);
-  const params = def?.params ?? [];
+  // Color nodes' R/G/B are edited exclusively via the picker on the node
+  // card in NodeCanvas.tsx now — showing numeric sliders here too was
+  // redundant. Alpha has no picker equivalent, so it still falls through
+  // to the generic NumberField path below.
+  const params = (def?.params ?? []).filter(
+    (p) => !(node.type === "Color" && (p.key === "r" || p.key === "g" || p.key === "b")),
+  );
   const data = (node.data ?? {}) as Record<string, unknown>;
 
   return (

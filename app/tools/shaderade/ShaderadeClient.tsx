@@ -11,6 +11,7 @@ import { compile, type CompileResult } from "@/lib/shader-graph/compiler";
 import { getNodeDef } from "@/lib/shader-graph/nodes";
 import { detectMap, type MapType } from "@/lib/shader-graph/mapDetect";
 import { buildPbrGraph } from "@/lib/shader-graph/autoBuild";
+import { TEMPLATES, type TemplateKey } from "@/lib/shader-graph/templates";
 import type { NodeCanvasHandle } from "./NodeCanvas";
 import type { Node, Edge } from "@xyflow/react";
 
@@ -378,6 +379,20 @@ export default function ShaderadeClient() {
     }
   }, []);
 
+  // Curated starter graphs (lib/shader-graph/templates.ts) — built
+  // client-side, no asset/storage round trip, unlike loading a saved
+  // shader. Clears loadedAsset so a subsequent Save creates a new asset
+  // instead of silently overwriting whatever was loaded before.
+  const handleLoadTemplate = useCallback((key: TemplateKey) => {
+    setLoadMenuOpen(false);
+    const template = TEMPLATES.find((t) => t.key === key);
+    if (!template) return;
+    const { nodes, edges } = template.build();
+    nodeCanvasHandleRef.current?.loadGraph(nodes, edges);
+    setGraphName(template.label);
+    setLoadedAsset(null);
+  }, []);
+
   // Bulk PBR texture import: upload every file individually to the shared
   // library (kind: "texture", so it's reusable in future materials too),
   // detect which map each one is from its filename, then auto-wire the
@@ -536,6 +551,18 @@ export default function ShaderadeClient() {
           </button>
           {loadMenuOpen && (
             <div className="absolute right-0 top-full mt-1 w-56 bg-[#18141c] border border-[#2a2320] rounded shadow-lg z-50">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-dim px-3 pt-2 pb-1">Starter Templates</p>
+              {TEMPLATES.map((t) => (
+                <button
+                  key={t.key}
+                  onClick={() => handleLoadTemplate(t.key)}
+                  className="w-full text-left px-3 py-2 text-[11px] text-ink hover:bg-[#2a2320] transition-colors truncate"
+                >
+                  {t.label}
+                </button>
+              ))}
+              <div className="border-t border-[#2a2320] my-1" />
+              <p className="text-[10px] font-bold uppercase tracking-widest text-dim px-3 pt-1 pb-1">Your Saved Shaders</p>
               {savedAssets.length === 0 ? (
                 <p className="text-[11px] text-dim px-3 py-2">No saved shaders yet.</p>
               ) : (

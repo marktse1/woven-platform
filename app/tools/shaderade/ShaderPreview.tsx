@@ -257,8 +257,15 @@ export default function ShaderPreview({ compiled, bgLightness = 0.05 }: Props) {
 
         mat.uniforms.u_backfaceDepth.value = backfaceTarget.depthTexture;
         if (mat.uniforms.u_resolution) {
-          const size = renderer.getSize(new THREE.Vector2());
-          (mat.uniforms.u_resolution.value as THREE.Vector2).set(size.x, size.y);
+          // renderer.getSize() returns logical/CSS pixels; gl_FragCoord in
+          // the shader is always physical/framebuffer pixels (CSS size ×
+          // pixel ratio, per the setPixelRatio() call above). Reading the
+          // canvas element's actual backing-store size instead keeps the
+          // screen-UV lookup aligned on any display, not just pixelRatio=1.
+          (mat.uniforms.u_resolution.value as THREE.Vector2).set(
+            renderer.domElement.width,
+            renderer.domElement.height,
+          );
         }
         if (mat.uniforms.u_camNear) mat.uniforms.u_camNear.value = camera.near;
         if (mat.uniforms.u_camFar) mat.uniforms.u_camFar.value = camera.far;

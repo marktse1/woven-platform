@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import {
   ReactFlow,
   Background,
   Controls,
   MiniMap,
   addEdge,
+  reconnectEdge,
   useNodesState,
   useEdgesState,
   useReactFlow,
@@ -323,6 +324,35 @@ export default function NodeCanvas({ onGraphChange, handleRef }: Props) {
     [setEdges],
   );
 
+  // Grabbing an existing edge's endpoint and dragging it: onto a different
+  // compatible handle rewires it (reconnectEdge), dropped in empty canvas
+  // space deletes it. Standard React Flow v12 pattern — the ref (not state)
+  // is required because onReconnectEnd needs to read whether onReconnect
+  // fired without waiting on a render. Both paths bypass onEdgesChange, so
+  // (like handleConnect below) they notify onGraphChange themselves.
+  const edgeReconnectSuccessful = useRef(true);
+  const onReconnectStart = useCallback(() => {
+    edgeReconnectSuccessful.current = false;
+  }, []);
+  const handleReconnect = useCallback(
+    (oldEdge: Edge, newConnection: Connection) => {
+      edgeReconnectSuccessful.current = true;
+      setEdges((eds) => reconnectEdge(oldEdge, newConnection, eds));
+      setTimeout(() => onGraphChange(nodes, edges), 0);
+    },
+    [setEdges, nodes, edges, onGraphChange],
+  );
+  const handleReconnectEnd = useCallback(
+    (_event: unknown, edge: Edge) => {
+      if (!edgeReconnectSuccessful.current) {
+        setEdges((eds) => eds.filter((e) => e.id !== edge.id));
+        setTimeout(() => onGraphChange(nodes, edges), 0);
+      }
+      edgeReconnectSuccessful.current = true;
+    },
+    [setEdges, nodes, edges, onGraphChange],
+  );
+
   // Notify parent whenever graph changes
   const handleNodesChange = useCallback(
     (changes: Parameters<typeof onNodesChange>[0]) => {
@@ -420,6 +450,9 @@ export default function NodeCanvas({ onGraphChange, handleRef }: Props) {
           onNodesChange={handleNodesChange}
           onEdgesChange={handleEdgesChange}
           onConnect={handleConnect}
+          onReconnectStart={onReconnectStart}
+          onReconnect={handleReconnect}
+          onReconnectEnd={handleReconnectEnd}
           nodeTypes={RF_NODE_TYPES}
           fitView
           style={{ background: "#0e0b08" }}

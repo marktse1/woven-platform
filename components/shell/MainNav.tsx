@@ -115,27 +115,22 @@ export default function MainNav() {
       <div className="flex-1" />
 
       {activeSection === "/" || activeSection === "/library" || activeSection === "/community" ? (
-        <>
-          <form
-            className="flex items-center gap-2 bg-[#0a0e13] border border-line rounded-lg px-3 py-2 w-[160px] sm:w-[220px] lg:w-[260px] text-dim text-[13px]"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const q = query.trim();
-              router.push(q ? `/?q=${encodeURIComponent(q)}` : "/");
-            }}
-          >
-            <span aria-hidden className="text-dim text-[13px]">⌕</span>
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="search the store"
-              className="w-full bg-transparent outline-none text-ink placeholder:text-dim"
-            />
-          </form>
-          <div className="bg-white/[.06] border border-line px-3.5 py-2 rounded-lg font-semibold text-[13px] cursor-pointer">
-            Woven Pass
-          </div>
-        </>
+        <form
+          className="flex items-center gap-2 bg-[#0a0e13] border border-line rounded-lg px-3 py-2 w-[160px] sm:w-[220px] lg:w-[260px] text-dim text-[13px]"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const q = query.trim();
+            router.push(q ? `/?q=${encodeURIComponent(q)}` : "/");
+          }}
+        >
+          <span aria-hidden className="text-dim text-[13px]">⌕</span>
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="search the store"
+            className="w-full bg-transparent outline-none text-ink placeholder:text-dim"
+          />
+        </form>
       ) : creatorStatus !== "approved" ? (
         <Link
           href="/creator"

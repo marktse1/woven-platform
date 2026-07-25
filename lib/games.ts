@@ -64,12 +64,13 @@ export type GameRow = {
   title: string;
   short_description: string | null;
   price_cents: number;
-  pass_included: boolean;
+  original_price_cents: number | null;
   tags: string[];
   status: string;
   creator_id: string | null;
   created_at: string;
   rating: number | null;
+  plays: number;
   thumbnail_url: string | null;
   banner_url: string | null;
   banner_pos_x: number;
@@ -77,6 +78,26 @@ export type GameRow = {
   video_url: string | null;
   creator_profiles: { studio_name: string | null; handle: string | null } | null;
 };
+
+/** "Free" or "$X.XX" — the one shared price formatter for every storefront
+ * surface (store landing, /browse, studio pages, game detail), replacing
+ * three near-identical local copies that each had their own now-removed
+ * Woven Pass branch. Callers render the struck-through original +
+ * discount badge themselves (via discountPercent below) when a game is on
+ * sale — that's markup, not string formatting, so it stays out of this
+ * data-layer file. */
+export function formatPrice(priceCents: number): string {
+  if (priceCents === 0) return "Free";
+  return `$${(priceCents / 100).toFixed(2)}`;
+}
+
+/** Null unless a game is genuinely on sale (original_price_cents set and
+ * actually higher than the current price — same condition the DB's
+ * games_original_price_check constraint enforces). */
+export function discountPercent(priceCents: number, originalPriceCents: number | null): number | null {
+  if (!originalPriceCents || originalPriceCents <= priceCents) return null;
+  return Math.round((1 - priceCents / originalPriceCents) * 100);
+}
 
 export type GameScreenshotRow = {
   id: string;
@@ -152,7 +173,7 @@ export async function getGameBySlug(slug: string): Promise<GameRow | null> {
   const supabase = client();
   const { data, error } = await supabase
     .from("games")
-    .select("id, slug, title, short_description, price_cents, pass_included, tags, status, creator_id, created_at, rating, thumbnail_url, banner_url, banner_pos_x, banner_pos_y, video_url, creator_profiles(studio_name, handle)")
+    .select("id, slug, title, short_description, price_cents, original_price_cents, tags, status, creator_id, created_at, rating, plays, thumbnail_url, banner_url, banner_pos_x, banner_pos_y, video_url, creator_profiles(studio_name, handle)")
     .eq("slug", slug)
     .eq("status", "live")
     .maybeSingle<GameRow>();
@@ -185,7 +206,7 @@ export async function getGameById(gameId: string): Promise<GameRow | null> {
   const supabase = client();
   const { data, error } = await supabase
     .from("games")
-    .select("id, slug, title, short_description, price_cents, pass_included, tags, status, creator_id, created_at, rating, thumbnail_url, banner_url, banner_pos_x, banner_pos_y, video_url, creator_profiles(studio_name, handle)")
+    .select("id, slug, title, short_description, price_cents, original_price_cents, tags, status, creator_id, created_at, rating, plays, thumbnail_url, banner_url, banner_pos_x, banner_pos_y, video_url, creator_profiles(studio_name, handle)")
     .eq("id", gameId)
     .maybeSingle<GameRow>();
   if (error) throw error;
@@ -253,12 +274,44 @@ export async function getMyCreatorProfile(userId: string): Promise<CreatorProfil
   return data;
 }
 
+export type StoreSort = "trending" | "top_sellers" | "newest" | "price_asc" | "price_desc";
+
+/** Live, publicly-visible games across the whole store, filterable/sortable
+ * — backs both the store landing's rails and /browse's real list. Mirrors
+ * lib/assets.ts's listMarketplaceAssets: build the query conditionally,
+ * single error/data ?? [] handling. "trending"/"top_sellers" are proxies —
+ * plays is the only real popularity signal this schema has, there's no
+ * sales-ranking pipeline. */
+export async function listStoreGames(opts: {
+  tag?: string;
+  onSale?: boolean;
+  sort?: StoreSort;
+} = {}): Promise<GameRow[]> {
+  const supabase = client();
+  let q = supabase
+    .from("games")
+    .select("id, slug, title, short_description, price_cents, original_price_cents, tags, status, creator_id, created_at, rating, plays, thumbnail_url, banner_url, banner_pos_x, banner_pos_y, video_url, creator_profiles(studio_name, handle)")
+    .eq("status", "live");
+
+  if (opts.tag) q = q.contains("tags", [opts.tag]);
+  if (opts.onSale) q = q.not("original_price_cents", "is", null);
+
+  if (opts.sort === "top_sellers") q = q.order("plays", { ascending: false });
+  else if (opts.sort === "price_asc") q = q.order("price_cents", { ascending: true });
+  else if (opts.sort === "price_desc") q = q.order("price_cents", { ascending: false });
+  else q = q.order("created_at", { ascending: false }).order("plays", { ascending: false }); // newest/trending
+
+  const { data, error } = await q.returns<GameRow[]>();
+  if (error) throw error;
+  return data ?? [];
+}
+
 /** A studio's live, publicly-visible games — for the studio profile page. */
 export async function getGamesByCreator(creatorId: string): Promise<GameRow[]> {
   const supabase = client();
   const { data, error } = await supabase
     .from("games")
-    .select("id, slug, title, short_description, price_cents, pass_included, tags, status, creator_id, created_at")
+    .select("id, slug, title, short_description, price_cents, original_price_cents, tags, status, creator_id, created_at, rating, plays")
     .eq("creator_id", creatorId)
     .eq("status", "live")
     .order("created_at", { ascending: false });
@@ -333,10 +386,9 @@ export async function isInLibrary(userId: string, gameId: string): Promise<boole
   return !!data;
 }
 
-/** Adds a free or Pass-included game to the user's library — no real
- * Pass-subscription check exists to verify against, so both cases are
- * treated as directly grantable (confirmed scope: this repo has no
- * checkout flow yet for priced games, so those aren't handled here). */
+/** Adds a $0 game directly to the user's library — priced games instead go
+ * through the real Stripe checkout flow (app/checkout/page.tsx), which
+ * writes to user_library via the payment_intent.succeeded webhook. */
 export async function addFreeGameToLibrary(userId: string, gameId: string): Promise<void> {
   const supabase = client();
   const { error } = await supabase

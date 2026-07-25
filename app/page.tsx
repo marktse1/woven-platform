@@ -2,8 +2,8 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import StoreSubNav from "@/components/shell/StoreSubNav";
-import { getSupabaseClient } from "@/lib/supabase";
 import RatingBadge from "@/components/RatingBadge";
+import { listStoreGames, formatPrice, discountPercent, type GameRow } from "@/lib/games";
 
 type GradPair = [string, string];
 const pal: GradPair[] = [
@@ -24,28 +24,25 @@ function GradArt({ pair, children, className = "" }: { pair: GradPair; children?
   );
 }
 
-type Game = {
-  id: string;
-  slug: string;
-  title: string;
-  short_description: string | null;
-  price_cents: number;
-  pass_included: boolean;
-  tags: string[];
-  rating: number | null;
-};
-
-function formatPrice(priceCents: number, passIncluded: boolean): string {
-  if (passIncluded) return "◆ Pass";
-  if (priceCents === 0) return "Free";
-  return `$${(priceCents / 100).toFixed(2)}`;
+function PriceTag({ game, className = "" }: { game: GameRow; className?: string }) {
+  const pct = discountPercent(game.price_cents, game.original_price_cents);
+  return (
+    <div className={`flex items-center gap-1.5 ${className}`}>
+      {pct != null && (
+        <>
+          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-[rgba(123,194,74,.16)] text-[#a6e06a]">-{pct}%</span>
+          <span className="text-dim text-[11px] line-through">{formatPrice(game.original_price_cents!)}</span>
+        </>
+      )}
+      <span className="font-bold text-[13px]">{formatPrice(game.price_cents)}</span>
+    </div>
+  );
 }
-
-const categories = ["Cozy", "Roguelike", "Made in Weave Forge", "Multiplayer", "Atmospheric", "Free on Pass"];
 
 export default function StorePage() {
   const [query, setQuery] = useState("");
-  const [games, setGames] = useState<Game[]>([]);
+  const [featured, setFeatured] = useState<GameRow[]>([]);
+  const [onSale, setOnSale] = useState<GameRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -54,34 +51,33 @@ export default function StorePage() {
   }, []);
 
   useEffect(() => {
-    const supabase = getSupabaseClient();
-    if (!supabase) { setLoading(false); return; }
-    supabase
-      .from("games")
-      .select("id, slug, title, short_description, price_cents, pass_included, tags, rating")
-      .eq("status", "live")
-      .order("created_at", { ascending: false })
-      .then(({ data }) => {
-        setGames(data ?? []);
-        setLoading(false);
-      });
+    let active = true;
+    async function load() {
+      try {
+        const [trending, sale] = await Promise.all([
+          listStoreGames({ sort: "trending" }),
+          listStoreGames({ onSale: true }),
+        ]);
+        if (!active) return;
+        setFeatured(trending);
+        setOnSale(sale.slice(0, 5));
+      } finally {
+        if (active) setLoading(false);
+      }
+    }
+    load();
+    return () => { active = false; };
   }, []);
 
   const filteredGames = useMemo(
-    () => games.filter(g =>
-      !query || `${g.title} ${g.tags.join(" ")} ${formatPrice(g.price_cents, g.pass_included)}`.toLowerCase().includes(query)
+    () => featured.filter((g) =>
+      !query || `${g.title} ${g.tags.join(" ")}`.toLowerCase().includes(query)
     ),
-    [games, query]
-  );
-
-  const filteredCategories = useMemo(
-    () => categories.filter(cat => !query || cat.toLowerCase().includes(query)),
-    [query]
+    [featured, query]
   );
 
   const featuredGame = filteredGames[0] ?? null;
   const railGames = filteredGames.slice(1, 7);
-  const specials = filteredGames.slice(7, 12);
 
   return (
     <>
@@ -89,12 +85,15 @@ export default function StorePage() {
       <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-12 pt-6 pb-16">
         {query ? (
           <div className="mb-5 rounded-[10px] border border-line bg-panel px-4 py-3 text-[13px] text-dim">
-            Search results for <span className="text-ink font-semibold">"{query}"</span>
+            Search results for <span className="text-ink font-semibold">&quot;{query}&quot;</span>
           </div>
         ) : null}
 
         {/* Featured */}
-        <p className="text-[13px] font-bold tracking-[.12em] uppercase text-muted mb-3.5">Featured & Recommended</p>
+        <div className="flex items-center justify-between mb-3.5">
+          <p className="text-[13px] font-bold tracking-[.12em] uppercase text-muted">Featured & Recommended</p>
+          <Link href="/browse" className="text-[13px] text-accent font-semibold no-underline hover:underline">Browse all games →</Link>
+        </div>
         <section className="grid gap-4 grid-cols-1 lg:grid-cols-[1fr_320px]">
           {featuredGame ? (
             <Link href={`/game/${featuredGame.slug}`} className="no-underline text-inherit">
@@ -121,9 +120,7 @@ export default function StorePage() {
                 <div className="flex items-center shrink-0 rounded-lg overflow-hidden">
                   <span className="self-stretch flex items-center px-5 font-extrabold text-[14px] cursor-pointer"
                     style={{ background: "linear-gradient(180deg, #8bc34a, #5c8a1e)", color: "#0e1a06" }}>
-                    {featuredGame.pass_included
-                      ? "Play free on Pass"
-                      : `View · ${formatPrice(featuredGame.price_cents, featuredGame.pass_included)}`}
+                    View · {formatPrice(featuredGame.price_cents)}
                   </span>
                 </div>
               </div>
@@ -149,9 +146,7 @@ export default function StorePage() {
                   </div>
                   <div className="text-[11px] text-dim mt-0.5">{g.tags.slice(0, 2).join(" · ")}</div>
                 </div>
-                <div className={`text-[13px] font-bold ${g.pass_included ? "text-accent text-[11px]" : ""}`}>
-                  {formatPrice(g.price_cents, g.pass_included)}
-                </div>
+                <PriceTag game={g} />
               </Link>
             ))}
             {!loading && railGames.length === 0 && (
@@ -162,12 +157,15 @@ export default function StorePage() {
           </div>
         </section>
 
-        {/* Special Offers — only shown when enough games exist */}
-        {specials.length > 0 && (
+        {/* On sale — only shown when something is actually discounted */}
+        {onSale.length > 0 && (
           <section className="mt-10">
-            <p className="text-[13px] font-bold tracking-[.12em] uppercase text-muted mb-3.5">Special Offers</p>
+            <div className="flex items-center justify-between mb-3.5">
+              <p className="text-[13px] font-bold tracking-[.12em] uppercase text-muted">🏷 On Sale</p>
+              <Link href="/browse?sale=1" className="text-[13px] text-accent font-semibold no-underline hover:underline">See all →</Link>
+            </div>
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
-              {specials.map((s, i) => (
+              {onSale.map((s, i) => (
                 <Link key={s.id} href={`/game/${s.slug}`}
                   className="block bg-panel border border-line rounded-lg overflow-hidden cursor-pointer transition-[transform,box-shadow] hover:-translate-y-[3px] hover:shadow-[0_12px_30px_rgba(0,0,0,.5)] no-underline text-inherit">
                   <GradArt pair={pal[(i + 2) % pal.length]} className="h-[130px]" />
@@ -177,12 +175,8 @@ export default function StorePage() {
                       <RatingBadge rating={s.rating} />
                     </div>
                     <div className="text-[11px] text-dim mt-1 mb-2.5">{s.tags.slice(0, 2).join(" · ")}</div>
-                    <div className="flex items-center justify-end gap-2">
-                      {s.pass_included ? (
-                        <span className="text-accent font-bold text-[12px]">◆ Free on Pass</span>
-                      ) : (
-                        <span className="font-bold text-[13px]">{formatPrice(s.price_cents, s.pass_included)}</span>
-                      )}
+                    <div className="flex items-center justify-end">
+                      <PriceTag game={s} />
                     </div>
                   </div>
                 </Link>
@@ -190,37 +184,6 @@ export default function StorePage() {
             </div>
           </section>
         )}
-
-        {/* Categories */}
-        <section className="mt-10">
-          <p className="text-[13px] font-bold tracking-[.12em] uppercase text-muted mb-3.5">Browse by Category</p>
-          <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 gap-3">
-            {filteredCategories.map((cat, i) => (
-              <div key={cat} className="relative h-[84px] rounded-lg overflow-hidden flex items-end p-3 font-bold text-[14px] cursor-pointer border border-line">
-                <GradArt pair={pal[(i + 3) % pal.length]} className="absolute inset-0 opacity-85" />
-                <span className="relative z-10">{cat}</span>
-              </div>
-            ))}
-            {query && filteredCategories.length === 0 ? (
-              <div className="col-span-3 sm:col-span-4 lg:col-span-6 text-dim text-[13px]">No categories matched your search.</div>
-            ) : null}
-          </div>
-        </section>
-
-        {/* Woven Pass Banner */}
-        <section className="mt-10 border border-accent2 rounded-[10px] px-4 sm:px-6 py-4 sm:py-5 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4"
-          style={{ background: "linear-gradient(100deg, rgba(86,166,232,.12), rgba(86,166,232,.02))" }}>
-          <div className="text-[22px] font-extrabold">◆ Woven Pass</div>
-          <div>
-            <div className="font-semibold">Play 400+ games for one monthly price.</div>
-            <p className="text-muted text-[13px] mt-0.5">Including every game tagged "Free on Pass." Cancel anytime.</p>
-          </div>
-          <div className="flex-1" />
-          <button className="px-5 py-2.5 rounded-lg font-bold text-[14px] cursor-pointer border-none"
-            style={{ background: "linear-gradient(180deg, #56a6e8, #2c6aa0)", color: "#06121d" }}>
-            Try 14 days free
-          </button>
-        </section>
       </div>
     </>
   );

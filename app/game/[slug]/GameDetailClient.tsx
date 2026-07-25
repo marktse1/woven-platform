@@ -8,6 +8,7 @@ import VideoEmbed from "@/components/VideoEmbed";
 import {
   getGameBySlug, getCurrentBuild, getBuildHistory, isInLibrary, addFreeGameToLibrary,
   hasPlayedGame, markGamePlayed, getReviews, getMyReview, upsertReview, getScreenshots,
+  formatPrice, discountPercent,
   type GameRow, type GameBuildRow, type GameBuildHistoryRow, type GameReviewRow,
 } from "@/lib/games";
 
@@ -29,12 +30,6 @@ function GradArt({ pair, className = "", style, children }: { pair: GradPair; cl
       {children}
     </div>
   );
-}
-
-function formatPrice(priceCents: number, passIncluded: boolean): string {
-  if (passIncluded) return "◆ Included with Pass";
-  if (priceCents === 0) return "Free";
-  return `$${(priceCents / 100).toFixed(2)}`;
 }
 
 function formatDate(iso: string): string {
@@ -195,7 +190,7 @@ export default function GameDetailClient({ params }: { params: Promise<{ slug: s
     );
   }
 
-  const isFree = game.price_cents === 0 || game.pass_included;
+  const isFree = game.price_cents === 0;
 
   return (
     <main className="tool-min-h bg-[#070b11] text-ink">
@@ -248,12 +243,27 @@ export default function GameDetailClient({ params }: { params: Promise<{ slug: s
               className="px-8 py-3.5 rounded-[9px] font-bold text-[16px] cursor-pointer border-none disabled:opacity-50 disabled:cursor-not-allowed"
               style={{ background: "linear-gradient(180deg, #56a6e8, #2c6aa0)", color: "#06121d" }}
             >
-              {!user?.id ? "Sign in to get this game" : adding ? "Adding…" : `Get · ${formatPrice(game.price_cents, game.pass_included)}`}
+              {!user?.id ? "Sign in to get this game" : adding ? "Adding…" : `Get · ${formatPrice(game.price_cents)}`}
             </button>
+          ) : user?.id ? (
+            <Link
+              href={`/checkout?gameId=${game.id}`}
+              className="flex items-center gap-2 px-8 py-3.5 rounded-[9px] font-bold text-[16px] no-underline"
+              style={{ background: "linear-gradient(180deg, #56a6e8, #2c6aa0)", color: "#06121d" }}
+            >
+              {discountPercent(game.price_cents, game.original_price_cents) != null && (
+                <span className="text-dim text-[13px] line-through font-normal">{formatPrice(game.original_price_cents!)}</span>
+              )}
+              Buy · {formatPrice(game.price_cents)}
+            </Link>
           ) : (
-            <span className="px-4 py-3 rounded-[9px] bg-panel2 border border-line text-[13px] text-dim">
-              {formatPrice(game.price_cents, game.pass_included)} · purchases aren&apos;t available yet
-            </span>
+            <Link
+              href="/sign-in"
+              className="px-8 py-3.5 rounded-[9px] font-bold text-[16px] no-underline border-none"
+              style={{ background: "linear-gradient(180deg, #56a6e8, #2c6aa0)", color: "#06121d" }}
+            >
+              Sign in to buy · {formatPrice(game.price_cents)}
+            </Link>
           )}
         </div>
 

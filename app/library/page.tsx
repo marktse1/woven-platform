@@ -18,7 +18,6 @@ type Game = {
   slug: string;
   title: string;
   tags: string[];
-  pass_included: boolean;
   creator_id: string | null;
   created_at: string;
   creator_profiles: { studio_name: string | null; handle: string | null } | null;
@@ -34,7 +33,6 @@ type LibraryRow = {
     slug: string;
     title: string;
     tags: string[];
-    pass_included: boolean;
     creator_id: string | null;
     created_at: string;
     creator_profiles: { studio_name: string | null; handle: string | null } | null;
@@ -79,7 +77,7 @@ export default function LibraryPage() {
     if (!supabase) { setLoading(false); return; }
     supabase
       .from("user_library")
-      .select("game_id, source, games(id, slug, title, tags, pass_included, creator_id, created_at, creator_profiles(studio_name, handle))")
+      .select("game_id, source, games(id, slug, title, tags, creator_id, created_at, creator_profiles(studio_name, handle))")
       .eq("clerk_user_id", user.id)
       .then(({ data }) => {
         const rows = (data ?? []) as unknown as LibraryRow[];
@@ -90,7 +88,6 @@ export default function LibraryPage() {
             slug: r.games!.slug,
             title: r.games!.title,
             tags: r.games!.tags ?? [],
-            pass_included: r.games!.pass_included,
             creator_id: r.games!.creator_id,
             created_at: r.games!.created_at,
             creator_profiles: r.games!.creator_profiles,

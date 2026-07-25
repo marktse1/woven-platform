@@ -6,7 +6,7 @@ import { getSupabaseAdmin } from "@/lib/supabase-admin";
 // it isn't already (app/api/uploads/games/process already sets
 // pending_review once the Sandbox pipeline succeeds — this route mainly
 // exists so the creator can explicitly confirm/re-submit after reviewing
-// their own draft, and to attach price/pass_included, which the process
+// their own draft, and to attach price/original price, which the process
 // route doesn't know about).
 export async function POST(req: Request, { params }: { params: Promise<{ gameId: string }> }) {
   const { userId } = await auth();
@@ -14,9 +14,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ gameId:
 
   const { gameId } = await params;
   const body = await req.json().catch(() => ({}));
-  const { priceCents, passIncluded, shortDescription, title, engine, changelog, tags } = body as {
+  const { priceCents, originalPriceCents, shortDescription, title, engine, changelog, tags } = body as {
     priceCents?: number;
-    passIncluded?: boolean;
+    originalPriceCents?: number | null;
     shortDescription?: string;
     title?: string;
     engine?: string;
@@ -43,10 +43,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ gameId:
     return Response.json({ error: "Game not found or access denied" }, { status: 404 });
   }
 
-  if (typeof priceCents === "number" || typeof passIncluded === "boolean" || shortDescription || title || Array.isArray(tags)) {
+  if (typeof priceCents === "number" || originalPriceCents !== undefined || shortDescription || title || Array.isArray(tags)) {
     const patch: Record<string, unknown> = {};
     if (typeof priceCents === "number" && priceCents >= 0) patch.price_cents = priceCents;
-    if (typeof passIncluded === "boolean") patch.pass_included = passIncluded;
+    if (originalPriceCents !== undefined) patch.original_price_cents = originalPriceCents;
     if (shortDescription) patch.short_description = shortDescription;
     if (title) patch.title = title;
     if (Array.isArray(tags)) patch.tags = tags;

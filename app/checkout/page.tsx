@@ -17,7 +17,6 @@ type Game = {
   id: string;
   title: string;
   price_cents: number;
-  pass_included: boolean;
 };
 
 type ItemKind = "game" | "asset";
@@ -44,15 +43,9 @@ function SecureLine({ className = "" }: { className?: string }) {
 function CheckoutForm({
   game,
   itemKind,
-  passAddon,
-  setPassAddon,
-  isPassOnly,
 }: {
   game: Game | null;
   itemKind: ItemKind;
-  passAddon: boolean;
-  setPassAddon: (v: boolean) => void;
-  isPassOnly: boolean;
 }) {
   const stripe = useStripe();
   const elements = useElements();
@@ -71,17 +64,11 @@ function CheckoutForm({
 
     const returnUrl = `${window.location.origin}${itemKind === "asset" ? "/marketplace" : "/library"}`;
 
-    const result = isPassOnly
-      ? await stripe.confirmSetup({
-          elements,
-          confirmParams: { return_url: returnUrl },
-          redirect: "if_required",
-        })
-      : await stripe.confirmPayment({
-          elements,
-          confirmParams: { return_url: returnUrl },
-          redirect: "if_required",
-        });
+    const result = await stripe.confirmPayment({
+      elements,
+      confirmParams: { return_url: returnUrl },
+      redirect: "if_required",
+    });
 
     if (result.error) {
       setErrorMsg(result.error.message ?? "Payment failed.");
@@ -96,15 +83,11 @@ function CheckoutForm({
       <div className="text-center py-10">
         <div className="w-[54px] h-[54px] rounded-full flex items-center justify-center text-[26px] mx-auto mb-3"
           style={{ background: "rgba(123,194,74,.16)", border: "1px solid rgba(123,194,74,.4)", color: "#a6e06a" }}>✓</div>
-        <div className="font-bold text-[17px]">
-          {isPassOnly ? "Woven Pass activated!" : "Payment complete"}
-        </div>
+        <div className="font-bold text-[17px]">Payment complete</div>
         <div className="text-muted text-[13px] mt-1">
-          {isPassOnly
-            ? "Your 14-day free trial has started. A receipt was sent to your email."
-            : itemKind === "asset"
-              ? `${game?.title ?? "Your asset"} is ready to download from your Assets tab. A receipt was sent to your email.`
-              : `${game?.title ?? "Your game"} is in your Library. A receipt was sent to your email.`}
+          {itemKind === "asset"
+            ? `${game?.title ?? "Your asset"} is ready to download from your Assets tab. A receipt was sent to your email.`
+            : `${game?.title ?? "Your game"} is in your Library. A receipt was sent to your email.`}
         </div>
         <a href={itemKind === "asset" ? "/marketplace" : "/library"}>
           <button className="w-full mt-4 py-3 rounded-[9px] font-bold cursor-pointer border-none"
@@ -150,58 +133,19 @@ function CheckoutForm({
           </div>
         )}
 
-        {/* Pass addon — games only, doesn't make sense on an asset purchase */}
-        {!isPassOnly && itemKind === "game" && (
-          <button onClick={() => setPassAddon(!passAddon)}
-            className="flex items-center gap-3 w-full px-3.5 py-3 my-3.5 rounded-[9px] text-left cursor-pointer transition-colors"
-            style={{ border: "1px dashed #324a61", background: "transparent" }}>
-            <div className="w-5 h-5 rounded-md shrink-0 flex items-center justify-center font-extrabold text-[14px]"
-              style={{
-                background: passAddon ? "#56a6e8" : "transparent",
-                border: passAddon ? "1.5px solid #56a6e8" : "1.5px solid #324a61",
-                color: passAddon ? "#06121d" : "transparent",
-              }}>✓</div>
-            <div className="flex-1">
-              <div className="font-semibold text-[13.5px]">Add Woven Pass — 14 days free</div>
-              <div className="text-[11.5px] text-dim">Then $9.99/mo · 400+ games · cancel anytime</div>
-            </div>
-            <div className="font-bold text-green">$0.00</div>
-          </button>
-        )}
-
-        {isPassOnly ? (
-          <>
-            <div className="flex gap-3 py-3.5 border-b border-line">
-              <div className="w-[78px] h-12 rounded-md shrink-0 flex items-center justify-center text-[20px]"
-                style={{ background: "linear-gradient(140deg, #2c6aa0, #56a6e8)" }}>◆</div>
-              <div className="flex-1">
-                <div className="font-semibold text-[14px]">Woven Pass</div>
-                <div className="text-[12px] text-dim mt-0.5">14-day free trial, then $9.99/mo</div>
-              </div>
-              <div className="font-bold text-green">Free</div>
-            </div>
-            <div className="flex justify-between items-center mt-4">
-              <span className="text-[15px] text-muted">Due today</span>
-              <span className="text-[24px] font-extrabold">$0.00</span>
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="flex justify-between text-[14px] py-1.5"><span className="text-muted">Subtotal</span><span className="font-semibold">{fmt(priceCents)}</span></div>
-            <div className="flex justify-between text-[14px] py-1.5"><span className="text-muted">Tax (est.)</span><span className="font-semibold">{fmt(taxCents)}</span></div>
-            <div className="h-px bg-line my-3" />
-            <div className="flex justify-between items-center">
-              <span className="text-[15px] text-muted">Total due today</span>
-              <span className="text-[24px] font-extrabold">{fmt(totalCents)}</span>
-            </div>
-          </>
-        )}
+        <div className="flex justify-between text-[14px] py-1.5"><span className="text-muted">Subtotal</span><span className="font-semibold">{fmt(priceCents)}</span></div>
+        <div className="flex justify-between text-[14px] py-1.5"><span className="text-muted">Tax (est.)</span><span className="font-semibold">{fmt(taxCents)}</span></div>
+        <div className="h-px bg-line my-3" />
+        <div className="flex justify-between items-center">
+          <span className="text-[15px] text-muted">Total due today</span>
+          <span className="text-[24px] font-extrabold">{fmt(totalCents)}</span>
+        </div>
 
         {status === "idle" && (
           <button onClick={handlePay}
             className="w-full mt-4 py-4 rounded-[9px] font-bold text-[15px] cursor-pointer border-none"
             style={{ background: "linear-gradient(180deg, #8bc34a, #5c8a1e)", color: "#0e1a06" }}>
-            {isPassOnly ? "Start free trial" : `Pay ${fmt(totalCents)}`}
+            {`Pay ${fmt(totalCents)}`}
           </button>
         )}
 
@@ -224,29 +168,13 @@ function CheckoutForm({
 export default function CheckoutPage() {
   const [game, setGame] = useState<Game | null>(null);
   const [itemKind, setItemKind] = useState<ItemKind>("game");
-  const [passAddon, setPassAddon] = useState(false);
   const [clientSecret, setClientSecret] = useState<string | null>(null);
-  const [isPassOnly, setIsPassOnly] = useState(false);
   const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const gameId = params.get("gameId");
     const assetId = params.get("assetId");
-    const passOnly = params.get("pass") === "true" && !gameId && !assetId;
-    setIsPassOnly(passOnly);
-
-    if (passOnly) {
-      // Woven Pass subscription — SetupIntent
-      fetch("/api/pass/subscribe", { method: "POST" })
-        .then(r => r.json())
-        .then(d => {
-          if (d.clientSecret) setClientSecret(d.clientSecret);
-          else setLoadError(d.error ?? "Could not start subscription.");
-        })
-        .catch(() => setLoadError("Network error. Please try again."));
-      return;
-    }
 
     if (assetId) {
       setItemKind("asset");
@@ -261,7 +189,7 @@ export default function CheckoutPage() {
         .maybeSingle()
         .then(async ({ data }) => {
           if (!data) { setLoadError("Asset not found or no longer for sale."); return; }
-          setGame({ id: data.id, title: data.name, price_cents: data.price_cents, pass_included: false });
+          setGame({ id: data.id, title: data.name, price_cents: data.price_cents });
 
           // No priceCents sent — create-intent derives the charge from the
           // asset's own price_cents server-side for this branch.
@@ -290,18 +218,13 @@ export default function CheckoutPage() {
 
     supabase
       .from("games")
-      .select("id, title, price_cents, pass_included")
+      .select("id, title, price_cents")
       .eq("id", gameId)
       .eq("status", "live")
       .maybeSingle()
       .then(async ({ data }) => {
         if (!data) { setLoadError("Game not found."); return; }
         setGame(data as Game);
-
-        if (data.pass_included && data.price_cents === 0) {
-          setLoadError("This game is free on Pass — subscribe to Woven Pass to play.");
-          return;
-        }
 
         // Create PaymentIntent
         const res = await fetch("/api/checkout/create-intent", {
@@ -351,9 +274,6 @@ export default function CheckoutPage() {
           <CheckoutForm
             game={game}
             itemKind={itemKind}
-            passAddon={passAddon}
-            setPassAddon={setPassAddon}
-            isPassOnly={isPassOnly}
           />
         </Elements>
       ) : (

@@ -5,12 +5,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
 import { getGameById, getScreenshots, uploadGameTrailer, type GameRow, type UploadProgress } from "@/lib/games";
+import { GAME_TAGS } from "@/lib/gameTags";
 import VideoEmbed from "@/components/VideoEmbed";
 import BannerPositionPicker from "@/components/BannerPositionPicker";
 
 type ModerationAction = { action: string; reason: string; created_at: string };
-
-const TAG_OPTIONS = ["Exploration", "Atmospheric", "Singleplayer", "Hand-painted", "Cozy", "Underwater", "Story-rich", "Roguelike", "Multiplayer"];
 
 function pillCls(on: boolean) {
   return "inline-flex items-center text-[13px] px-3 py-2 rounded-full border cursor-pointer transition-all";
@@ -36,7 +35,7 @@ export default function EditGamePage({ params }: { params: Promise<{ gameId: str
   const [shortDescription, setShortDescription] = useState("");
   const [isFree, setIsFree] = useState(true);
   const [priceInput, setPriceInput] = useState("9.99");
-  const [passIncluded, setPassIncluded] = useState(false);
+  const [originalPriceInput, setOriginalPriceInput] = useState("");
   const [tags, setTags] = useState<Set<string>>(new Set());
   const [videoUrl, setVideoUrl] = useState("");
   const [videoMode, setVideoMode] = useState<"link" | "upload">("link");
@@ -62,7 +61,7 @@ export default function EditGamePage({ params }: { params: Promise<{ gameId: str
         setShortDescription(g.short_description ?? "");
         setIsFree(g.price_cents === 0);
         setPriceInput(g.price_cents ? (g.price_cents / 100).toFixed(2) : "9.99");
-        setPassIncluded(g.pass_included);
+        setOriginalPriceInput(g.original_price_cents ? (g.original_price_cents / 100).toFixed(2) : "");
         setTags(new Set(g.tags ?? []));
         setVideoUrl(g.video_url ?? "");
         const shots = await getScreenshots(g.id);
@@ -105,7 +104,7 @@ export default function EditGamePage({ params }: { params: Promise<{ gameId: str
           title,
           short_description: shortDescription,
           price_cents: isFree ? 0 : Math.round((Number(priceInput) || 0) * 100),
-          pass_included: passIncluded,
+          original_price_cents: originalPriceInput.trim() ? Math.round(Number(originalPriceInput) * 100) : null,
           tags: Array.from(tags),
           video_url: videoUrl,
         }),
@@ -243,16 +242,18 @@ export default function EditGamePage({ params }: { params: Promise<{ gameId: str
               <input value={priceInput} onChange={(e) => setPriceInput(e.target.value.replace(/[^0-9.]/g, ""))} className="w-[100px] bg-[#0a0e13] border border-line rounded-lg px-3 py-2 text-ink text-[13px] outline-none" placeholder="9.99" />
             )}
           </div>
-          <div className="flex items-center gap-3">
-            <label className="text-[13px] font-semibold text-muted">Include in Woven Pass</label>
-            <input type="checkbox" checked={passIncluded} onChange={(e) => setPassIncluded(e.target.checked)} />
-          </div>
+          {!isFree && (
+            <div className="flex items-center gap-3">
+              <label className="text-[13px] font-semibold text-muted">Original price <span className="text-dim font-normal">(for a sale badge)</span></label>
+              <input value={originalPriceInput} onChange={(e) => setOriginalPriceInput(e.target.value.replace(/[^0-9.]/g, ""))} className="w-[100px] bg-[#0a0e13] border border-line rounded-lg px-3 py-2 text-ink text-[13px] outline-none" placeholder="leave blank for no sale" />
+            </div>
+          )}
         </div>
 
         <div className="bg-panel border border-line rounded-[10px] p-6 mb-5">
           <p className="text-[11px] font-bold tracking-[.12em] uppercase text-muted mb-3">Tags</p>
           <div className="flex flex-wrap gap-2">
-            {TAG_OPTIONS.map((t) => (
+            {GAME_TAGS.map((t) => (
               <button key={t} onClick={() => toggleTag(t)} className={pillCls(tags.has(t))} style={pillStyle(tags.has(t))}>{t}</button>
             ))}
           </div>

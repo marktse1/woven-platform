@@ -6,6 +6,7 @@ import { useUser } from "@clerk/nextjs";
 import {
   getCreatorByHandle, getGamesByCreator,
   isFollowingCreator, getFollowerCount, followCreator, unfollowCreator,
+  formatPrice, discountPercent,
   type CreatorProfileRow, type GameRow,
 } from "@/lib/games";
 import { getPostsByCreator, type StudioPostRow } from "@/lib/studioPosts";
@@ -29,12 +30,6 @@ function GradArt({ pair, className = "", style, children }: { pair: GradPair; cl
       {children}
     </div>
   );
-}
-
-function formatPrice(priceCents: number, passIncluded: boolean): string {
-  if (passIncluded) return "◆ Pass";
-  if (priceCents === 0) return "Free";
-  return `$${(priceCents / 100).toFixed(2)}`;
 }
 
 function relativeTime(iso: string) {
@@ -226,12 +221,16 @@ export default function StudioClient({ params }: { params: Promise<{ handle: str
                   <div className="px-3 pt-2.5 pb-3">
                     <div className="text-[14px] font-semibold truncate">{game.title}</div>
                     <div className="text-[11px] text-dim mt-1 mb-2.5">{game.tags.slice(0, 2).join(" · ")}</div>
-                    <div className="flex items-center justify-end gap-2">
-                      {game.pass_included ? (
-                        <span className="text-accent font-bold text-[12px]">◆ Free on Pass</span>
-                      ) : (
-                        <span className="font-bold text-[13px]">{formatPrice(game.price_cents, game.pass_included)}</span>
+                    <div className="flex items-center justify-end gap-1.5">
+                      {discountPercent(game.price_cents, game.original_price_cents) != null && (
+                        <>
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-[rgba(123,194,74,.16)] text-[#a6e06a]">
+                            -{discountPercent(game.price_cents, game.original_price_cents)}%
+                          </span>
+                          <span className="text-dim text-[11px] line-through">{formatPrice(game.original_price_cents!)}</span>
+                        </>
                       )}
+                      <span className="font-bold text-[13px]">{formatPrice(game.price_cents)}</span>
                     </div>
                   </div>
                 </Link>

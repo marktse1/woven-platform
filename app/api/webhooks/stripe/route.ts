@@ -52,36 +52,6 @@ export async function POST(request: Request) {
       break;
     }
 
-    // Pass subscription created or updated
-    case "customer.subscription.created":
-    case "customer.subscription.updated": {
-      const sub = event.data.object as Stripe.Subscription;
-      const clerk_user_id = sub.metadata?.clerk_user_id;
-      if (clerk_user_id && supabase) {
-        await supabase.from("pass_subscriptions").upsert({
-          clerk_user_id,
-          stripe_subscription_id: sub.id,
-          stripe_customer_id: typeof sub.customer === "string" ? sub.customer : sub.customer.id,
-          status: sub.status,
-          trial_ends_at: sub.trial_end ? new Date(sub.trial_end * 1000).toISOString() : null,
-        }, { onConflict: "clerk_user_id" });
-      }
-      break;
-    }
-
-    // Pass subscription cancelled
-    case "customer.subscription.deleted": {
-      const sub = event.data.object as Stripe.Subscription;
-      const clerk_user_id = sub.metadata?.clerk_user_id;
-      if (clerk_user_id && supabase) {
-        await supabase
-          .from("pass_subscriptions")
-          .update({ status: "canceled" })
-          .eq("clerk_user_id", clerk_user_id);
-      }
-      break;
-    }
-
     // Creator's Stripe Connect account updated — sync charges_enabled flag
     case "account.updated": {
       const account = event.data.object as Stripe.Account;

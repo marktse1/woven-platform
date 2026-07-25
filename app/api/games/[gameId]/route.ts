@@ -28,11 +28,11 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ gameId
   }
 
   const body = await req.json().catch(() => ({}));
-  const { title, short_description, price_cents, pass_included, tags, video_url, video_path, banner_pos_x, banner_pos_y } = body as {
+  const { title, short_description, price_cents, original_price_cents, tags, video_url, video_path, banner_pos_x, banner_pos_y } = body as {
     title?: string;
     short_description?: string;
     price_cents?: number;
-    pass_included?: boolean;
+    original_price_cents?: number | null;
     tags?: string[];
     video_url?: string;
     video_path?: string;
@@ -44,7 +44,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ gameId
   if (title !== undefined) patch.title = title.trim();
   if (short_description !== undefined) patch.short_description = short_description.trim() || null;
   if (price_cents !== undefined) patch.price_cents = Math.max(0, Math.round(price_cents));
-  if (pass_included !== undefined) patch.pass_included = pass_included;
+  if (original_price_cents !== undefined) patch.original_price_cents = original_price_cents == null ? null : Math.max(0, Math.round(original_price_cents));
   if (tags !== undefined) patch.tags = tags;
   if (video_url !== undefined) patch.video_url = video_url.trim() || null;
   if (banner_pos_x !== undefined) patch.banner_pos_x = Math.max(0, Math.min(100, banner_pos_x));

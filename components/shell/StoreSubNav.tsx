@@ -4,11 +4,11 @@ import { usePathname } from "next/navigation";
 
 const links = [
   { label: "Your Store",           href: "/" },
-  { label: "New & Trending",       href: "/new" },
-  { label: "Top Sellers",          href: "/top" },
-  { label: "Specials",             href: "/specials" },
-  { label: "Made in Weave Forge",  href: "/weave-forge" },
-  { label: "Browse ▾",            href: "/browse" },
+  { label: "New & Trending",       href: "/browse?sort=trending" },
+  { label: "Top Sellers",          href: "/browse?sort=top_sellers" },
+  { label: "Specials",             href: "/browse?sale=1" },
+  { label: "Made in Weave Forge",  href: "/browse?tag=Weave%20Forge" },
+  { label: "Browse",               href: "/browse" },
 ];
 
 export default function StoreSubNav() {

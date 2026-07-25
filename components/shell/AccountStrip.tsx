@@ -31,7 +31,6 @@ export default function AccountStrip() {
         <>
           <Link href="/wishlist" className="hover:text-ink cursor-pointer no-underline text-dim">Wishlist</Link>
           <div className="flex-1" />
-          <span className="text-accent font-semibold">$24.50 wallet</span>
           <CreatorBadge />
           {isAdmin && (
             <Link href="/admin"

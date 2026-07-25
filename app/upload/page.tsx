@@ -4,11 +4,12 @@ import { useSearchParams } from "next/navigation";
 import CreatorSubNav from "@/components/shell/CreatorSubNav";
 import { uploadGameBuildZip, streamNdjson } from "@/lib/uploads";
 import { getGameById } from "@/lib/games";
+import { GAME_TAGS } from "@/lib/gameTags";
 
 const STEPS = [
   { title: "Build & engine", sub: "Upload your zip"  },
   { title: "Store page",     sub: "Art, copy, tags"  },
-  { title: "Pricing",        sub: "Price & Pass"     },
+  { title: "Pricing",        sub: "Set your price"   },
   { title: "Multiplayer",    sub: "RTC & netcode"    },
   { title: "Review & submit",sub: "Final checks"     },
 ];
@@ -32,8 +33,6 @@ const STAGE_LABEL: Record<string, string> = {
   uploading: "Uploading build files…",
   finalizing: "Finalizing…",
 };
-
-const tags = ["Exploration", "Atmospheric", "Singleplayer", "Hand-painted", "Cozy", "Underwater", "Story-rich"];
 
 function inputCls(width = "w-full") {
   return `bg-[#0a0e13] border border-line rounded-lg px-3.5 py-3 text-ink text-[14px] ${width} outline-none focus:border-accent focus:shadow-[0_0_0_3px_rgba(86,166,232,.14)] transition-all font-[inherit]`;
@@ -106,7 +105,7 @@ type SharedState = {
   shortDescription: string;
   isFree: boolean;
   priceInput: string;
-  passIncluded: boolean;
+  originalPriceInput: string;
   changelog: string;
   tags: Set<string>;
   submitStatus: "idle" | "submitting" | "submitted" | "error";
@@ -117,7 +116,7 @@ type SharedState = {
   setShortDescription: (v: string) => void;
   setIsFree: (v: boolean) => void;
   setPriceInput: (v: string) => void;
-  setPassIncluded: (v: boolean) => void;
+  setOriginalPriceInput: (v: string) => void;
   setChangelog: (v: string) => void;
   toggleTag: (t: string) => void;
   onSubmit: () => void;
@@ -278,7 +277,7 @@ function Step2({ s }: { s: SharedState }) {
         <div className="flex flex-col gap-1.5">
           <label className="text-[13px] font-semibold text-muted">Genre & tags</label>
           <div className="flex flex-wrap gap-2">
-            {tags.map(t => {
+            {GAME_TAGS.map(t => {
               const on = s.tags.has(t);
               return (
                 <button key={t} onClick={() => s.toggleTag(t)}
@@ -319,18 +318,16 @@ function Step3({ s }: { s: SharedState }) {
             <label className="text-[13px] font-semibold text-muted block mb-1.5">Base price (USD)</label>
             <input className={inputCls("w-[160px]")} value={s.priceInput} onChange={(e) => s.setPriceInput(e.target.value.replace(/[^0-9.]/g, ""))} placeholder="15.99" />
             <p className="text-[12px] text-dim mt-1.5">Woven keeps 20%. You earn <strong className="text-green">${creatorCut}</strong> per sale.</p>
+            <label className="text-[13px] font-semibold text-muted block mb-1.5 mt-3.5">Original price <span className="text-dim font-normal">(for a sale badge, optional)</span></label>
+            <input className={inputCls("w-[160px]")} value={s.originalPriceInput} onChange={(e) => s.setOriginalPriceInput(e.target.value.replace(/[^0-9.]/g, ""))} placeholder="leave blank for no sale" />
           </div>
         )}
         <div className="h-px bg-line my-4" />
-        <Setting label="Include in Woven Pass" sub="Subscribers play free; you're paid per hour played">
-          <ControlledToggle on={s.passIncluded} onToggle={() => s.setPassIncluded(!s.passIncluded)} />
-        </Setting>
         <Setting label="Regional pricing" sub="Auto-adjust for 40+ regions — coming soon"><Toggle defaultOn={false} /></Setting>
       </div>
       <div className="bg-panel border border-line rounded-[10px] p-6">
         <SectionLabel>Estimated payout</SectionLabel>
         <div className="flex justify-between text-[14px] py-1.5"><span className="text-muted">Per sale (80%)</span><span className="font-semibold text-green">{s.isFree ? "—" : `$${creatorCut}`}</span></div>
-        <div className="flex justify-between text-[14px] py-1.5"><span className="text-muted">Pass · per hour played</span><span className="font-semibold">{s.passIncluded ? "~$0.04" : "—"}</span></div>
         <div className="h-px bg-line my-4" />
         <div className="flex gap-2.5 p-3.5 rounded-[9px] text-[13px] text-[#bcdcf3]"
           style={{ background: "rgba(86,166,232,.14)", border: "1px solid #2c6aa0" }}>
@@ -447,7 +444,7 @@ function UploadWizard() {
   const [shortDescription, setShortDescription] = useState("");
   const [isFree, setIsFree] = useState(true);
   const [priceInput, setPriceInput] = useState("9.99");
-  const [passIncluded, setPassIncluded] = useState(false);
+  const [originalPriceInput, setOriginalPriceInput] = useState("");
   const [changelog, setChangelog] = useState("");
   const [tags, setTags] = useState<Set<string>>(new Set());
 
@@ -469,7 +466,7 @@ function UploadWizard() {
       setShortDescription(g.short_description ?? "");
       setIsFree(g.price_cents === 0);
       if (g.price_cents) setPriceInput((g.price_cents / 100).toFixed(2));
-      setPassIncluded(g.pass_included);
+      if (g.original_price_cents) setOriginalPriceInput((g.original_price_cents / 100).toFixed(2));
       setTags(new Set(g.tags ?? []));
     }).catch(() => {});
   }, [existingGameId]);
@@ -530,7 +527,7 @@ function UploadWizard() {
           title,
           shortDescription,
           priceCents: isFree ? 0 : Math.round((Number(priceInput) || 0) * 100),
-          passIncluded,
+          originalPriceCents: originalPriceInput.trim() ? Math.round(Number(originalPriceInput) * 100) : null,
           engine: engineOverride ?? undefined,
           changelog: changelog.trim() || undefined,
           tags: Array.from(tags),
@@ -548,9 +545,9 @@ function UploadWizard() {
   const shared: SharedState = {
     file, uploadPhase, uploadPct, stage, stageProgress, gameId, buildId,
     detectedEngine, entryFile, engineOverride, warnings, errorMsg,
-    title, shortDescription, isFree, priceInput, passIncluded, changelog, tags,
+    title, shortDescription, isFree, priceInput, originalPriceInput, changelog, tags,
     submitStatus, submitError,
-    onFile, setEngineOverride, setTitle, setShortDescription, setIsFree, setPriceInput, setPassIncluded, setChangelog, toggleTag, onSubmit,
+    onFile, setEngineOverride, setTitle, setShortDescription, setIsFree, setPriceInput, setOriginalPriceInput, setChangelog, toggleTag, onSubmit,
   };
 
   const goTo = (i: number) => { setCurrent(i); window.scrollTo({ top: 0 }); };

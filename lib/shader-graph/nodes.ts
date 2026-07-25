@@ -71,6 +71,19 @@ export const NODE_TYPES: NodeTypeDef[] = [
     outputs: [{ id: "normal", label: "Normal", type: "vec3" }],
   },
   {
+    // Same u_lightDir the built-in PBR lighting already uses internally
+    // (and the live preview's draggable light gizmo already drives) — this
+    // just exposes it to the graph, so custom lighting models (celshade
+    // ramps/bands, hand-rolled NdotL, etc.) built via Output (Unlit) have
+    // something to dot a normal against. PBR mode doesn't need this node;
+    // it already wires u_lightDir into its own fixed lighting model.
+    type: "LightDirection",
+    label: "Light Direction",
+    category: "input",
+    inputs: [],
+    outputs: [{ id: "dir", label: "Direction", type: "vec3" }],
+  },
+  {
     type: "Time",
     label: "Time",
     category: "input",
@@ -123,6 +136,21 @@ export const NODE_TYPES: NodeTypeDef[] = [
     // server-side by id; textures from the per-node upload widget (raw
     // data: URIs) have no assetId and can't be included in a GLB export.
     defaultData: { uniformName: "" },
+  },
+  {
+    type: "EnvironmentMap",
+    label: "Environment Map",
+    category: "input",
+    inputs: [],
+    // No UV input and no pre-sampled outputs (unlike Texture2D) — the
+    // compiler needs the raw sampler itself, since real glass samples it
+    // multiple times at reflection/refraction-direction-derived UVs, not
+    // once at a fixed mesh UV.
+    outputs: [{ id: "map", label: "Map", type: "sampler2D" }],
+    // Equirectangular image (atan/acos direction->UV), not a cubemap — no
+    // CubeTexture plumbing needed, and it round-trips through every export
+    // target as a plain sampler2D uniform.
+    defaultData: { imageUrl: null },
   },
   {
     type: "Fresnel",
@@ -309,6 +337,9 @@ export const NODE_TYPES: NodeTypeDef[] = [
       { id: "metallic", label: "Metallic", type: "float" },
       { id: "ao", label: "AO", type: "float" },
       { id: "emissive", label: "Emissive", type: "vec3" },
+      // Wire an EnvironmentMap node here for real reflections/refraction —
+      // otherwise glass falls back to the procedural sky (shaderadeEnv).
+      { id: "envMap", label: "Environment Map", type: "sampler2D" },
     ],
     outputs: [],
     defaultData: {
@@ -319,6 +350,8 @@ export const NODE_TYPES: NodeTypeDef[] = [
       emissiveStrength: 1,
       ior: 1.5,
       transmission: 0,
+      thicknessAware: false,
+      absorptionDensity: 1.2,
     },
     params: [
       { key: "normalStrength", label: "Normal Strength", type: "number", min: 0, max: 2, step: 0.05, default: 1 },
@@ -328,12 +361,20 @@ export const NODE_TYPES: NodeTypeDef[] = [
       // push glow brightness beyond that node's own 0-4 range (Color's own
       // params above already allow >1 per channel too; this stacks on top).
       { key: "emissiveStrength", label: "Emissive Strength", type: "number", min: 0, max: 8, step: 0.1, default: 1 },
-      // ior/transmission drive a Fresnel/Schlick reflectance term in the
-      // compiler (glass ~1.5, water ~1.33, diamond ~2.42) — there's no
-      // environment/cubemap sampling in this compiler, so this is Fresnel-
-      // accurate edge reflectivity, not true ray-bent refraction of a scene.
+      // ior + transmission enable real-time glass: Snell's-law refraction
+      // (GLSL refract), Schlick Fresnel reflection, and a procedural env
+      // sample along those directions. Not path-traced scene refraction —
+      // still bends/warps the environment with IOR (glass ~1.5, water
+      // ~1.33, diamond ~2.42). Transmission 0 = fully opaque PBR.
       { key: "ior", label: "IOR", type: "number", min: 1.0, max: 2.42, step: 0.01, default: 1.5 },
       { key: "transmission", label: "Transmission", type: "number", min: 0, max: 1, step: 0.01, default: 0 },
+      // Real Beer-Lambert absorption instead of the flat tint blend, driven
+      // by an actual back-face depth pass. Off by default: existing graphs
+      // (and every export target, which can't run that pass without extra
+      // integration work) keep today's exact flat-tint look unless a
+      // creator explicitly opts in.
+      { key: "thicknessAware", label: "Thickness-Aware Absorption", type: "boolean", default: false },
+      { key: "absorptionDensity", label: "Absorption Density", type: "number", min: 0, max: 5, step: 0.05, default: 1.2 },
     ],
   },
 ];

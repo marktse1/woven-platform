@@ -161,6 +161,67 @@ function ShaderNode({ id, data, type, selected }: NodeProps & { type: string }) 
             )}
           </div>
         )}
+
+        {/* EnvironmentMap image picker — equirectangular, sampled by
+            reflection/refraction directions rather than mesh UV, so this
+            expects a 360 panorama (2:1 aspect), not an arbitrary texture. */}
+        {type === "EnvironmentMap" && (
+          <div style={{ padding: "4px 10px 6px" }}>
+            {(data.imageUrl as string) ? (
+              <div style={{ position: "relative" }}>
+                <img
+                  src={data.imageUrl as string}
+                  style={{ width: "100%", height: 56, objectFit: "cover", borderRadius: 4, display: "block" }}
+                  alt="environment map"
+                />
+                <label
+                  title="Replace image"
+                  style={{ position: "absolute", inset: 0, cursor: "pointer", borderRadius: 4 }}
+                >
+                  <input
+                    type="file"
+                    accept="image/*"
+                    style={{ display: "none" }}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      const reader = new FileReader();
+                      reader.onload = () => updateNodeData(id, { imageUrl: reader.result as string });
+                      reader.readAsDataURL(file);
+                    }}
+                  />
+                </label>
+              </div>
+            ) : (
+              <label
+                style={{
+                  display: "block",
+                  cursor: "pointer",
+                  border: "1px dashed #5a4455",
+                  borderRadius: 4,
+                  padding: "6px",
+                  textAlign: "center",
+                  color: "#9980aa",
+                  fontSize: 10,
+                }}
+              >
+                Upload equirect (360°) image
+                <input
+                  type="file"
+                  accept="image/*"
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = () => updateNodeData(id, { imageUrl: reader.result as string });
+                    reader.readAsDataURL(file);
+                  }}
+                />
+              </label>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

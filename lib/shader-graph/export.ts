@@ -9,20 +9,60 @@ type Compiled = {
   transparent: boolean;
 };
 
+// u_backfaceDepth only means something once something renders the mesh's
+// own back faces to a depth texture first — Shaderade's own live preview
+// does this automatically, but nothing in an exported engine snippet can
+// set that up on its own, so each generator below prefixes this uniform
+// with concrete instructions instead of the usual generic sampler2D
+// fallback comment.
+const BACKFACE_DEPTH_NOTE_THREE = `  // Thickness-aware glass: bind this to a depth texture from a back-face
+  // pass. Before your main render call each frame — render this same mesh
+  // with { side: THREE.BackSide } into a THREE.WebGLRenderTarget that has
+  // a THREE.DepthTexture attached, then set this uniform's value to that
+  // depthTexture. Also update u_resolution/u_camNear/u_camFar (below) from
+  // your real camera/renderer every frame.
+`;
+const BACKFACE_DEPTH_NOTE_BABYLON = `// Thickness-aware glass: "u_backfaceDepth" needs a depth texture from a
+// back-face pass. Before your main render call each frame — render this
+// same mesh with backFaceCulling reversed into a BABYLON.RenderTargetTexture
+// (depth-only), then setTexture("u_backfaceDepth", ...) with it. Also
+// update u_resolution/u_camNear/u_camFar from your real camera/engine size
+// every frame.
+`;
+const BACKFACE_DEPTH_NOTE_PLAYCANVAS = `// Thickness-aware glass: "u_backfaceDepth" needs a depth texture from a
+// back-face pass. Before your main render call each frame — render this
+// same mesh (front-face culled) into a pc.RenderTarget with a depth
+// buffer/texture attached, then setParameter("u_backfaceDepth", ...) with
+// it. Also update u_resolution/u_camNear/u_camFar from your real
+// camera/device every frame.
+`;
+const BACKFACE_DEPTH_NOTE_GLSL = ` *
+ *   u_backfaceDepth needs a depth texture from a back-face pass: render
+ *   this same mesh's back faces (cull front faces) into a depth texture
+ *   before your main draw call, then bind it here. Also update
+ *   u_resolution/u_camNear/u_camFar from your real camera/viewport every
+ *   frame.`;
+
 function uniformsToThree(uniforms: Record<string, UniformSpec>): string {
   const entries = Object.entries(uniforms).map(([name, spec]) => {
     let value = "null";
+    let prefix = "";
     if (spec.type === "float") value = `{ value: ${spec.value ?? 0} }`;
     else if (spec.type === "vec2") value = `{ value: new THREE.Vector2(${(spec.value as number[] ?? [0, 0]).join(", ")}) }`;
     else if (spec.type === "vec3") value = `{ value: new THREE.Vector3(${(spec.value as number[] ?? [0, 0, 0]).join(", ")}) }`;
     else if (spec.type === "vec4") value = `{ value: new THREE.Vector4(${(spec.value as number[] ?? [0, 0, 0, 1]).join(", ")}) }`;
     else if (spec.type === "sampler2D") {
       const url = typeof spec.value === "string" ? spec.value : null;
-      value = url
-        ? `{ value: new THREE.TextureLoader().load(${JSON.stringify(url)}) }`
-        : `{ value: null } // no texture wired — assign a THREE.Texture`;
+      value = url ? `{ value: new THREE.TextureLoader().load(${JSON.stringify(url)}) }` : `{ value: null }`;
+      // A trailing `//` comment on the same line as the value would eat the
+      // entry's own trailing comma (everything after `//` is a comment,
+      // comma included), silently breaking the object literal for whatever
+      // uniform comes next — so any explanatory note goes on its own
+      // preceding line instead, never appended after a real value.
+      if (name === "u_backfaceDepth") prefix = BACKFACE_DEPTH_NOTE_THREE;
+      else if (!url) prefix = `  // "${name}": no texture wired — assign a THREE.Texture\n`;
     }
-    return `  ${name}: ${value},`;
+    return `${prefix}  ${name}: ${value},`;
   });
   return `{\n${entries.join("\n")}\n}`;
 }
@@ -71,11 +111,15 @@ function babylonSetterCalls(uniforms: Record<string, UniformSpec>): string {
       lines.push(`shaderMaterial.setVector4("${name}", new BABYLON.Vector4(${v.join(", ")}));`);
     } else if (spec.type === "sampler2D") {
       const url = typeof spec.value === "string" ? spec.value : null;
-      lines.push(
-        url
-          ? `shaderMaterial.setTexture("${name}", new BABYLON.Texture(${JSON.stringify(url)}, scene));`
-          : `// "${name}": no texture wired — shaderMaterial.setTexture("${name}", yourTexture);`,
-      );
+      if (name === "u_backfaceDepth") {
+        lines.push(`${BACKFACE_DEPTH_NOTE_BABYLON}// shaderMaterial.setTexture("u_backfaceDepth", yourBackfaceDepthTexture);`);
+      } else {
+        lines.push(
+          url
+            ? `shaderMaterial.setTexture("${name}", new BABYLON.Texture(${JSON.stringify(url)}, scene));`
+            : `// "${name}": no texture wired — shaderMaterial.setTexture("${name}", yourTexture);`,
+        );
+      }
     }
   }
   return lines.join("\n");
@@ -130,11 +174,15 @@ function playcanvasParamCalls(uniforms: Record<string, UniformSpec>): string {
       lines.push(`material.setParameter("${name}", [${v.join(", ")}]);`);
     } else if (spec.type === "sampler2D") {
       const url = typeof spec.value === "string" ? spec.value : null;
-      lines.push(
-        url
-          ? `app.assets.loadFromUrl(${JSON.stringify(url)}, "texture", (err, asset) => {\n  if (!err) material.setParameter("${name}", asset.resource);\n});`
-          : `// "${name}": no texture wired — load a pc.Texture and material.setParameter("${name}", texture);`,
-      );
+      if (name === "u_backfaceDepth") {
+        lines.push(`${BACKFACE_DEPTH_NOTE_PLAYCANVAS}// material.setParameter("u_backfaceDepth", yourBackfaceDepthTexture);`);
+      } else {
+        lines.push(
+          url
+            ? `app.assets.loadFromUrl(${JSON.stringify(url)}, "texture", (err, asset) => {\n  if (!err) material.setParameter("${name}", asset.resource);\n});`
+            : `// "${name}": no texture wired — load a pc.Texture and material.setParameter("${name}", texture);`,
+        );
+      }
     }
   }
   return lines.join("\n");
@@ -171,6 +219,9 @@ function glslUniformComment(uniforms: Record<string, UniformSpec>): string {
   if (entries.length === 0) return "";
   const lines = entries.map(([name, spec]) => {
     if (spec.type === "sampler2D") {
+      if (name === "u_backfaceDepth") {
+        return ` *   ${name}: (no texture wired)\n${BACKFACE_DEPTH_NOTE_GLSL}`;
+      }
       const url = typeof spec.value === "string" ? spec.value : null;
       return ` *   ${name}: ${url ?? "(no texture wired)"}`;
     }

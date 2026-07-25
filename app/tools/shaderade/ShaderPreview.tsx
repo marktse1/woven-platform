@@ -32,11 +32,14 @@ export default function ShaderPreview({ compiled, bgLightness = 0.05 }: Props) {
     if (!mount) return;
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color().setScalar(bgLightness);
+    // Sky-ish default so glass refraction has a blue dome to bend against.
+    // bgLightness still tints via a dimmable overlay color when the user
+    // wants a flat studio backdrop instead.
+    scene.background = new THREE.Color().setRGB(0.55, 0.68, 0.88).multiplyScalar(0.35 + bgLightness * 0.9);
     sceneRef.current = scene;
 
     const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
-    camera.position.set(0, 0, 2.8);
+    camera.position.set(0, 0.35, 2.8);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -54,6 +57,7 @@ export default function ShaderPreview({ compiled, bgLightness = 0.05 }: Props) {
     controls.autoRotateSpeed = 0.6;
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
+    controls.target.set(0, 0, 0);
 
     const mat = new THREE.ShaderMaterial({
       vertexShader: [
@@ -84,8 +88,72 @@ export default function ShaderPreview({ compiled, bgLightness = 0.05 }: Props) {
     materialRef.current = mat;
 
     const geo = new THREE.SphereGeometry(1, 64, 48);
-    const mesh = new THREE.Mesh(geo, mat);
+    // Typed as the base Material (not the inferred ShaderMaterial) since
+    // the back-face depth pass below temporarily swaps in a plain
+    // MeshBasicMaterial.
+    const mesh: THREE.Mesh<THREE.SphereGeometry, THREE.Material> = new THREE.Mesh(geo, mat);
     scene.add(mesh);
+
+    // Back-face depth pass for thickness-aware glass (Output PBR's
+    // "Thickness-Aware Absorption" toggle). Fixed resolution, decoupled
+    // from the visible canvas size — u_resolution (bound below, from the
+    // canvas size) is what the shader's gl_FragCoord/screen-UV lookup
+    // actually divides by, so this texture's own size doesn't need to
+    // track the canvas. Only costs a render when a compiled material
+    // actually declares u_backfaceDepth (checked per-frame in tick()).
+    const backfaceTarget = new THREE.WebGLRenderTarget(512, 512);
+    backfaceTarget.depthTexture = new THREE.DepthTexture(512, 512);
+    const backfaceMat = new THREE.MeshBasicMaterial({ side: THREE.BackSide, colorWrite: false });
+
+    // Checker ground + a few colored props so the preview context matches
+    // the procedural env the glass shader samples (sky/ground/checker).
+    // These are scene dressing only — glass refraction samples the shader's
+    // procedural env, not these meshes (true mesh-through refraction would
+    // need a screen-space pass or raytracing).
+    const groundGeo = new THREE.PlaneGeometry(12, 12, 1, 1);
+    const groundMat = new THREE.ShaderMaterial({
+      vertexShader: [
+        "varying vec2 vUv;",
+        "void main() {",
+        "  vUv = uv;",
+        "  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);",
+        "}",
+      ].join("\n"),
+      fragmentShader: [
+        "precision mediump float;",
+        "varying vec2 vUv;",
+        "void main() {",
+        "  vec2 c = floor(vUv * 16.0);",
+        "  float checker = mod(c.x + c.y, 2.0);",
+        "  vec3 col = mix(vec3(0.28, 0.27, 0.25), vec3(0.18, 0.19, 0.16), checker);",
+        "  float fade = smoothstep(0.5, 0.05, length(vUv - 0.5));",
+        "  gl_FragColor = vec4(col, fade * 0.9);",
+        "}",
+      ].join("\n"),
+      transparent: true,
+      depthWrite: false,
+    });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -1.05;
+    scene.add(ground);
+
+    const propColors = [0xe8875a, 0x56a6e8, 0x7bc96f];
+    const props: THREE.Mesh[] = [];
+    propColors.forEach((color, i) => {
+      const pGeo = new THREE.BoxGeometry(0.28, 0.28, 0.28);
+      const pMat = new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.1 });
+      const p = new THREE.Mesh(pGeo, pMat);
+      const angle = (i / propColors.length) * Math.PI * 2 + 0.4;
+      p.position.set(Math.cos(angle) * 1.55, -0.9, Math.sin(angle) * 1.55);
+      scene.add(p);
+      props.push(p);
+    });
+    // Soft fill so the props aren't pure black against the sky bg.
+    scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+    const key = new THREE.DirectionalLight(0xfff2dd, 0.9);
+    key.position.set(2, 4, 1);
+    scene.add(key);
 
     // Draggable light gizmo — a small unlit sphere marking the current
     // light direction. Only shown while the compiled material actually
@@ -166,6 +234,36 @@ export default function ShaderPreview({ compiled, bgLightness = 0.05 }: Props) {
       }
       lightGizmo.visible = !!mat.uniforms.u_lightDir;
       controls.update();
+
+      // Thickness-aware glass: render the mesh's own back faces to a depth
+      // texture just before the main pass, so the material can diff
+      // front/back depth for real Beer-Lambert absorption. Only runs when
+      // the compiled shader actually declares u_backfaceDepth — checked
+      // fresh every frame since it changes on recompile, not via a ref
+      // that could go stale.
+      if (mat.uniforms.u_backfaceDepth) {
+        ground.visible = false;
+        for (const p of props) p.visible = false;
+        lightGizmo.visible = false;
+        const prevMeshMaterial = mesh.material;
+        mesh.material = backfaceMat;
+        renderer.setRenderTarget(backfaceTarget);
+        renderer.render(scene, camera);
+        renderer.setRenderTarget(null);
+        mesh.material = prevMeshMaterial;
+        ground.visible = true;
+        for (const p of props) p.visible = true;
+        lightGizmo.visible = !!mat.uniforms.u_lightDir;
+
+        mat.uniforms.u_backfaceDepth.value = backfaceTarget.depthTexture;
+        if (mat.uniforms.u_resolution) {
+          const size = renderer.getSize(new THREE.Vector2());
+          (mat.uniforms.u_resolution.value as THREE.Vector2).set(size.x, size.y);
+        }
+        if (mat.uniforms.u_camNear) mat.uniforms.u_camNear.value = camera.near;
+        if (mat.uniforms.u_camFar) mat.uniforms.u_camFar.value = camera.far;
+      }
+
       try {
         renderer.render(scene, camera);
       } catch (err) {
@@ -190,14 +288,27 @@ export default function ShaderPreview({ compiled, bgLightness = 0.05 }: Props) {
       mat.dispose();
       lightGeo.dispose();
       lightMat.dispose();
+      groundGeo.dispose();
+      groundMat.dispose();
+      for (const p of props) {
+        p.geometry.dispose();
+        (p.material as THREE.Material).dispose();
+      }
+      backfaceTarget.dispose();
+      backfaceTarget.depthTexture?.dispose();
+      backfaceMat.dispose();
       if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement);
     };
   }, []);
 
   // Live-update the background without tearing down the whole scene.
+  // Keep a sky-tinted backdrop (not pure gray) so glass refraction reads
+  // against something with color even when the user cranks lightness.
   useEffect(() => {
     if (sceneRef.current) {
-      sceneRef.current.background = new THREE.Color().setScalar(bgLightness);
+      sceneRef.current.background = new THREE.Color()
+        .setRGB(0.55, 0.68, 0.88)
+        .multiplyScalar(0.35 + bgLightness * 0.9);
     }
   }, [bgLightness]);
 

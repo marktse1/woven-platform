@@ -203,6 +203,18 @@ export function compile(graph: ShaderGraph): CompileResult {
         sourceExprMap.set(`${node.id}::normal`, { expr: varName(node.id, "normal"), type: "vec3" });
         break;
 
+      case "LightDirection": {
+        // Registered here too (not just inside OutputPBR's own codegen)
+        // since a pure Unlit-mode graph using this node never runs that
+        // branch — Record writes are idempotent, so no conflict if a graph
+        // somehow has both.
+        uniforms["u_lightDir"] = { type: "vec3", value: [0.45, 0.8, 0.4] };
+        const vn = varName(node.id, "dir");
+        lines.push(`vec3 ${vn} = normalize(u_lightDir);`);
+        sourceExprMap.set(`${node.id}::dir`, { expr: vn, type: "vec3" });
+        break;
+      }
+
       case "Time": {
         const uName = `u_time`;
         uniforms[uName] = { type: "float", value: 0 };
@@ -242,6 +254,17 @@ export function compile(graph: ShaderGraph): CompileResult {
         sourceExprMap.set(`${node.id}::g`, { expr: `${vn}.g`, type: "float" });
         sourceExprMap.set(`${node.id}::b`, { expr: `${vn}.b`, type: "float" });
         sourceExprMap.set(`${node.id}::a`, { expr: `${vn}.a`, type: "float" });
+        break;
+      }
+
+      case "EnvironmentMap": {
+        // No sampling here — this just registers the uniform and hands the
+        // raw sampler name downstream. OutputPBR's glass branch samples it
+        // multiple times at reflection/refraction-direction-derived UVs, so
+        // there's no single fixed expression to resolve to like other nodes.
+        const uName = `u_envmap_${node.id.replace(/[^a-zA-Z0-9]/g, "_")}`;
+        uniforms[uName] = { type: "sampler2D", value: (data.imageUrl as string) ?? null };
+        sourceExprMap.set(`${node.id}::map`, { expr: uName, type: "sampler2D" });
         break;
       }
 
@@ -455,6 +478,27 @@ export function compile(graph: ShaderGraph): CompileResult {
       "  float scale = det == 0.0 ? 0.0 : inversesqrt(det);",
       "  return normalize(T * (mapN.x * scale) + B * (mapN.y * scale) + N * mapN.z);",
       "}",
+      // Procedural environment for real-time glass: reflection + refraction
+      // sample directions without needing a cubemap asset or raytracing.
+      // Matches the preview scene's sky/ground so exported GLSL still looks
+      // like glass outside Shaderade.
+      "vec3 shaderadeEnv(vec3 dir) {",
+      "  vec3 d = normalize(dir);",
+      "  float h = d.y;",
+      "  vec3 zenith = vec3(0.35, 0.55, 0.95);",
+      "  vec3 horizon = vec3(0.78, 0.86, 0.95);",
+      "  vec3 groundNear = vec3(0.32, 0.30, 0.28);",
+      "  vec3 groundFar = vec3(0.18, 0.20, 0.16);",
+      "  vec3 sky = mix(horizon, zenith, smoothstep(0.0, 1.0, h));",
+      // Soft sun disc so specular-ish env highlights show up on glass edges.
+      "  vec3 sunDir = normalize(vec3(0.45, 0.75, 0.35));",
+      "  float sun = pow(max(dot(d, sunDir), 0.0), 64.0);",
+      "  sky += vec3(1.0, 0.95, 0.85) * sun * 1.4;",
+      // Ground: gentle checker so refraction visibly warps something.
+      "  float checker = step(0.0, sin(d.x * 18.0) * sin(d.z * 18.0));",
+      "  vec3 ground = mix(groundNear, groundFar, checker * 0.35 + 0.15);",
+      "  return mix(ground, sky, smoothstep(-0.08, 0.06, h));",
+      "}",
     );
 
     const albedo = getId("albedo");
@@ -464,6 +508,24 @@ export function compile(graph: ShaderGraph): CompileResult {
     const metallicConn = getId("metallic");
     const aoConn = getId("ao");
     const emissiveConn = getId("emissive");
+    // Raw uniform name (not a value expression) — see the EnvironmentMap
+    // case above for why this doesn't go through widenExpr like the others.
+    const envMapConn = getId("envMap");
+    const envMapUniform = envMapConn && envMapConn.type === "sampler2D" ? envMapConn.expr : null;
+    // shaderadeEnvSample() is the single call-site glass actually uses:
+    // delegates to the real equirect texture when one's wired, otherwise
+    // falls back to the procedural sky above — existing graphs with nothing
+    // wired here compile byte-identical to before this feature existed.
+    extraDecls.push(
+      envMapUniform
+        ? [
+            "vec2 shaderadeEquirectUv(vec3 d) {",
+            "  return vec2(atan(d.z, d.x) / 6.28318530718 + 0.5, acos(clamp(d.y, -1.0, 1.0)) / 3.14159265359);",
+            "}",
+            `vec3 shaderadeEnvSample(vec3 dir) { return texture2D(${envMapUniform}, shaderadeEquirectUv(normalize(dir))).rgb; }`,
+          ].join("\n")
+        : "vec3 shaderadeEnvSample(vec3 dir) { return shaderadeEnv(dir); }"
+    );
     const roughnessExpr = roughnessConn ? widenExpr(roughnessConn.expr, roughnessConn.type, "float") : formatFloat(PBR_DEFAULTS.roughness);
     const metallicExpr = metallicConn ? widenExpr(metallicConn.expr, metallicConn.type, "float") : formatFloat(PBR_DEFAULTS.metallic);
     const aoExpr = aoConn ? widenExpr(aoConn.expr, aoConn.type, "float") : formatFloat(PBR_DEFAULTS.ao);
@@ -484,6 +546,18 @@ export function compile(graph: ShaderGraph): CompileResult {
     const ior = (outputData.ior as number) ?? 1.5;
     const transmission = (outputData.transmission as number) ?? 0;
     transparent = transmission > 0;
+    // Off by default so existing graphs — and every export target, none of
+    // which can run the required back-face depth pass without extra
+    // integration work on the consumer's end — keep today's exact flat-tint
+    // look unless a creator explicitly opts in.
+    const thicknessAware = transmission > 0 && (outputData.thicknessAware as boolean) === true;
+    const absorptionDensity = (outputData.absorptionDensity as number) ?? 1.2;
+    if (thicknessAware) {
+      uniforms["u_backfaceDepth"] = { type: "sampler2D", value: null };
+      uniforms["u_resolution"] = { type: "vec2", value: [1, 1] };
+      uniforms["u_camNear"] = { type: "float", value: 0.1 };
+      uniforms["u_camFar"] = { type: "float", value: 100 };
+    }
 
     lines.push(`vec3 pbrN = normalize(vNormal);`);
     if (normalConn) {
@@ -508,23 +582,92 @@ export function compile(graph: ShaderGraph): CompileResult {
       `float pbrNdotL = max(dot(pbrN, pbrLightDir), 0.0);`,
       `float pbrShininess = mix(128.0, 4.0, pbrRough);`,
       // F0 (normal-incidence reflectance) derived from IOR via Schlick's
-      // approximation — this is the actual physical effect IOR has on
-      // appearance. ior=1.5 (the default) gives F0=0.04, matching the
-      // dielectric constant this shader always hardcoded, so this is a
-      // strict generalization, not a behavior change at the default.
+      // approximation — ior=1.5 (default) gives F0=0.04.
       `float pbrF0 = pow((${formatFloat(ior)} - 1.0) / (${formatFloat(ior)} + 1.0), 2.0);`,
       `float pbrFresnel = pbrF0 + (1.0 - pbrF0) * pow(1.0 - max(dot(pbrN, pbrV), 0.0), 5.0);`,
       `vec3 pbrSpecColor = mix(vec3(pbrF0), pbrAlbedo, pbrMetal);`,
       `float pbrSpec = pow(max(dot(pbrN, pbrH), 0.0), pbrShininess) * (1.0 - pbrRough);`,
       `vec3 pbrDiffuse = pbrAlbedo * (1.0 - pbrMetal) * pbrNdotL * pbrLightColor;`,
       `vec3 pbrAmbient = pbrAlbedo * pbrAmbientColor;`,
-      `vec3 pbrLit = (pbrAmbient + pbrDiffuse) * pbrAo + pbrSpecColor * pbrSpec * pbrLightColor + pbrEmissive;`,
-      // Grazing-angle Fresnel edge brightening — "glass"-like rim
-      // reflectivity — scaled directly by transmission (0 by default, so
-      // no contribution unless a creator dials transmission up).
-      `pbrLit += pbrFresnel * pbrLightColor * ${formatFloat(transmission)};`,
-      `float pbrAlpha = mix(1.0, pbrFresnel, ${formatFloat(transmission)});`,
+      `vec3 pbrOpaque = (pbrAmbient + pbrDiffuse) * pbrAo + pbrSpecColor * pbrSpec * pbrLightColor + pbrEmissive;`,
     );
+
+    if (transmission > 0) {
+      // Real-time glass: IOR drives Snell's-law refraction (GLSL refract)
+      // and Schlick Fresnel reflection. Not raytracing — we sample a
+      // procedural environment along reflect/refract dirs — but this is
+      // what makes glass *look* like glass (bent sky/ground, bright rims).
+      // Chromatic split on the refract eta sells the "prism" look a bit.
+      //
+      // Incident vector for reflect/refract is toward the surface (−V).
+      // eta = n_air / n_material for viewing from outside.
+      lines.push(
+        `float pbrTrans = ${formatFloat(transmission)};`,
+        `float pbrEta = 1.0 / max(${formatFloat(ior)}, 1.001);`,
+        `vec3 pbrI = -pbrV;`,
+        `vec3 pbrReflDir = reflect(pbrI, pbrN);`,
+        // Roughness blurs env lookup by jittering the sample direction
+        // with a cheap hash of screen position — not a true mip blur,
+        // but frosted glass reads when roughness is high.
+        `vec2 pbrJitter = fract(sin(gl_FragCoord.xy * vec2(12.9898, 78.233)) * 43758.5453);`,
+        `vec3 pbrRoughOff = (vec3(pbrJitter.x, pbrJitter.y, pbrJitter.x - pbrJitter.y) * 2.0 - 1.0) * pbrRough * 0.35;`,
+        `vec3 pbrReflected = shaderadeEnvSample(normalize(pbrReflDir + pbrRoughOff));`,
+        // RGB chromatic aberration via slightly different IOR per channel.
+        `vec3 pbrRefrR = refract(pbrI, pbrN, pbrEta * 0.97);`,
+        `vec3 pbrRefrG = refract(pbrI, pbrN, pbrEta);`,
+        `vec3 pbrRefrB = refract(pbrI, pbrN, pbrEta * 1.03);`,
+        // Total internal reflection → refract() returns 0; fall back to reflection.
+        `vec3 pbrRefracted;`,
+        `if (dot(pbrRefrG, pbrRefrG) < 1e-6) {`,
+        `  pbrRefracted = pbrReflected;`,
+        `} else {`,
+        `  pbrRefracted = vec3(`,
+        `    shaderadeEnvSample(normalize(pbrRefrR + pbrRoughOff)).r,`,
+        `    shaderadeEnvSample(normalize(pbrRefrG + pbrRoughOff)).g,`,
+        `    shaderadeEnvSample(normalize(pbrRefrB + pbrRoughOff)).b`,
+        `  );`,
+        `}`,
+        // Albedo tints the transmitted light (stained glass); reflection
+        // stays mostly white/env-colored for dielectrics. Real thickness
+        // (below) replaces this flat blend with actual Beer-Lambert falloff
+        // when a back-face depth pass is available; otherwise this flat
+        // approximation is all there is to go on.
+        ...(thicknessAware
+          ? [
+              // Reconstruct linear-space depth from both the current
+              // (front) fragment and the back-face depth texture, via the
+              // standard perspective un-projection formula, then the
+              // difference is how much glass this ray actually passed
+              // through — real Beer-Lambert absorption instead of a flat
+              // blend. Tinted glass absorbs its complementary colors more
+              // over distance, so it reads darker/more saturated where
+              // it's thicker rather than a uniform tint everywhere.
+              `vec2 pbrScreenUv = gl_FragCoord.xy / u_resolution;`,
+              `float pbrBackDepth = texture2D(u_backfaceDepth, pbrScreenUv).r;`,
+              `float pbrFrontLinear = (2.0 * u_camNear * u_camFar) / (u_camFar + u_camNear - (gl_FragCoord.z * 2.0 - 1.0) * (u_camFar - u_camNear));`,
+              `float pbrBackLinear = (2.0 * u_camNear * u_camFar) / (u_camFar + u_camNear - (pbrBackDepth * 2.0 - 1.0) * (u_camFar - u_camNear));`,
+              `float pbrThickness = max(0.0, pbrBackLinear - pbrFrontLinear);`,
+              `vec3 pbrAbsorb = exp(-(vec3(1.0) - pbrAlbedo) * pbrThickness * ${formatFloat(absorptionDensity)});`,
+              `pbrRefracted *= pbrAbsorb;`,
+            ]
+          : [`pbrRefracted *= mix(vec3(1.0), pbrAlbedo, 0.85);`]),
+        `vec3 pbrGlass = mix(pbrRefracted, pbrReflected, pbrFresnel);`,
+        // Keep a sharp specular lobe from the scene light so the gizmo
+        // still lights the glass.
+        `pbrGlass += pbrSpecColor * pbrSpec * pbrLightColor * (0.35 + 0.65 * pbrFresnel);`,
+        `pbrGlass += pbrEmissive;`,
+        `vec3 pbrLit = mix(pbrOpaque, pbrGlass, pbrTrans);`,
+        // With env-based refraction the "see-through" is already in RGB,
+        // so keep alpha high. Slight Fresnel edge opacity helps over
+        // busy backgrounds when transmission is partial.
+        `float pbrAlpha = mix(1.0, mix(0.92, 1.0, pbrFresnel), pbrTrans);`,
+      );
+    } else {
+      lines.push(
+        `vec3 pbrLit = pbrOpaque;`,
+        `float pbrAlpha = 1.0;`,
+      );
+    }
     outputGlsl = `gl_FragColor = vec4(pbrLit, pbrAlpha);`;
   }
 

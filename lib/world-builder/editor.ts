@@ -297,6 +297,12 @@ transformControls.addEventListener("objectChange", () => {
 
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
+// Selection is decided on pointerup, not pointerdown, and only committed
+// if the pointer stayed within this radius — otherwise the gesture is an
+// OrbitControls rotate-drag (same left button, same element) and should
+// leave the current selection alone.
+const SELECT_CLICK_MOVE_THRESHOLD_PX = 6;
+let pendingSelectionClick: { x: number; y: number; additive: boolean } | null = null;
 const worldRoot = new THREE.Group();
 const terrainRoot = new THREE.Group();
 const roadRoot = new THREE.Group();
@@ -5689,6 +5695,7 @@ function updatePointerFromEvent(event: PointerEvent) {
 function onPointerDown(event: PointerEvent) {
   if (event.button !== 0) return;
   if (transformControls.dragging) return;
+  pendingSelectionClick = null;
   updatePointerFromEvent(event);
   raycaster.setFromCamera(pointer, camera);
 
@@ -5735,20 +5742,11 @@ function onPointerDown(event: PointerEvent) {
     return;
   }
 
-  const hits = raycaster.intersectObjects(selectableMeshes, true);
-  if (hits.length > 0) {
-    const objectId = objectIdFromHit(hits[0].object);
-    if (objectId) {
-      if (event.shiftKey || event.ctrlKey || event.metaKey) {
-        toggleObjectSelection(objectId);
-        return;
-      }
-      selectObject(objectId);
-      return;
-    }
-  }
-
-  selectObject(null);
+  pendingSelectionClick = {
+    x: event.clientX,
+    y: event.clientY,
+    additive: event.shiftKey || event.ctrlKey || event.metaKey,
+  };
 }
 
 function onPointerMove(event: PointerEvent) {
@@ -5789,7 +5787,7 @@ function onPointerMove(event: PointerEvent) {
   }
 }
 
-function onPointerUp() {
+function onPointerUp(event: PointerEvent) {
   if (state.draftBuilding?.dragging) {
     state.draftBuilding.dragging = false;
     controls.enabled = true;
@@ -5804,6 +5802,24 @@ function onPointerUp() {
     state.activeDragId = null;
     controls.enabled = true;
     saveLocalLayout();
+  }
+
+  if (pendingSelectionClick) {
+    const { x, y, additive } = pendingSelectionClick;
+    pendingSelectionClick = null;
+    const movedPx = Math.hypot(event.clientX - x, event.clientY - y);
+    if (movedPx <= SELECT_CLICK_MOVE_THRESHOLD_PX) {
+      updatePointerFromEvent(event);
+      raycaster.setFromCamera(pointer, camera);
+      const hits = raycaster.intersectObjects(selectableMeshes, true);
+      const objectId = hits.length > 0 ? objectIdFromHit(hits[0].object) : null;
+      if (objectId) {
+        if (additive) toggleObjectSelection(objectId);
+        else selectObject(objectId);
+      } else {
+        selectObject(null);
+      }
+    }
   }
 }
 

@@ -47,7 +47,12 @@ function widenExpr(expr: string, from: GlslType, to: GlslType): string {
   if (from === "float") {
     if (to === "vec2") return `vec2(${expr})`;
     if (to === "vec3") return `vec3(${expr})`;
-    if (to === "vec4") return `vec4(${expr}, 1.0)`;
+    // `vec4(${expr}, 1.0)` (2 of the required 4 components) is invalid GLSL
+    // — vec4's constructor needs either exactly 4 scalars or a single
+    // scalar to broadcast, never 2. Broadcast to RGB (consistent with the
+    // vec2/vec3 cases above) then pad alpha, matching how vec3→vec4 below
+    // pads alpha onto an already-3-component value.
+    if (to === "vec4") return `vec4(vec3(${expr}), 1.0)`;
   }
   if (from === "vec2" && to === "vec3") return `vec3(${expr}, 0.0)`;
   if (from === "vec2" && to === "vec4") return `vec4(${expr}, 0.0, 1.0)`;
@@ -133,6 +138,261 @@ function topoSort(nodes: Node[], edges: Edge[]): Node[] | null {
   return result.length === nodes.length ? result : null;
 }
 
+// Node types allowed to feed a VertexDisplacement node's `height` input.
+// Deliberately narrow: fragment-only nodes (Texture2D, EnvironmentMap,
+// Fresnel — needs vViewDir, WorldNormal/LightDirection — fragment varyings)
+// either don't make sense before the mesh is transformed or aren't available
+// yet at this point in the vertex shader, so they're compile errors here
+// rather than silently wrong GLSL. Notably no UV node: it would resolve to
+// the fixed per-vertex `vUv`, which doesn't vary with the `pos` argument the
+// way WorldPosition does below — the finite-difference normal derivation in
+// compile() calls shaderadeVertexHeight() at neighboring positions
+// specifically to measure how height changes with position, so a height
+// function that ignores its `pos` argument would silently produce a flat
+// (wrong) normal. Keeping UV out avoids that footgun entirely for v1.
+const VERTEX_DISPLACEMENT_ALLOWED_TYPES = new Set([
+  "Time", "Float", "Noise", "WorldPosition",
+  "Split", "Combine", "Add", "Subtract", "Multiply", "Mix",
+  "Sin", "Power", "Clamp", "Smoothstep", "Step", "OneMinus", "Dot",
+]);
+
+// Compiles the subgraph feeding a VertexDisplacement node's `height` input
+// into a standalone GLSL function, `float shaderadeVertexHeight(vec3 pos)`,
+// which compile() below calls three times (at the vertex's own position and
+// two small offsets) to both displace the geometry and derive a correct
+// rippled normal via finite differences — the standard shader-graph-tool
+// technique for "displacement with automatically-correct normals" without
+// needing symbolic differentiation of an arbitrary graph.
+//
+// Deliberately a separate, small function rather than a mode threaded
+// through the big fragment-codegen switch in compile() below: a graph
+// without a VertexDisplacement node never calls this at all, so a mistake
+// here can only affect graphs that actually use the new node, never any
+// existing shader.
+function compileVertexDisplacement(
+  nodes: Node[],
+  targetToSource: Map<string, { source: string; sourceHandle: string }>,
+  displacementNode: Node,
+  uniforms: Record<string, UniformSpec>,
+): { ok: true; declarations: string[] } | { ok: false; error: string } {
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
+  const rootLink = targetToSource.get(`${displacementNode.id}::height`);
+  if (!rootLink) {
+    return { ok: false, error: "Vertex Displacement's Height input isn't connected." };
+  }
+
+  // Backward DFS from the root, post-order so dependencies are emitted
+  // before whatever reads them — the same idea as compile()'s Kahn's
+  // algorithm topo sort above, just scoped to this smaller subgraph.
+  const visited = new Set<string>();
+  const order: Node[] = [];
+  let problem: string | null = null;
+  const visit = (nodeId: string) => {
+    if (problem || visited.has(nodeId)) return;
+    visited.add(nodeId);
+    const node = nodeById.get(nodeId);
+    if (!node) { problem = "Vertex Displacement graph references a missing node."; return; }
+    const def = getNodeDef(node.type as string);
+    if (!def) { problem = `Unknown node type "${node.type}" in Vertex Displacement graph.`; return; }
+    if (!VERTEX_DISPLACEMENT_ALLOWED_TYPES.has(node.type as string)) {
+      problem = `"${def.label}" can't feed Vertex Displacement — only Time, Float, Noise, World Position, and basic math/utility nodes can run before the mesh is transformed. Remove it from the Height chain.`;
+      return;
+    }
+    for (const input of def.inputs) {
+      const link = targetToSource.get(`${nodeId}::${input.id}`);
+      if (link) visit(link.source);
+      if (problem) return;
+    }
+    order.push(node);
+  };
+  visit(rootLink.source);
+  if (problem) return { ok: false, error: problem };
+
+  const sourceExprMap = new Map<string, { expr: string; type: GlslType }>();
+  const lines: string[] = [];
+  let noiseHelpersEmitted = false;
+  const helperDecls: string[] = [];
+
+  const inputExprFor = (node: Node, slotId: string, expectedType: GlslType): string => {
+    const link = targetToSource.get(`${node.id}::${slotId}`);
+    const conn = link ? sourceExprMap.get(`${link.source}::${link.sourceHandle}`) : undefined;
+    if (conn) return widenExpr(conn.expr, conn.type, expectedType);
+    const data = (node.data ?? {}) as Record<string, unknown>;
+    const dataVal = data[slotId];
+    if (dataVal !== undefined) return literalForData(dataVal, expectedType);
+    return glslTypeDefault(expectedType);
+  };
+
+  for (const node of order) {
+    const data = (node.data ?? {}) as Record<string, unknown>;
+    switch (node.type) {
+      case "WorldPosition":
+        // Special-cased ONLY here: the function parameter (raw, pre-
+        // transform position), not vWorldPos — this function is evaluated
+        // at slightly offset positions to derive a normal via finite
+        // differences, so it must be a true function of `pos`. Elsewhere
+        // (fragment shading) WorldPosition still means vWorldPos exactly
+        // as before; this special case is local to this function only.
+        sourceExprMap.set(`${node.id}::pos`, { expr: "pos", type: "vec3" });
+        break;
+
+      case "Time":
+        uniforms["u_time"] = uniforms["u_time"] ?? { type: "float", value: 0 };
+        sourceExprMap.set(`${node.id}::time`, { expr: "u_time", type: "float" });
+        break;
+
+      case "Float": {
+        const val = (data.value as number) ?? 0;
+        const uName = `u_float_${node.id.replace(/[^a-zA-Z0-9]/g, "_")}`;
+        uniforms[uName] = { type: "float", value: val };
+        sourceExprMap.set(`${node.id}::value`, { expr: uName, type: "float" });
+        break;
+      }
+
+      case "Noise": {
+        if (!noiseHelpersEmitted) {
+          noiseHelpersEmitted = true;
+          helperDecls.push(
+            "float shaderadeVertexHash(vec2 p) {",
+            "  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);",
+            "}",
+            "float shaderadeVertexValueNoise(vec2 p) {",
+            "  vec2 i = floor(p); vec2 f = fract(p);",
+            "  float a = shaderadeVertexHash(i);",
+            "  float b = shaderadeVertexHash(i + vec2(1.0, 0.0));",
+            "  float c = shaderadeVertexHash(i + vec2(0.0, 1.0));",
+            "  float d = shaderadeVertexHash(i + vec2(1.0, 1.0));",
+            "  vec2 u = f * f * (3.0 - 2.0 * f);",
+            "  return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;",
+            "}",
+          );
+        }
+        const uvExpr = inputExprFor(node, "uv", "vec2");
+        const scale = (data.scale as number) ?? 4.0;
+        const octaves = Math.max(1, Math.min(6, Math.round((data.octaves as number) ?? 1)));
+        const vn = varName(node.id, "value");
+        lines.push(`vec2 ${vn}_uv = (${uvExpr}) * ${formatFloat(scale)};`);
+        lines.push(`float ${vn} = 0.0;`);
+        lines.push(`{ float amp = 0.5; float freq = 1.0;`);
+        for (let o = 0; o < octaves; o++) {
+          lines.push(`  ${vn} += amp * shaderadeVertexValueNoise(${vn}_uv * freq); amp *= 0.5; freq *= 2.0;`);
+        }
+        lines.push(`}`);
+        sourceExprMap.set(`${node.id}::value`, { expr: vn, type: "float" });
+        break;
+      }
+
+      case "Add": {
+        const a = inputExprFor(node, "a", "vec4"), b = inputExprFor(node, "b", "vec4");
+        const vn = varName(node.id, "result");
+        lines.push(`vec4 ${vn} = ${a} + ${b};`);
+        sourceExprMap.set(`${node.id}::result`, { expr: vn, type: "vec4" });
+        break;
+      }
+      case "Subtract": {
+        const a = inputExprFor(node, "a", "vec4"), b = inputExprFor(node, "b", "vec4");
+        const vn = varName(node.id, "result");
+        lines.push(`vec4 ${vn} = ${a} - ${b};`);
+        sourceExprMap.set(`${node.id}::result`, { expr: vn, type: "vec4" });
+        break;
+      }
+      case "Multiply": {
+        const a = inputExprFor(node, "a", "vec4"), b = inputExprFor(node, "b", "vec4");
+        const vn = varName(node.id, "result");
+        lines.push(`vec4 ${vn} = ${a} * ${b};`);
+        sourceExprMap.set(`${node.id}::result`, { expr: vn, type: "vec4" });
+        break;
+      }
+      case "Mix": {
+        const a = inputExprFor(node, "a", "vec4"), b = inputExprFor(node, "b", "vec4"), t = inputExprFor(node, "t", "float");
+        const vn = varName(node.id, "result");
+        lines.push(`vec4 ${vn} = mix(${a}, ${b}, ${t});`);
+        sourceExprMap.set(`${node.id}::result`, { expr: vn, type: "vec4" });
+        break;
+      }
+      case "Power": {
+        const base = inputExprFor(node, "base", "float"), exp = inputExprFor(node, "exp", "float");
+        const vn = varName(node.id, "result");
+        lines.push(`float ${vn} = pow(${base}, ${exp});`);
+        sourceExprMap.set(`${node.id}::result`, { expr: vn, type: "float" });
+        break;
+      }
+      case "Clamp": {
+        const val = inputExprFor(node, "value", "float"), mn = inputExprFor(node, "min", "float"), mx = inputExprFor(node, "max", "float");
+        const vn = varName(node.id, "result");
+        lines.push(`float ${vn} = clamp(${val}, ${mn}, ${mx});`);
+        sourceExprMap.set(`${node.id}::result`, { expr: vn, type: "float" });
+        break;
+      }
+      case "Step": {
+        const edge = inputExprFor(node, "edge", "float"), x = inputExprFor(node, "x", "float");
+        const vn = varName(node.id, "result");
+        lines.push(`float ${vn} = step(${edge}, ${x});`);
+        sourceExprMap.set(`${node.id}::result`, { expr: vn, type: "float" });
+        break;
+      }
+      case "Smoothstep": {
+        const e0 = inputExprFor(node, "edge0", "float"), e1 = inputExprFor(node, "edge1", "float"), x = inputExprFor(node, "x", "float");
+        const vn = varName(node.id, "result");
+        lines.push(`float ${vn} = smoothstep(${e0}, ${e1}, ${x});`);
+        sourceExprMap.set(`${node.id}::result`, { expr: vn, type: "float" });
+        break;
+      }
+      case "Sin": {
+        const x = inputExprFor(node, "x", "float");
+        const vn = varName(node.id, "result");
+        lines.push(`float ${vn} = sin(${x});`);
+        sourceExprMap.set(`${node.id}::result`, { expr: vn, type: "float" });
+        break;
+      }
+      case "Dot": {
+        const a = inputExprFor(node, "a", "vec3"), b = inputExprFor(node, "b", "vec3");
+        const vn = varName(node.id, "result");
+        lines.push(`float ${vn} = dot(${a}, ${b});`);
+        sourceExprMap.set(`${node.id}::result`, { expr: vn, type: "float" });
+        break;
+      }
+      case "Split": {
+        const val = inputExprFor(node, "value", "vec4");
+        const vn = varName(node.id, "v");
+        lines.push(`vec4 ${vn} = ${val};`);
+        sourceExprMap.set(`${node.id}::x`, { expr: `${vn}.x`, type: "float" });
+        sourceExprMap.set(`${node.id}::y`, { expr: `${vn}.y`, type: "float" });
+        sourceExprMap.set(`${node.id}::z`, { expr: `${vn}.z`, type: "float" });
+        sourceExprMap.set(`${node.id}::w`, { expr: `${vn}.w`, type: "float" });
+        break;
+      }
+      case "Combine": {
+        const x = inputExprFor(node, "x", "float"), y = inputExprFor(node, "y", "float");
+        const z = inputExprFor(node, "z", "float"), w = inputExprFor(node, "w", "float");
+        const vn = varName(node.id, "result");
+        lines.push(`vec4 ${vn} = vec4(${x}, ${y}, ${z}, ${w});`);
+        sourceExprMap.set(`${node.id}::result`, { expr: vn, type: "vec4" });
+        break;
+      }
+      case "OneMinus": {
+        const val = inputExprFor(node, "value", "float");
+        const vn = varName(node.id, "result");
+        lines.push(`float ${vn} = 1.0 - ${val};`);
+        sourceExprMap.set(`${node.id}::result`, { expr: vn, type: "float" });
+        break;
+      }
+    }
+  }
+
+  const heightConn = sourceExprMap.get(`${rootLink.source}::${rootLink.sourceHandle}`);
+  const heightExpr = heightConn ? widenExpr(heightConn.expr, heightConn.type, "float") : "0.0";
+
+  const declarations = [
+    ...helperDecls,
+    "float shaderadeVertexHeight(vec3 pos) {",
+    ...lines.map((l) => `  ${l}`),
+    `  return ${heightExpr};`,
+    "}",
+  ];
+  return { ok: true, declarations };
+}
+
 export function compile(graph: ShaderGraph): CompileResult {
   const { nodes, edges } = graph;
   if (nodes.length === 0) {
@@ -166,6 +426,9 @@ export function compile(graph: ShaderGraph): CompileResult {
   // is tracked separately rather than letting a second output node
   // silently overwrite the first the way it used to.
   let outlineNode: Node | null = null;
+  // A third, independent optional root — see compileVertexDisplacement()
+  // above and its use further down, near vertexShader's assembly.
+  let displacementNode: Node | null = null;
 
   // Noise's hash/value-noise helper is emitted at most once regardless of
   // how many Noise nodes are in the graph.
@@ -179,6 +442,7 @@ export function compile(graph: ShaderGraph): CompileResult {
 
     if (def.category === "output") {
       if (node.type === "OutputToonOutline") outlineNode = node;
+      else if (node.type === "VertexDisplacement") displacementNode = node;
       else outputNode = node;
       continue;
     }
@@ -442,6 +706,16 @@ export function compile(graph: ShaderGraph): CompileResult {
 
   if (!outputNode) {
     return { ok: false, error: "No output node found. Add an Output node." };
+  }
+
+  // Compiled early (before uniformDecls below, which reads the `uniforms`
+  // record this may add Time/Float entries to) but otherwise independent
+  // of the color-output logic that follows.
+  let displacementDecls: string[] = [];
+  if (displacementNode) {
+    const result = compileVertexDisplacement(nodes, targetToSource, displacementNode, uniforms);
+    if (!result.ok) return { ok: false, error: result.error };
+    displacementDecls = result.declarations;
   }
 
   const outputData = (outputNode.data ?? {}) as Record<string, unknown>;
@@ -773,17 +1047,53 @@ export function compile(graph: ShaderGraph): CompileResult {
     "objectNormal = (skinMatrix * vec4(objectNormal, 0.0)).xyz;",
   ] : [];
 
+  // Only emitted when a VertexDisplacement node is present — an unaffected
+  // graph's vertex shader text is byte-identical to before this feature
+  // existed. Runs after skinning (so a displaced+skinned combination
+  // displaces the already-skinned position, the more physically sensible
+  // order) and derives a real rippled normal via finite differences rather
+  // than just moving vertices with stale flat normals.
+  const displacementApply = displacementNode ? [
+    "float shaderadeDispEps = 0.1;",
+    "float shaderadeH0 = shaderadeVertexHeight(transformed);",
+    "float shaderadeHX = shaderadeVertexHeight(transformed + vec3(shaderadeDispEps, 0.0, 0.0));",
+    "float shaderadeHZ = shaderadeVertexHeight(transformed + vec3(0.0, 0.0, shaderadeDispEps));",
+    "vec3 shaderadeTanX = vec3(shaderadeDispEps, shaderadeHX - shaderadeH0, 0.0);",
+    "vec3 shaderadeTanZ = vec3(0.0, shaderadeHZ - shaderadeH0, shaderadeDispEps);",
+    "vec3 shaderadeRippleNormal = normalize(cross(shaderadeTanZ, shaderadeTanX));",
+    "transformed += objectNormal * shaderadeH0;",
+    "objectNormal = shaderadeRippleNormal;",
+  ] : [];
+
   const vertexShader = [
     ...skinningDecls,
     "varying vec2 vUv;",
     "varying vec3 vNormal;",
     "varying vec3 vWorldPos;",
     "varying vec3 vViewDir;",
+    // Only needed once uniforms can appear in the vertex shader (i.e. once
+    // displacement exists), gated the same as uniformDecls below rather
+    // than added unconditionally — keeps every graph without displacement
+    // byte-identical to before this feature existed. GLSL requires a
+    // uniform's precision to match across every stage that declares it, and
+    // the fragment shader always declares its own "precision mediump
+    // float;" — omitting this here (the vertex shader's implicit default is
+    // highp) caused exactly that link error the one time this was tried
+    // without it.
+    ...(displacementNode ? ["precision mediump float;"] : []),
+    // Only declared when needed (displacement's Time/Float/etc. nodes) —
+    // an unused-but-declared uniform is harmless GLSL, but there's no
+    // reason to add the noise otherwise. Must come before displacementDecls
+    // below: GLSL requires globals declared before whatever references them,
+    // and shaderadeVertexHeight() (in displacementDecls) reads these.
+    ...(displacementNode ? [uniformDecls] : []),
+    ...displacementDecls,
     "void main() {",
     "  vUv = uv;",
     "  vec3 transformed = position;",
     "  vec3 objectNormal = normal;",
     ...skinningApply.map((l) => `  ${l}`),
+    ...displacementApply.map((l) => `  ${l}`),
     // True world-space normal (assumes uniform scale — modelMatrix's
     // upper-left 3x3 is not inverse-transposed here, which would matter
     // for non-uniform scale). Previously used `normalMatrix`, which is

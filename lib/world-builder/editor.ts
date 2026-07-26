@@ -1522,6 +1522,12 @@ async function loadWorldFromInputs() {
       updateAssetList();
       updateSceneOutliner();
       updateDiagnostics();
+      // The Inspector's "Custom (Shaderade)" dropdown reads state.shaderCatalog
+      // directly, which this call just populated — if an object was already
+      // selected before this fetch resolved, its panel rendered with an empty
+      // catalog and nothing else re-renders it, so it'd show "No saved
+      // shaders" forever until reselected. Refresh it now that data exists.
+      if (state.selectedObjectId) updateInspector();
       updateStatus(
         loadedRemoteCatalog
           ? `Loaded ${state.layout.name} and ${state.assetCatalog.length} assets`

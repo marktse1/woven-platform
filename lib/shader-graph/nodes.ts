@@ -411,6 +411,21 @@ export const NODE_TYPES: NodeTypeDef[] = [
       { key: "thickness", label: "Thickness", type: "number", min: 0, max: 0.2, step: 0.001, default: 0.02 },
     ],
   },
+  // A third, independent root a graph can optionally have alongside a main
+  // color output and/or an outline — actually moves geometry (e.g. water
+  // waves) instead of just shading it. Only a restricted, vertex-stage-safe
+  // subset of node types may feed `height` (see compiler.ts's
+  // compileVertexDisplacement); anything else is a clear compile error
+  // rather than silently-wrong GLSL. When absent, the compiler's vertex
+  // shader output is byte-identical to today's.
+  {
+    type: "VertexDisplacement",
+    label: "Vertex Displacement",
+    category: "output",
+    inputs: [{ id: "height", label: "Height", type: "float" }],
+    outputs: [],
+    defaultData: {},
+  },
 ];
 
 export const NODE_TYPE_MAP: Map<string, NodeTypeDef> = new Map(

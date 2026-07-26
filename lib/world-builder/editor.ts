@@ -166,7 +166,15 @@ type LightingSettings = {
 // hundreds of `function foo() {...}` declarations further down are hoisted,
 // so they remain callable from anywhere in this scope regardless of where
 // they're textually defined relative to the boot sequence at the bottom.
-export function initWorldBuilder(container: HTMLDivElement, userId: string): () => void {
+export type WorldBuilderHandle = {
+  dispose: () => void;
+  /** Places a creator_assets id into the world at the current orbit
+   * target's position — called by the global "My Assets" drawer's onLoad
+   * handler (see WorldBuilderViewer.tsx / ActiveLoaderContext). */
+  placeAssetById: (assetId: string) => void;
+};
+
+export function initWorldBuilder(container: HTMLDivElement, userId: string): WorldBuilderHandle {
   const appRoot = container;
 
   const trackedListeners: Array<{ target: Window; type: string; listener: EventListenerOrEventListenerObject }> = [];
@@ -859,9 +867,6 @@ const exportButton = topbar.querySelector<HTMLButtonElement>("#export-world")!;
 const statusEl = topbar.querySelector<HTMLSpanElement>("#status")!;
 const diagnosticsEl = topbar.querySelector<HTMLSpanElement>("#diagnostics")!;
 
-const assetList = ui.assetList;
-const assetSearch = ui.assetSearch;
-const assetCategory = ui.assetCategory;
 const waterControls = {
   opacity: ui.waterOpacity,
   reflectivity: ui.waterReflectivity,
@@ -3462,140 +3467,66 @@ function applySkyAndWater() {
   }
 }
 
-function updateAssetList() {
-  const query = assetSearch.value.trim().toLowerCase();
-  const categories = [...new Set(state.assetCatalog.map((asset) => asset.category || "Root"))].sort((a, b) => a.localeCompare(b));
-  const previousCategory = assetCategory.value;
-  assetCategory.innerHTML = `<option value="">All categories</option>${categories
-    .map((category) => `<option value="${category}">${category}</option>`)
-    .join("")}`;
-  assetCategory.value = categories.includes(previousCategory) ? previousCategory : "";
-  const selectedCategory = assetCategory.value;
-  assetList.innerHTML = "";
-  const assets = state.assetCatalog.filter((asset) => {
-    if (selectedCategory && asset.category !== selectedCategory) return false;
-    if (!query) return true;
-    return `${asset.category}/${asset.name}/${asset.url}`.toLowerCase().includes(query);
-  });
-
-  let lastCategory = "";
-  for (const asset of assets) {
-    if (!selectedCategory && asset.category !== lastCategory) {
-      lastCategory = asset.category;
-      const heading = document.createElement("div");
-      heading.className = "asset-folder-heading";
-      heading.textContent = lastCategory || "Root";
-      assetList.appendChild(heading);
-    }
-    const row = document.createElement("div");
-    row.className = "asset-card-row";
-    const button = document.createElement("button");
-    button.className = "asset-card" + (state.selectedAssetUrl === asset.url ? " is-active" : "");
-    button.draggable = true;
-    const tagBadge = asset.buildingPart ? ` <span class="asset-tag-badge">${asset.buildingPart.slot}</span>` : "";
-    button.innerHTML = `<strong>${asset.name}</strong><span>${asset.category}</span><span>${asset.url}${tagBadge}</span>`;
-    button.addEventListener("click", () => {
-      state.selectedAssetUrl = asset.url;
-      updateAssetList();
-      updateStatus(`Selected ${asset.name}. Drag onto the world to place it.`);
-    });
-    button.addEventListener("dragstart", (event) => {
-      state.selectedAssetUrl = asset.url;
-      if (event.dataTransfer) {
-        event.dataTransfer.effectAllowed = "copy";
-        event.dataTransfer.setData("text/plain", asset.url);
-      }
-      updateStatus(`Dragging ${asset.name}. Drop onto terrain to place it.`);
-    });
-    row.appendChild(button);
-
-    // Building-part tagging — only meaningful for real creator_assets
-    // (kind "asset"), not the built-in light catalog entries.
-    if ((asset.kind ?? "asset") === "asset") {
-      const tagToggle = document.createElement("button");
-      tagToggle.className = "asset-tag-toggle";
-      tagToggle.type = "button";
-      tagToggle.title = "Tag as a building part (slot + style)";
-      tagToggle.textContent = "🏷";
-      tagToggle.addEventListener("click", (event) => {
-        event.stopPropagation();
-        const existingForm = row.querySelector(".asset-tag-form");
-        if (existingForm) {
-          existingForm.remove();
-          return;
-        }
-        row.appendChild(buildAssetTagForm(asset));
-      });
-      row.appendChild(tagToggle);
-    }
-
-    assetList.appendChild(row);
-  }
-
-  if (assets.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "status";
-    empty.textContent = state.assetCatalog.length === 0 ? "No assets loaded." : "No assets match this search.";
-    assetList.appendChild(empty);
-  }
-
-}
-
 const BUILDING_PART_SLOTS: BuildingPartSlot[] = [
   "ground", "mezzanine", "floor", "top", "roof", "window",
   "greeble-power", "greeble-antenna", "greeble-ac", "greeble-phone",
 ];
 
-// Small inline tag-editor for one asset card — lets you set the
-// slot/style used by the Building tool's floor-piece palette, writing
-// straight to that creator_assets row's meta.buildingPart (see
-// updateAssetMeta in lib/assets.ts). Rebuilds the whole asset list on
-// save so the new tag/badge shows immediately everywhere it's used.
-function buildAssetTagForm(asset: AssetDefinition): HTMLElement {
-  const form = document.createElement("div");
-  form.className = "asset-tag-form";
-  form.addEventListener("click", (event) => event.stopPropagation());
-
-  const slotSelect = document.createElement("select");
-  slotSelect.innerHTML = `<option value="">Not a building part</option>${BUILDING_PART_SLOTS
-    .map((slot) => `<option value="${slot}"${asset.buildingPart?.slot === slot ? " selected" : ""}>${slot}</option>`)
-    .join("")}`;
-
-  const styleInput = document.createElement("input");
-  styleInput.type = "text";
-  styleInput.placeholder = "style (e.g. industrial, parisian)";
-  styleInput.value = asset.buildingPart?.style ?? "";
-
-  const saveButton = document.createElement("button");
-  saveButton.type = "button";
-  saveButton.textContent = "Save tag";
-  saveButton.addEventListener("click", async () => {
-    const slot = slotSelect.value as BuildingPartSlot | "";
-    const style = styleInput.value.trim();
-    saveButton.disabled = true;
-    try {
-      if (!slot) {
-        await updateAssetMeta(asset.url, { buildingPart: null });
-      } else {
-        const meta: BuildingPartMeta = { slot, style };
-        await updateAssetMeta(asset.url, { buildingPart: meta });
-      }
-      await loadAssetCatalog("");
-      updateAssetList();
-      updateStatus(`Tagged "${asset.name}".`);
-    } catch (error) {
-      console.warn("Failed to save building-part tag", error);
-      updateStatus(`Could not save tag for "${asset.name}".`);
-    } finally {
-      saveButton.disabled = false;
-    }
-  });
-
-  form.appendChild(slotSelect);
-  form.appendChild(styleInput);
-  form.appendChild(saveButton);
-  return form;
+// Replaces the old per-card 🏷 grid (removed along with the rest of the
+// internal Asset Shelf — general browsing/placement now goes through the
+// global "My Assets" drawer, see WorldBuilderViewer.tsx). This just
+// refreshes the compact "Tag Assets" <select> in the Building Tool panel
+// with the current catalog, showing each asset's existing tag if any.
+// Kept the name updateAssetList() (rather than renaming) so none of its
+// several existing call sites needed to change.
+function updateAssetList() {
+  const previousValue = ui.buildingTagAsset.value;
+  const assets = state.assetCatalog.filter((asset) => (asset.kind ?? "asset") === "asset");
+  ui.buildingTagAsset.innerHTML = assets.length
+    ? assets
+        .map((asset) => {
+          const tag = asset.buildingPart ? ` [${asset.buildingPart.slot}${asset.buildingPart.style ? `/${asset.buildingPart.style}` : ""}]` : "";
+          return `<option value="${asset.url}">${asset.name}${tag}</option>`;
+        })
+        .join("")
+    : `<option value="">No assets loaded</option>`;
+  if (assets.some((asset) => asset.url === previousValue)) ui.buildingTagAsset.value = previousValue;
+  updateBuildingTagFormForSelection();
 }
+
+function updateBuildingTagFormForSelection() {
+  const asset = state.assetCatalog.find((item) => item.url === ui.buildingTagAsset.value);
+  ui.buildingTagSlot.value = asset?.buildingPart?.slot ?? "";
+  ui.buildingTagStyle.value = asset?.buildingPart?.style ?? "";
+}
+
+async function saveBuildingTag() {
+  const assetId = ui.buildingTagAsset.value;
+  const asset = state.assetCatalog.find((item) => item.url === assetId);
+  if (!asset) return;
+  const slot = ui.buildingTagSlot.value as BuildingPartSlot | "";
+  const style = ui.buildingTagStyle.value.trim();
+  ui.buildingTagSave.disabled = true;
+  try {
+    if (!slot) {
+      await updateAssetMeta(assetId, { buildingPart: null });
+    } else {
+      const meta: BuildingPartMeta = { slot, style };
+      await updateAssetMeta(assetId, { buildingPart: meta });
+    }
+    await loadAssetCatalog("");
+    updateAssetList();
+    ui.buildingTagAsset.value = assetId;
+    updateBuildingTagFormForSelection();
+    updateStatus(`Tagged "${asset.name}".`);
+  } catch (error) {
+    console.warn("Failed to save building-part tag", error);
+    updateStatus(`Could not save tag for "${asset.name}".`);
+  } finally {
+    ui.buildingTagSave.disabled = false;
+  }
+}
+
 
 function updateSceneOutliner() {
   sceneOutliner.innerHTML = "";
@@ -4386,6 +4317,7 @@ async function refreshLevelPicker() {
 
 function updateStatus(text: string, isError = false) {
   statusEl.textContent = text;
+  statusEl.title = text; // topbar keeps this to one line (CSS) — full text still available on hover
   statusEl.style.color = isError ? "#fca5a5" : "#94a3b8";
 }
 
@@ -4395,12 +4327,17 @@ function updateDiagnostics() {
   const assetCount = state.assetCatalog?.length ?? 0;
   const terrainMeshCount = terrainMeshes.length;
   const waterMeshCount = waterMeshes.length;
-  diagnosticsEl.textContent = `manifest=${state.manifestUrl} chunks=${worldLoadReport.manifestChunks} terrain=${terrainCount} objects=${objectCount} assets=${assetCount} meshes=${terrainMeshCount} water=${waterMeshCount} failed=${worldLoadReport.failedTerrainChunks}`;
+  const diagnosticsText = `manifest=${state.manifestUrl} chunks=${worldLoadReport.manifestChunks} terrain=${terrainCount} objects=${objectCount} assets=${assetCount} meshes=${terrainMeshCount} water=${waterMeshCount} failed=${worldLoadReport.failedTerrainChunks}`;
+  diagnosticsEl.textContent = diagnosticsText;
+  diagnosticsEl.title = diagnosticsText;
 }
 
 function bindUi() {
-  assetSearch.addEventListener("input", updateAssetList);
-  assetCategory.addEventListener("change", updateAssetList);
+  ui.buildingTagSlot.innerHTML = `<option value="">Not a building part</option>${BUILDING_PART_SLOTS
+    .map((slot) => `<option value="${slot}">${slot}</option>`)
+    .join("")}`;
+  ui.buildingTagAsset.addEventListener("change", updateBuildingTagFormForSelection);
+  ui.buildingTagSave.addEventListener("click", () => void saveBuildingTag());
 
   document.querySelectorAll<HTMLButtonElement>("[data-toggle-panel]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -4632,7 +4569,28 @@ function applyPanelSizes() {
   if (worldPanel) {
     const collapsed = worldPanel.classList.contains("is-collapsed");
     worldPanel.style.width = collapsed ? "132px" : `${panelSizes.worldWidth}px`;
-    worldPanel.style.height = collapsed ? "auto" : `${panelSizes.worldHeight}px`;
+    // Position below the Inspector panel's actual rendered bottom edge
+    // instead of the CSS default (both independently anchored to the
+    // viewport, right:0 — which overlapped for most of the screen since
+    // Inspector sits top:0 and World sits bottom:0 with near-full height).
+    // Both panels are absolutely positioned within .shell, so offsetTop/
+    // offsetHeight (relative to that same containing block) is the right
+    // coordinate space here, not viewport-relative values.
+    if (collapsed) {
+      worldPanel.style.top = "auto";
+      worldPanel.style.bottom = "16px";
+      worldPanel.style.height = "auto";
+    } else if (inspectorPanel) {
+      const gap = 10;
+      const top = inspectorPanel.offsetTop + inspectorPanel.offsetHeight + gap;
+      worldPanel.style.top = `${top}px`;
+      worldPanel.style.bottom = "auto";
+      const shell = worldPanel.offsetParent as HTMLElement | null;
+      const available = shell ? shell.clientHeight - top - 6 : panelSizes.worldHeight;
+      worldPanel.style.height = `${Math.max(200, Math.min(panelSizes.worldHeight, available))}px`;
+    } else {
+      worldPanel.style.height = `${panelSizes.worldHeight}px`;
+    }
   }
 }
 
@@ -5280,6 +5238,11 @@ function onResize() {
   renderer.setSize(width, height);
   resizeShaderBallViewer();
   resizeWaterShaderViewer();
+  // World panel's position/height (see applyPanelSizes) is computed from
+  // concrete pixel measurements, not a live CSS calc() — needs recomputing
+  // on viewport resize so it doesn't drift below the viewport or back into
+  // overlapping the Inspector panel.
+  applyPanelSizes();
 }
 
 function initShaderBallViewer() {
@@ -5624,6 +5587,18 @@ function onPointerUp() {
   }
 }
 
+// Entry point for the global "My Assets" drawer (ActiveLoaderContext) —
+// same placement logic drag-and-drop already used (placeObjectAt reads
+// state.selectedAssetUrl), just triggered by a click in the drawer instead
+// of a drag gesture, and defaulting to the current orbit target instead of
+// a drop point on the canvas (matches the Building Tool's own default
+// placement, e.g. handleCreateBuildingClick).
+function placeAssetById(assetId: string) {
+  state.selectedAssetUrl = assetId;
+  const groundY = sampleTerrainHeight(state.layout.terrainChunks ?? [], controls.target.x, controls.target.z, controls.target.y);
+  placeObjectAt(new THREE.Vector3(controls.target.x, groundY, controls.target.z));
+}
+
 function placeObjectAt(point: THREE.Vector3) {
   if (!state.selectedAssetUrl) return;
   const selectedAsset = state.assetCatalog.find((asset) => asset.url === state.selectedAssetUrl);
@@ -5793,10 +5768,6 @@ function buildUi() {
       <div class="body">
         <div class="panel-subhead">Placed Objects</div>
         <div id="scene-outliner" class="scene-outliner"></div>
-        <div class="panel-subhead">Asset Shelf</div>
-        <select id="asset-category"></select>
-        <input id="asset-search" type="text" placeholder="Search assets folder" />
-        <div id="asset-list" class="asset-list"></div>
       </div>
       <div class="panel-resize-handle panel-resize-x" data-resize-panel="assets" data-resize-axis="x"></div>
     </section>
@@ -5832,6 +5803,33 @@ function buildUi() {
             <button id="transform-rotate" type="button">Rotate</button>
             <button id="transform-scale" type="button">Scale</button>
           </div>
+          <div class="panel-subhead">Building Tool</div>
+          <label><span>Build style</span><input id="building-style" type="text" placeholder="industrial, parisian, ..." /></label>
+          <div class="panel-subhead">Tag Assets</div>
+          <label><span>Asset</span><select id="building-tag-asset"></select></label>
+          <label><span>Slot</span><select id="building-tag-slot"></select></label>
+          <label><span>Tag style</span><input id="building-tag-style" type="text" placeholder="industrial, parisian, ..." /></label>
+          <div class="btn-row">
+            <button id="building-tag-save" type="button">Save Tag</button>
+          </div>
+          <div class="btn-row">
+            <button id="building-draft-start" type="button">Start Building Here</button>
+            <button id="building-draft-entrance" type="button" disabled>Cycle Entrance</button>
+          </div>
+          <div class="btn-row">
+            <button id="building-draft-finish" type="button" disabled>Finish Building</button>
+            <button id="building-draft-cancel" type="button" disabled>Cancel</button>
+          </div>
+          <div id="building-status" class="status">Tag ground/floor/roof pieces above, set a style, then "Start Building Here" and click the terrain to place the ground floor. Drag the orange handle up to add floors.</div>
+          <div class="panel-subhead">Manual Floor Picker</div>
+          <label><span>Floors (incl. ground + top)</span><input id="building-floor-count" type="number" min="2" max="30" step="1" value="4" /></label>
+          <div class="btn-row">
+            <button id="building-generate-slots" type="button">Choose Pieces</button>
+          </div>
+          <div id="building-slots" class="stack"></div>
+          <div class="btn-row">
+            <button id="building-create" type="button" disabled>Create Building</button>
+          </div>
           <div class="panel-subhead">Terrain Tools</div>
           <div class="btn-row">
             <button id="terrain-select" type="button">Select</button>
@@ -5851,26 +5849,6 @@ function buildUi() {
           <div class="btn-row">
             <button id="terrain-new-road" type="button">New Road</button>
             <button id="terrain-delete-road" type="button">Delete Road</button>
-          </div>
-          <div class="panel-subhead">Building Tool</div>
-          <label><span>Style</span><input id="building-style" type="text" placeholder="industrial, parisian, ..." /></label>
-          <div class="btn-row">
-            <button id="building-draft-start" type="button">Start Building Here</button>
-            <button id="building-draft-entrance" type="button" disabled>Cycle Entrance</button>
-          </div>
-          <div class="btn-row">
-            <button id="building-draft-finish" type="button" disabled>Finish Building</button>
-            <button id="building-draft-cancel" type="button" disabled>Cancel</button>
-          </div>
-          <div id="building-status" class="status">Tag ground/floor/roof pieces (🏷), set a style, then "Start Building Here" and click the terrain to place the ground floor. Drag the orange handle up to add floors.</div>
-          <div class="panel-subhead">Manual Floor Picker</div>
-          <label><span>Floors (incl. ground + top)</span><input id="building-floor-count" type="number" min="2" max="30" step="1" value="4" /></label>
-          <div class="btn-row">
-            <button id="building-generate-slots" type="button">Choose Pieces</button>
-          </div>
-          <div id="building-slots" class="stack"></div>
-          <div class="btn-row">
-            <button id="building-create" type="button" disabled>Create Building</button>
           </div>
           <div class="shader-shelf terrain-shader-shelf">
             <div class="panel-subhead">Terrain Shader</div>
@@ -6040,10 +6018,7 @@ function buildUi() {
     root,
     viewport: root,
     topbar,
-    assetList: shell.querySelector<HTMLDivElement>("#asset-list")!,
     sceneOutliner: shell.querySelector<HTMLDivElement>("#scene-outliner")!,
-    assetSearch: shell.querySelector<HTMLInputElement>("#asset-search")!,
-    assetCategory: shell.querySelector<HTMLSelectElement>("#asset-category")!,
     inspector: shell.querySelector<HTMLDivElement>("#inspector")!,
     timeSlider: shell.querySelector<HTMLInputElement>("#time-slider")!,
     timePlay: shell.querySelector<HTMLButtonElement>("#time-play")!,
@@ -6076,6 +6051,10 @@ function buildUi() {
     newRoad: shell.querySelector<HTMLButtonElement>("#terrain-new-road")!,
     deleteRoad: shell.querySelector<HTMLButtonElement>("#terrain-delete-road")!,
     buildingStyle: shell.querySelector<HTMLInputElement>("#building-style")!,
+    buildingTagAsset: shell.querySelector<HTMLSelectElement>("#building-tag-asset")!,
+    buildingTagSlot: shell.querySelector<HTMLSelectElement>("#building-tag-slot")!,
+    buildingTagStyle: shell.querySelector<HTMLInputElement>("#building-tag-style")!,
+    buildingTagSave: shell.querySelector<HTMLButtonElement>("#building-tag-save")!,
     buildingFloorCount: shell.querySelector<HTMLInputElement>("#building-floor-count")!,
     buildingGenerateSlots: shell.querySelector<HTMLButtonElement>("#building-generate-slots")!,
     buildingSlots: shell.querySelector<HTMLDivElement>("#building-slots")!,
@@ -6150,7 +6129,7 @@ function normalizeSkyGradientInput(next: SkyGradientSettings): SkyGradientSettin
   return normalizeSkyGradient(next);
 }
 
-return function cleanup() {
+const cleanup = function cleanup() {
   disposed = true;
   cancelAnimationFrame(rafId);
   containerResizeObserver.disconnect();
@@ -6172,4 +6151,6 @@ return function cleanup() {
   renderer.dispose();
   appRoot.innerHTML = "";
 };
+
+return { dispose: cleanup, placeAssetById };
 }

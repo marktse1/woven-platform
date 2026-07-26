@@ -215,30 +215,6 @@
   border-bottom-right-radius: 6px;
 }
 
-.wb-root .asset-list {
-  display: grid;
-  gap: 6px;
-  align-content: start;
-  min-height: 0;
-  max-height: none;
-  flex: 1;
-  overflow: auto;
-}
-
-.wb-root .asset-folder-heading {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  padding: 5px 7px;
-  border-radius: 5px;
-  background: rgb(7 10 16 / 0.96);
-  color: #9aa8bb;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-
 .wb-root .panel-subhead {
   color: #9aa8bb;
   font-size: 11px;
@@ -317,102 +293,6 @@
   background: rgb(20 38 56 / 0.96);
 }
 
-.wb-root .asset-card {
-  display: grid;
-  gap: 4px;
-  padding: 8px;
-  border: 1px solid rgb(255 255 255 / 0.1);
-  border-radius: 6px;
-  background: rgb(16 22 32 / 0.96);
-  text-align: left;
-  color: #e7edf5;
-  cursor: pointer;
-}
-
-.wb-root .asset-card.is-active {
-  border-color: #56a6e8;
-  box-shadow: 0 0 0 1px rgb(86 166 232 / 0.22) inset;
-  background: rgb(20 38 56 / 0.96);
-}
-
-.wb-root .asset-card span {
-  overflow-wrap: anywhere;
-  color: #9aa8bb;
-  font-size: 11px;
-}
-
-.wb-root .asset-card-row {
-  display: flex;
-  align-items: stretch;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.wb-root .asset-card-row .asset-card {
-  flex: 1;
-  min-width: 0;
-}
-
-.wb-root .asset-tag-toggle {
-  flex-shrink: 0;
-  border: 1px solid rgb(255 255 255 / 0.1);
-  border-radius: 6px;
-  background: rgb(16 22 32 / 0.96);
-  color: #9aa8bb;
-  cursor: pointer;
-  font-size: 13px;
-  padding: 0 8px;
-}
-
-.wb-root .asset-tag-toggle:hover {
-  color: #e7edf5;
-  border-color: #56a6e8;
-}
-
-.wb-root .asset-tag-badge {
-  display: inline-block;
-  margin-left: 4px;
-  padding: 1px 5px;
-  border-radius: 999px;
-  background: rgb(196 123 232 / 0.18);
-  color: #c47be8;
-  font-size: 10px;
-}
-
-.wb-root .asset-tag-form {
-  display: flex;
-  flex: 1 1 100%;
-  flex-direction: column;
-  gap: 4px;
-  width: 100%;
-  padding: 6px 8px;
-  border: 1px solid rgb(196 123 232 / 0.3);
-  border-radius: 6px;
-  background: rgb(16 22 32 / 0.96);
-  margin-top: -2px;
-}
-
-.wb-root .asset-tag-form select,
-.wb-root .asset-tag-form input {
-  background: rgb(10 14 20 / 0.9);
-  border: 1px solid rgb(255 255 255 / 0.12);
-  border-radius: 4px;
-  color: #e7edf5;
-  font-size: 11px;
-  padding: 4px 6px;
-}
-
-.wb-root .asset-tag-form button {
-  align-self: flex-end;
-  border: 1px solid #c47be8;
-  border-radius: 4px;
-  background: rgb(196 123 232 / 0.18);
-  color: #c47be8;
-  font-size: 11px;
-  padding: 3px 8px;
-  cursor: pointer;
-}
-
 .wb-root .stack {
   display: grid;
   gap: 8px;
@@ -453,6 +333,17 @@
   color: #9aa8bb;
   font-size: 12px;
   line-height: 1.35;
+}
+
+/* .status is reused everywhere (panel empty-states, building tool status,
+   etc.) where wrapping is fine or wanted — only the topbar's #status/
+   #diagnostics need to stay single-line, since long messages there were
+   stretching the whole topbar taller instead of just truncating. */
+.wb-root .topbar .status {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .wb-root .btn-row {

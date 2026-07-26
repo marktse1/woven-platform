@@ -247,6 +247,33 @@
   text-transform: uppercase;
 }
 
+.wb-root .building-slot-row {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.wb-root .building-slot-row:has(select + select) {
+  grid-template-columns: 90px 80px 1fr;
+}
+
+.wb-root .building-slot-row span {
+  color: #d3dbe8;
+  font-size: 11px;
+}
+
+.wb-root .building-slot-row select {
+  background: rgb(10 14 20 / 0.9);
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 4px;
+  color: #e7edf5;
+  font-size: 11px;
+  padding: 4px 6px;
+  min-width: 0;
+}
+
 .wb-root .scene-outliner {
   display: grid;
   gap: 4px;
@@ -312,6 +339,78 @@
   overflow-wrap: anywhere;
   color: #9aa8bb;
   font-size: 11px;
+}
+
+.wb-root .asset-card-row {
+  display: flex;
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.wb-root .asset-card-row .asset-card {
+  flex: 1;
+  min-width: 0;
+}
+
+.wb-root .asset-tag-toggle {
+  flex-shrink: 0;
+  border: 1px solid rgb(255 255 255 / 0.1);
+  border-radius: 6px;
+  background: rgb(16 22 32 / 0.96);
+  color: #9aa8bb;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0 8px;
+}
+
+.wb-root .asset-tag-toggle:hover {
+  color: #e7edf5;
+  border-color: #56a6e8;
+}
+
+.wb-root .asset-tag-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: rgb(196 123 232 / 0.18);
+  color: #c47be8;
+  font-size: 10px;
+}
+
+.wb-root .asset-tag-form {
+  display: flex;
+  flex: 1 1 100%;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid rgb(196 123 232 / 0.3);
+  border-radius: 6px;
+  background: rgb(16 22 32 / 0.96);
+  margin-top: -2px;
+}
+
+.wb-root .asset-tag-form select,
+.wb-root .asset-tag-form input {
+  background: rgb(10 14 20 / 0.9);
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 4px;
+  color: #e7edf5;
+  font-size: 11px;
+  padding: 4px 6px;
+}
+
+.wb-root .asset-tag-form button {
+  align-self: flex-end;
+  border: 1px solid #c47be8;
+  border-radius: 4px;
+  background: rgb(196 123 232 / 0.18);
+  color: #c47be8;
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
 }
 
 .wb-root .stack {

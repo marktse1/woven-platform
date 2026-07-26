@@ -23,6 +23,10 @@ import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.j
 import JSZip from "jszip";
 import {
   AssetDefinition,
+  BuildingFloorSpec,
+  BuildingPartMeta,
+  BuildingPartSlot,
+  BuildingSpec,
   LevelLayout,
   PlacedObjectData,
   RoadShaderSettings,
@@ -47,7 +51,7 @@ import {
   TERRAIN_SPACING,
   terrainBrushWeight,
 } from "./schema";
-import { getAsset, listVisibleAssets, signedAssetUrl, type AssetRow } from "@/lib/assets";
+import { getAsset, listVisibleAssets, signedAssetUrl, updateAssetMeta, type AssetRow } from "@/lib/assets";
 import { loadLevel, saveLevel, listVisibleLevels, type WorldLevelRow } from "./levels";
 
 const STORAGE_KEY = "woven-threejs-world-builder-layout";
@@ -106,6 +110,26 @@ type RuntimeState = {
   isSculpting: boolean;
   activeRoadSplineId: string | null;
   selectedRoadPoint: { roadId: string; pointIndex: number } | null;
+  // Building drag-to-extrude tool: armBuildingDraft is true between
+  // clicking "Start Building Here" and the next terrain click (which places
+  // the ground floor + gizmo); draftBuilding then holds the in-progress
+  // building until the gizmo drag is released.
+  armBuildingDraft: boolean;
+  draftBuilding: DraftBuildingState | null;
+};
+
+type DraftBuildingState = {
+  objectId: string;
+  basePosition: [number, number, number];
+  rotationYDeg: number;
+  style: string;
+  groundAssetIds: string[]; // every tagged "ground" piece — the entrance-style choices to cycle through
+  groundVariantIndex: number;
+  floorAssetId: string;
+  roofAssetId: string;
+  floorHeight: number; // measured once at draft start — the snap increment
+  floorCount: number; // interior floors added so far, beyond the fixed ground
+  dragging: boolean;
 };
 
 type WorldLoadReport = {
@@ -191,6 +215,8 @@ const state: RuntimeState = {
   isSculpting: false,
   activeRoadSplineId: null,
   selectedRoadPoint: null,
+  armBuildingDraft: false,
+  draftBuilding: null,
 };
 
 const worldLoadReport: WorldLoadReport = {
@@ -656,6 +682,20 @@ const brushCursor = new THREE.Mesh(
 brushCursor.rotation.x = -Math.PI / 2;
 brushCursor.visible = false;
 scene.add(brushCursor);
+
+// Draggable handle for the building drag-to-extrude tool — grab and drag
+// up/down to add/remove floors (see startBuildingDraft/handleBuildingDragMove).
+// A simple bright cone rather than a full TransformControls-style widget:
+// this drags along one implicit axis (height) with a very different
+// semantic (add a floor per snap) from a generic move/rotate/scale gizmo,
+// so reusing TransformControls here would fight its own axis-drag model
+// more than it would help.
+const buildingDragGizmo = new THREE.Mesh(
+  new THREE.ConeGeometry(0.35, 0.9, 16),
+  new THREE.MeshBasicMaterial({ color: 0xe8875a })
+);
+buildingDragGizmo.visible = false;
+scene.add(buildingDragGizmo);
 
 const waterMaterial = new THREE.ShaderMaterial({
   transparent: true,
@@ -1583,6 +1623,7 @@ async function loadAssetCatalog(_url: string) {
       .filter((row) => row.format?.toLowerCase() === "glb")
       .map((row) => {
         assetRowById.set(row.id, row);
+        const buildingPart = row.meta?.buildingPart as BuildingPartMeta | undefined;
         return {
           category: row.clerk_user_id === userId ? "My Assets" : "Shared / Public",
           name: row.name,
@@ -1594,6 +1635,7 @@ async function loadAssetCatalog(_url: string) {
           fileName: row.name,
           sizeBytes: row.file_bytes,
           triangleCount: row.poly_count ?? undefined,
+          buildingPart: buildingPart && buildingPart.slot && buildingPart.style ? buildingPart : undefined,
         };
       });
     state.assetCatalog = mergeAssetCatalogs(definitions, LIGHT_ASSET_CATALOG);
@@ -2375,9 +2417,489 @@ function waterPresenceAt(chunks: TerrainChunkData[], x: number, z: number, water
   return best;
 }
 
+// Shared post-load registration for any composed instance (a plain asset's
+// single clone, or a building's multi-piece group) — position/rotate/scale
+// it, tag every descendant for picking, normalize materials/shadows, apply
+// the object's shader mode, and register it with the scene/selection/
+// transform-gizmo bookkeeping every spawned object needs.
+function finalizeSpawnedInstance(object: PlacedObjectData, instance: THREE.Object3D) {
+  instance.position.set(object.position[0], object.position[1], object.position[2]);
+  instance.rotation.set(
+    THREE.MathUtils.degToRad(object.rotation[0]),
+    THREE.MathUtils.degToRad(object.rotation[1]),
+    THREE.MathUtils.degToRad(object.rotation[2])
+  );
+  instance.scale.set(object.scale[0], object.scale[1], object.scale[2]);
+  instance.userData.objectId = object.id;
+  instance.userData.definition = object;
+  instance.traverse((node) => {
+    node.userData.objectId = object.id;
+    node.userData.definition = object;
+    const mesh = node as THREE.Mesh;
+    if (mesh.isMesh) {
+      cloneImportedMeshMaterials(mesh);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      normalizeImportedMeshMaterial(mesh);
+      assignStandardMaterials(mesh);
+    }
+  });
+  applyObjectShaderMode(object, instance);
+  objectRoot.add(instance);
+  objectMeshes.set(object.id, instance);
+  selectableMeshes.push(instance);
+  if (state.selectedObjectId === object.id) {
+    transformControls.attach(instance);
+  }
+}
+
+// Loads every floor piece (+ roof) of a building and measures each one's
+// own bounding-box height, returning the running top-of-floor Y for every
+// piece in order (floors then roof) plus a rough footprint radius (the
+// largest piece's half-width/depth) — used both to stack the visible
+// building and to place greebles at sensible heights/offsets, so there's
+// one shared source of truth for the stacking math instead of two
+// independently-computed copies.
+async function measureBuildingLayout(building: BuildingSpec) {
+  const assetIds = [...building.floors.map((floor) => floor.assetId), building.roofAssetId];
+  const templates = await Promise.all(assetIds.map((assetId) => loadTemplate(assetId)));
+  const topYs: number[] = [];
+  let footprintRadius = 4; // fallback for a degenerate/empty bounding box
+  let y = 0;
+  for (const template of templates) {
+    const box = new THREE.Box3().setFromObject(template);
+    if (!box.isEmpty()) {
+      const size = box.getSize(new THREE.Vector3());
+      footprintRadius = Math.max(footprintRadius, Math.max(size.x, size.z) / 2);
+      y += size.y;
+    }
+    topYs.push(y);
+  }
+  return { assetIds, templates, topYs, totalHeight: y, footprintRadius };
+}
+
+// Stacks a building's floor pieces + roof bottom-to-top inside a local
+// group using measureBuildingLayout's shared stacking math, then registers
+// the whole group as one spawned instance via finalizeSpawnedInstance,
+// same as any other placed object.
+async function spawnBuildingObject(object: PlacedObjectData) {
+  const building = object.building;
+  if (!building) return;
+  try {
+    const { templates, topYs } = await measureBuildingLayout(building);
+    if (!state.layout.objects.some((item) => item.id === object.id)) return;
+
+    const group = new THREE.Group();
+    templates.forEach((template, index) => {
+      const piece = cloneTemplate(template);
+      const bottomY = index === 0 ? 0 : topYs[index - 1];
+      piece.position.set(0, bottomY, 0);
+      group.add(piece);
+    });
+
+    finalizeSpawnedInstance(object, group);
+  } catch (error) {
+    console.warn(`Failed to load building pieces for object ${object.id}`, error);
+  }
+}
+
+let greebleIdCounter = 0;
+function nextGreebleId() {
+  greebleIdCounter += 1;
+  return `object-${Date.now()}-greeble-${greebleIdCounter}`;
+}
+
+// Prefers a piece tagged with the requested style, falls back to any
+// tagged piece for that slot — this is what lets a building mix styles
+// freely (per-floor overrides, or the drag-tool's ground/floor/roof
+// defaults) while still having a sensible default for slots the user
+// never customized (e.g. greebles).
+function pickAssetForSlot(slot: BuildingPartSlot, style: string): AssetDefinition | undefined {
+  const candidates = state.assetCatalog.filter((asset) => asset.buildingPart?.slot === slot);
+  return candidates.find((asset) => asset.buildingPart?.style === style) ?? candidates[0];
+}
+
+// Deterministic first-pass greeble scatter for a freshly-created building —
+// one powerbox and one phone-line junction near ground level, one AC unit
+// per interior floor (alternating sides of the footprint), one roof
+// antenna. Every result is a completely normal PlacedObjectData (kind
+// "asset", parentId pointing at the building for outliner bookkeeping only
+// — parentId doesn't drive real transform inheritance in this editor, so
+// positions here are already absolute world coordinates) — so once placed,
+// greebles move/delete/duplicate exactly like anything else.
+//
+// Simplification vs. the original ask: phone lines are placed as a single
+// junction point per building rather than actual strung wires between
+// neighboring buildings — connecting real geometry between two separate
+// buildings is a bigger follow-up (would need a dedicated line-mesh
+// generator reacting to building adjacency), not attempted here.
+function generateGreeblesForBuilding(
+  buildingObjectId: string,
+  building: BuildingSpec,
+  basePosition: [number, number, number],
+  rotationYDeg: number,
+  layout: { topYs: number[]; totalHeight: number; footprintRadius: number }
+): PlacedObjectData[] {
+  const greebles: PlacedObjectData[] = [];
+  const rotationRad = THREE.MathUtils.degToRad(rotationYDeg);
+  const cos = Math.cos(rotationRad);
+  const sin = Math.sin(rotationRad);
+  const worldPosition = (localX: number, y: number, localZ: number): [number, number, number] => [
+    basePosition[0] + localX * cos - localZ * sin,
+    y,
+    basePosition[2] + localX * sin + localZ * cos,
+  ];
+
+  const makeGreeble = (slot: BuildingPartSlot, localX: number, y: number, localZ: number) => {
+    const asset = pickAssetForSlot(slot, building.style);
+    if (!asset) return;
+    greebles.push({
+      id: nextGreebleId(),
+      parentId: buildingObjectId,
+      kind: "asset",
+      asset: asset.url,
+      position: worldPosition(localX, y, localZ),
+      rotation: [0, rotationYDeg, 0],
+      scale: [1, 1, 1],
+    });
+  };
+
+  const r = layout.footprintRadius;
+
+  makeGreeble("greeble-power", r + 0.3, basePosition[1] + 0.4, 0);
+  makeGreeble("greeble-phone", -(r + 0.3), basePosition[1] + 1.8, 0);
+
+  building.floors.forEach((floor, index) => {
+    if (floor.slot === "ground" || floor.slot === "top") return;
+    const floorTopY = basePosition[1] + (layout.topYs[index] ?? 0);
+    const side = index % 2 === 0 ? 1 : -1;
+    makeGreeble("greeble-ac", side * (r + 0.2), floorTopY - 0.5, r * 0.4);
+  });
+
+  makeGreeble("greeble-antenna", r * 0.6, basePosition[1] + layout.totalHeight, r * 0.6);
+
+  return greebles;
+}
+
+// Orchestrates creating a whole building from the Building tool: measures
+// stacking heights from the actually-tagged floor pieces, builds the
+// building's own PlacedObjectData (kind "building"), generates its
+// greebles, pushes everything into the layout in one undo step, spawns it,
+// and saves.
+async function createBuilding(building: BuildingSpec, position: [number, number, number], rotationYDeg: number) {
+  const layout = await measureBuildingLayout(building);
+  pushHistory("create-building");
+
+  const buildingObject: PlacedObjectData = {
+    id: `object-${Date.now()}-building`,
+    kind: "building",
+    asset: building.floors[0]?.assetId ?? building.roofAssetId,
+    building,
+    position,
+    rotation: [0, rotationYDeg, 0],
+    scale: [1, 1, 1],
+  };
+  const greebles = generateGreeblesForBuilding(buildingObject.id, building, position, rotationYDeg, layout);
+
+  state.layout.objects.push(buildingObject, ...greebles);
+  spawnObject(buildingObject);
+  for (const greeble of greebles) spawnObject(greeble);
+  updateAssetList();
+  updateSceneOutliner();
+  saveLocalLayout();
+  selectObject(buildingObject.id);
+  updateStatus(`Created a ${building.floors.length}-floor building with ${greebles.length} greebles.`);
+}
+
+// ── Building tool UI (Building Tool panel in the World section) ───────────
+
+type BuildingSlotRow = { slot: BuildingPartSlot; slotSelect: HTMLSelectElement | null; assetSelect: HTMLSelectElement };
+let pendingBuildingRows: BuildingSlotRow[] = [];
+let pendingBuildingRoofSelect: HTMLSelectElement | null = null;
+
+// Fills an asset <select> with every tagged piece for one slot, no
+// style filtering — this is what lets any floor mix in a piece from a
+// different style than the building's default. Pre-selects the first
+// piece that matches the requested style purely as a starting point.
+function populateSlotAssetOptions(slot: BuildingPartSlot, style: string, select: HTMLSelectElement) {
+  const candidates = state.assetCatalog.filter((asset) => asset.buildingPart?.slot === slot);
+  select.innerHTML = candidates.length
+    ? candidates
+        .map((asset) => `<option value="${asset.url}">${asset.name}${asset.buildingPart?.style ? ` — ${asset.buildingPart.style}` : ""}</option>`)
+        .join("")
+    : `<option value="">No pieces tagged "${slot}" yet</option>`;
+  const styleMatch = style ? candidates.find((asset) => asset.buildingPart?.style === style) : undefined;
+  if (styleMatch) select.value = styleMatch.url;
+}
+
+// "Choose Pieces" — reads the requested floor count/style and rebuilds the
+// per-floor slot pickers: ground (fixed), N interior floors (each lets you
+// pick floor vs. mezzanine, and any style's tagged piece for that slot),
+// top (fixed), and a roof row. Every interior row is independently
+// choosable — that's the actual "mix and match" mechanism.
+function generateBuildingSlotUI() {
+  const floorCount = Math.max(2, Math.round(Number(ui.buildingFloorCount.value) || 4));
+  const style = ui.buildingStyle.value.trim();
+  ui.buildingSlots.innerHTML = "";
+  pendingBuildingRows = [];
+
+  for (let index = 0; index < floorCount; index += 1) {
+    const isGround = index === 0;
+    const isTop = index === floorCount - 1;
+    const row = document.createElement("div");
+    row.className = "building-slot-row";
+
+    const label = document.createElement("span");
+    label.textContent = isGround ? "Ground floor" : isTop ? "Top floor" : `Floor ${index + 1}`;
+    row.appendChild(label);
+
+    let slotSelect: HTMLSelectElement | null = null;
+    let currentSlot: BuildingPartSlot = isGround ? "ground" : isTop ? "top" : "floor";
+    if (!isGround && !isTop) {
+      slotSelect = document.createElement("select");
+      slotSelect.innerHTML = `<option value="floor">floor</option><option value="mezzanine">mezzanine</option>`;
+      row.appendChild(slotSelect);
+    }
+
+    const assetSelect = document.createElement("select");
+    populateSlotAssetOptions(currentSlot, style, assetSelect);
+    if (slotSelect) {
+      slotSelect.addEventListener("change", () => {
+        currentSlot = slotSelect!.value as BuildingPartSlot;
+        populateSlotAssetOptions(currentSlot, style, assetSelect);
+        rowEntry.slot = currentSlot;
+      });
+    }
+    row.appendChild(assetSelect);
+    ui.buildingSlots.appendChild(row);
+
+    const rowEntry: BuildingSlotRow = { slot: currentSlot, slotSelect, assetSelect };
+    pendingBuildingRows.push(rowEntry);
+  }
+
+  const roofRow = document.createElement("div");
+  roofRow.className = "building-slot-row";
+  const roofLabel = document.createElement("span");
+  roofLabel.textContent = "Roof";
+  const roofSelect = document.createElement("select");
+  populateSlotAssetOptions("roof", style, roofSelect);
+  roofRow.appendChild(roofLabel);
+  roofRow.appendChild(roofSelect);
+  ui.buildingSlots.appendChild(roofRow);
+  pendingBuildingRoofSelect = roofSelect;
+
+  ui.buildingCreate.disabled = false;
+  ui.buildingStatus.textContent = "Review/override any floor's piece below, then Create Building.";
+}
+
+async function handleCreateBuildingClick() {
+  if (pendingBuildingRows.length === 0 || !pendingBuildingRoofSelect) return;
+  const missingSlot = pendingBuildingRows.find((row) => !row.assetSelect.value);
+  if (missingSlot || !pendingBuildingRoofSelect.value) {
+    ui.buildingStatus.textContent = "Tag at least one asset for every slot used above before creating (🏷 on an asset in the shelf).";
+    return;
+  }
+
+  const style = ui.buildingStyle.value.trim() || "untitled";
+  const building: BuildingSpec = {
+    style,
+    floors: pendingBuildingRows.map((row) => ({ slot: row.slot, assetId: row.assetSelect.value })),
+    roofAssetId: pendingBuildingRoofSelect.value,
+  };
+
+  // Spawn at the current orbit target — the user can immediately grab the
+  // Move gizmo (already attached on select, see finalizeSpawnedInstance)
+  // to place it precisely, same as any freshly-placed object.
+  const groundY = sampleTerrainHeight(state.layout.terrainChunks ?? [], controls.target.x, controls.target.z, controls.target.y);
+  ui.buildingCreate.disabled = true;
+  ui.buildingStatus.textContent = "Building...";
+  try {
+    await createBuilding(building, [controls.target.x, groundY, controls.target.z], 0);
+    ui.buildingStatus.textContent = "Building created — drag it into place with the Move gizmo.";
+  } catch (error) {
+    console.warn("Failed to create building", error);
+    ui.buildingStatus.textContent = "Failed to create the building — check the console.";
+  } finally {
+    ui.buildingCreate.disabled = false;
+  }
+}
+
+// ── Building drag-to-extrude tool ──────────────────────────────────────────
+// "Start Building Here" arms armBuildingDraft; the next terrain click places
+// a ground floor + roof and shows the draggable orange handle
+// (buildingDragGizmo). Dragging the handle up/down snaps to whole floors —
+// each snap re-measures from the actually-tagged floor piece's own height,
+// re-stacks, and keeps the roof on top. "Finish Building" generates greebles
+// and commits it as a normal, fully editable placed object.
+
+function updateBuildingDraftButtons() {
+  const drafting = !!state.draftBuilding;
+  ui.buildingDraftStart.disabled = state.armBuildingDraft;
+  ui.buildingDraftStart.textContent = state.armBuildingDraft ? "Click terrain to place..." : "Start Building Here";
+  ui.buildingDraftEntrance.disabled = !drafting || (state.draftBuilding?.groundAssetIds.length ?? 0) < 2;
+  ui.buildingDraftFinish.disabled = !drafting;
+  ui.buildingDraftCancel.disabled = !drafting;
+}
+
+async function measurePieceHeight(assetId: string): Promise<number> {
+  try {
+    const template = await loadTemplate(assetId);
+    const box = new THREE.Box3().setFromObject(template);
+    return box.isEmpty() ? 3 : Math.max(0.5, box.getSize(new THREE.Vector3()).y);
+  } catch {
+    return 3;
+  }
+}
+
+function positionDragGizmo(draft: DraftBuildingState, currentTotalHeight: number) {
+  buildingDragGizmo.position.set(draft.basePosition[0], draft.basePosition[1] + currentTotalHeight + 0.6, draft.basePosition[2]);
+}
+
+function currentDraftBuildingSpec(draft: DraftBuildingState): BuildingSpec {
+  const groundAssetId = draft.groundAssetIds[draft.groundVariantIndex] ?? draft.groundAssetIds[0];
+  const floors: BuildingFloorSpec[] = [{ slot: "ground", assetId: groundAssetId }];
+  for (let i = 0; i < draft.floorCount; i += 1) floors.push({ slot: "floor", assetId: draft.floorAssetId });
+  return { style: draft.style, floors, roofAssetId: draft.roofAssetId };
+}
+
+async function rebuildDraftPreview() {
+  const draft = state.draftBuilding;
+  if (!draft) return;
+  const object = state.layout.objects.find((item) => item.id === draft.objectId);
+  if (!object) return;
+  object.building = currentDraftBuildingSpec(draft);
+  removeObjectMesh(object.id);
+  const layout = await measureBuildingLayout(object.building);
+  if (state.draftBuilding !== draft) return; // cancelled/finalized while this was loading
+  spawnObject(object);
+  positionDragGizmo(draft, layout.totalHeight);
+}
+
+async function startBuildingDraft(point: THREE.Vector3) {
+  const style = ui.buildingStyle.value.trim();
+  const groundAsset = pickAssetForSlot("ground", style);
+  const floorAsset = pickAssetForSlot("floor", style);
+  const roofAsset = pickAssetForSlot("roof", style);
+  state.armBuildingDraft = false;
+  if (!groundAsset || !floorAsset || !roofAsset) {
+    ui.buildingStatus.textContent = 'Tag at least one "ground", "floor", and "roof" piece (🏷 in the asset shelf) before drafting a building.';
+    updateBuildingDraftButtons();
+    return;
+  }
+
+  const groundAssetIds = state.assetCatalog.filter((asset) => asset.buildingPart?.slot === "ground").map((asset) => asset.url);
+  const basePosition: [number, number, number] = [point.x, point.y, point.z];
+  const objectId = `object-${Date.now()}-building`;
+  const object: PlacedObjectData = {
+    id: objectId,
+    kind: "building",
+    asset: groundAsset.url,
+    building: { style: style || "untitled", floors: [{ slot: "ground", assetId: groundAsset.url }], roofAssetId: roofAsset.url },
+    position: basePosition,
+    rotation: [0, 0, 0],
+    scale: [1, 1, 1],
+  };
+  state.layout.objects.push(object);
+
+  state.draftBuilding = {
+    objectId,
+    basePosition,
+    rotationYDeg: 0,
+    style: object.building!.style,
+    groundAssetIds,
+    groundVariantIndex: Math.max(0, groundAssetIds.indexOf(groundAsset.url)),
+    floorAssetId: floorAsset.url,
+    roofAssetId: roofAsset.url,
+    floorHeight: 3,
+    floorCount: 0,
+    dragging: false,
+  };
+  buildingDragGizmo.visible = true;
+  ui.buildingStatus.textContent = "Drag the orange handle up to add floors (each drag increment snaps to one floor). Click Finish Building when done.";
+  updateBuildingDraftButtons();
+
+  await rebuildDraftPreview();
+  const draft = state.draftBuilding;
+  if (draft && draft.objectId === objectId) {
+    draft.floorHeight = await measurePieceHeight(floorAsset.url);
+  }
+}
+
+function cycleDraftEntrance() {
+  const draft = state.draftBuilding;
+  if (!draft || draft.groundAssetIds.length < 2) return;
+  draft.groundVariantIndex = (draft.groundVariantIndex + 1) % draft.groundAssetIds.length;
+  void rebuildDraftPreview();
+}
+
+async function finalizeBuildingDraft() {
+  const draft = state.draftBuilding;
+  if (!draft) return;
+  const object = state.layout.objects.find((item) => item.id === draft.objectId);
+  state.draftBuilding = null;
+  buildingDragGizmo.visible = false;
+  updateBuildingDraftButtons();
+  if (!object || !object.building) return;
+
+  pushHistory("create-building");
+  const layout = await measureBuildingLayout(object.building);
+  const greebles = generateGreeblesForBuilding(object.id, object.building, object.position, object.rotation[1], layout);
+  state.layout.objects.push(...greebles);
+  for (const greeble of greebles) spawnObject(greeble);
+  updateAssetList();
+  updateSceneOutliner();
+  saveLocalLayout();
+  selectObject(object.id);
+  ui.buildingStatus.textContent = `Building finished: ${draft.floorCount + 2} floors (incl. ground + roof), ${greebles.length} greebles. Drag it into place with the Move gizmo.`;
+}
+
+function cancelBuildingDraft() {
+  const draft = state.draftBuilding;
+  if (!draft) return;
+  state.draftBuilding = null;
+  buildingDragGizmo.visible = false;
+  removeObjectMesh(draft.objectId);
+  state.layout.objects = state.layout.objects.filter((item) => item.id !== draft.objectId);
+  updateSceneOutliner();
+  updateBuildingDraftButtons();
+  ui.buildingStatus.textContent = "Draft cancelled.";
+}
+
+// Vertical drag-plane for the gizmo: a plane containing the world-up axis
+// and facing the camera (screen-facing plane through a vertical line) —
+// dragging the mouse up/down on screen tracks along this plane's Y with
+// the usual precision of a single-axis gizmo drag, regardless of camera
+// angle (as long as the camera isn't looking straight down the axis).
+function buildingDragPlane(origin: THREE.Vector3): THREE.Plane {
+  const toCamera = new THREE.Vector3().subVectors(camera.position, origin);
+  toCamera.y = 0;
+  if (toCamera.lengthSq() < 1e-6) toCamera.set(1, 0, 0);
+  toCamera.normalize();
+  return new THREE.Plane().setFromNormalAndCoplanarPoint(toCamera, origin);
+}
+
+function handleBuildingDragMove() {
+  const draft = state.draftBuilding;
+  if (!draft || !draft.dragging) return;
+  raycaster.setFromCamera(pointer, camera);
+  const plane = buildingDragPlane(new THREE.Vector3(...draft.basePosition));
+  const hit = new THREE.Vector3();
+  if (!raycaster.ray.intersectPlane(plane, hit)) return;
+  const deltaY = hit.y - draft.basePosition[1];
+  const nextFloorCount = Math.max(0, Math.round(deltaY / draft.floorHeight) - 1); // -1: the ground floor's own height doesn't count as an added floor
+  if (nextFloorCount !== draft.floorCount) {
+    draft.floorCount = nextFloorCount;
+    void rebuildDraftPreview();
+  }
+}
+
 function spawnObject(object: PlacedObjectData) {
   if ((object.kind ?? "asset") === "light") {
     spawnLightObject(object);
+    return;
+  }
+  if (object.kind === "building" && object.building) {
+    void spawnBuildingObject(object);
     return;
   }
 
@@ -2385,34 +2907,7 @@ function spawnObject(object: PlacedObjectData) {
     .then((template) => {
       if (!state.layout.objects.some((item) => item.id === object.id)) return;
       const instance = cloneTemplate(template);
-      instance.position.set(object.position[0], object.position[1], object.position[2]);
-      instance.rotation.set(
-        THREE.MathUtils.degToRad(object.rotation[0]),
-        THREE.MathUtils.degToRad(object.rotation[1]),
-        THREE.MathUtils.degToRad(object.rotation[2])
-      );
-      instance.scale.set(object.scale[0], object.scale[1], object.scale[2]);
-      instance.userData.objectId = object.id;
-      instance.userData.definition = object;
-      instance.traverse((node) => {
-        node.userData.objectId = object.id;
-        node.userData.definition = object;
-        const mesh = node as THREE.Mesh;
-        if (mesh.isMesh) {
-          cloneImportedMeshMaterials(mesh);
-          mesh.castShadow = true;
-          mesh.receiveShadow = true;
-          normalizeImportedMeshMaterial(mesh);
-          assignStandardMaterials(mesh);
-        }
-      });
-      applyObjectShaderMode(object, instance);
-      objectRoot.add(instance);
-      objectMeshes.set(object.id, instance);
-      selectableMeshes.push(instance);
-      if (state.selectedObjectId === object.id) {
-        transformControls.attach(instance);
-      }
+      finalizeSpawnedInstance(object, instance);
     })
     .catch((error) => {
       console.warn(`Failed to load asset ${object.asset}`, error);
@@ -2992,10 +3487,13 @@ function updateAssetList() {
       heading.textContent = lastCategory || "Root";
       assetList.appendChild(heading);
     }
+    const row = document.createElement("div");
+    row.className = "asset-card-row";
     const button = document.createElement("button");
     button.className = "asset-card" + (state.selectedAssetUrl === asset.url ? " is-active" : "");
     button.draggable = true;
-    button.innerHTML = `<strong>${asset.name}</strong><span>${asset.category}</span><span>${asset.url}</span>`;
+    const tagBadge = asset.buildingPart ? ` <span class="asset-tag-badge">${asset.buildingPart.slot}</span>` : "";
+    button.innerHTML = `<strong>${asset.name}</strong><span>${asset.category}</span><span>${asset.url}${tagBadge}</span>`;
     button.addEventListener("click", () => {
       state.selectedAssetUrl = asset.url;
       updateAssetList();
@@ -3009,7 +3507,29 @@ function updateAssetList() {
       }
       updateStatus(`Dragging ${asset.name}. Drop onto terrain to place it.`);
     });
-    assetList.appendChild(button);
+    row.appendChild(button);
+
+    // Building-part tagging — only meaningful for real creator_assets
+    // (kind "asset"), not the built-in light catalog entries.
+    if ((asset.kind ?? "asset") === "asset") {
+      const tagToggle = document.createElement("button");
+      tagToggle.className = "asset-tag-toggle";
+      tagToggle.type = "button";
+      tagToggle.title = "Tag as a building part (slot + style)";
+      tagToggle.textContent = "🏷";
+      tagToggle.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const existingForm = row.querySelector(".asset-tag-form");
+        if (existingForm) {
+          existingForm.remove();
+          return;
+        }
+        row.appendChild(buildAssetTagForm(asset));
+      });
+      row.appendChild(tagToggle);
+    }
+
+    assetList.appendChild(row);
   }
 
   if (assets.length === 0) {
@@ -3019,6 +3539,62 @@ function updateAssetList() {
     assetList.appendChild(empty);
   }
 
+}
+
+const BUILDING_PART_SLOTS: BuildingPartSlot[] = [
+  "ground", "mezzanine", "floor", "top", "roof", "window",
+  "greeble-power", "greeble-antenna", "greeble-ac", "greeble-phone",
+];
+
+// Small inline tag-editor for one asset card — lets you set the
+// slot/style used by the Building tool's floor-piece palette, writing
+// straight to that creator_assets row's meta.buildingPart (see
+// updateAssetMeta in lib/assets.ts). Rebuilds the whole asset list on
+// save so the new tag/badge shows immediately everywhere it's used.
+function buildAssetTagForm(asset: AssetDefinition): HTMLElement {
+  const form = document.createElement("div");
+  form.className = "asset-tag-form";
+  form.addEventListener("click", (event) => event.stopPropagation());
+
+  const slotSelect = document.createElement("select");
+  slotSelect.innerHTML = `<option value="">Not a building part</option>${BUILDING_PART_SLOTS
+    .map((slot) => `<option value="${slot}"${asset.buildingPart?.slot === slot ? " selected" : ""}>${slot}</option>`)
+    .join("")}`;
+
+  const styleInput = document.createElement("input");
+  styleInput.type = "text";
+  styleInput.placeholder = "style (e.g. industrial, parisian)";
+  styleInput.value = asset.buildingPart?.style ?? "";
+
+  const saveButton = document.createElement("button");
+  saveButton.type = "button";
+  saveButton.textContent = "Save tag";
+  saveButton.addEventListener("click", async () => {
+    const slot = slotSelect.value as BuildingPartSlot | "";
+    const style = styleInput.value.trim();
+    saveButton.disabled = true;
+    try {
+      if (!slot) {
+        await updateAssetMeta(asset.url, { buildingPart: null });
+      } else {
+        const meta: BuildingPartMeta = { slot, style };
+        await updateAssetMeta(asset.url, { buildingPart: meta });
+      }
+      await loadAssetCatalog("");
+      updateAssetList();
+      updateStatus(`Tagged "${asset.name}".`);
+    } catch (error) {
+      console.warn("Failed to save building-part tag", error);
+      updateStatus(`Could not save tag for "${asset.name}".`);
+    } finally {
+      saveButton.disabled = false;
+    }
+  });
+
+  form.appendChild(slotSelect);
+  form.appendChild(styleInput);
+  form.appendChild(saveButton);
+  return form;
 }
 
 function updateSceneOutliner() {
@@ -3085,6 +3661,7 @@ function nodeDisplayName(node: SceneNodeData) {
 function objectKindLabel(node: SceneNodeData) {
   if (node.kind === "group") return "GROUP";
   if ((node.kind ?? "asset") === "light") return `LIGHT ${node.lightType ?? "omni"}`;
+  if (node.kind === "building") return `BUILDING (${node.building?.floors.length ?? 0} floors)`;
   const asset = state.assetCatalog.find((item) => item.url === node.asset);
   return asset?.category ?? "ASSET";
 }
@@ -3910,6 +4487,17 @@ function bindUi() {
   });
   terrainControls.newRoad.addEventListener("click", () => createNewRoadSpline());
   terrainControls.deleteRoad.addEventListener("click", () => deleteActiveRoadSpline());
+  ui.buildingGenerateSlots.addEventListener("click", () => generateBuildingSlotUI());
+  ui.buildingCreate.addEventListener("click", () => void handleCreateBuildingClick());
+  ui.buildingDraftStart.addEventListener("click", () => {
+    if (state.draftBuilding) return;
+    state.armBuildingDraft = true;
+    updateBuildingDraftButtons();
+    ui.buildingStatus.textContent = "Click the terrain to place the ground floor.";
+  });
+  ui.buildingDraftEntrance.addEventListener("click", () => cycleDraftEntrance());
+  ui.buildingDraftFinish.addEventListener("click", () => void finalizeBuildingDraft());
+  ui.buildingDraftCancel.addEventListener("click", () => cancelBuildingDraft());
   terrainControls.soilRepeat.addEventListener("change", () => updateTextureRepeatControls());
   terrainControls.sandRepeat.addEventListener("change", () => updateTextureRepeatControls());
   terrainControls.roadRepeat.addEventListener("change", () => updateTextureRepeatControls());
@@ -4921,6 +5509,25 @@ function onPointerDown(event: PointerEvent) {
   updatePointerFromEvent(event);
   raycaster.setFromCamera(pointer, camera);
 
+  if (state.armBuildingDraft) {
+    const terrainHits = raycaster.intersectObjects(terrainMeshes, true);
+    if (terrainHits.length > 0) {
+      event.preventDefault();
+      void startBuildingDraft(terrainHits[0].point);
+    }
+    return;
+  }
+
+  if (state.draftBuilding && !state.draftBuilding.dragging) {
+    const gizmoHits = raycaster.intersectObject(buildingDragGizmo, true);
+    if (gizmoHits.length > 0) {
+      event.preventDefault();
+      state.draftBuilding.dragging = true;
+      controls.enabled = false;
+      return;
+    }
+  }
+
   if (state.terrainMode === "road") {
     const roadHits = raycaster.intersectObjects(roadGuideGroup.children, true);
     const roadHit = roadHits.find((hit) => hit.object.userData.roadPoint);
@@ -4962,6 +5569,11 @@ function onPointerDown(event: PointerEvent) {
 }
 
 function onPointerMove(event: PointerEvent) {
+  if (state.draftBuilding?.dragging) {
+    updatePointerFromEvent(event);
+    handleBuildingDragMove();
+    return;
+  }
   if (state.terrainMode === "sculpt" || state.terrainMode === "road") {
     updatePointerFromEvent(event);
     raycaster.setFromCamera(pointer, camera);
@@ -4995,6 +5607,11 @@ function onPointerMove(event: PointerEvent) {
 }
 
 function onPointerUp() {
+  if (state.draftBuilding?.dragging) {
+    state.draftBuilding.dragging = false;
+    controls.enabled = true;
+    saveLocalLayout();
+  }
   if (state.isSculpting) {
     state.isSculpting = false;
     saveLocalLayout();
@@ -5235,6 +5852,26 @@ function buildUi() {
             <button id="terrain-new-road" type="button">New Road</button>
             <button id="terrain-delete-road" type="button">Delete Road</button>
           </div>
+          <div class="panel-subhead">Building Tool</div>
+          <label><span>Style</span><input id="building-style" type="text" placeholder="industrial, parisian, ..." /></label>
+          <div class="btn-row">
+            <button id="building-draft-start" type="button">Start Building Here</button>
+            <button id="building-draft-entrance" type="button" disabled>Cycle Entrance</button>
+          </div>
+          <div class="btn-row">
+            <button id="building-draft-finish" type="button" disabled>Finish Building</button>
+            <button id="building-draft-cancel" type="button" disabled>Cancel</button>
+          </div>
+          <div id="building-status" class="status">Tag ground/floor/roof pieces (🏷), set a style, then "Start Building Here" and click the terrain to place the ground floor. Drag the orange handle up to add floors.</div>
+          <div class="panel-subhead">Manual Floor Picker</div>
+          <label><span>Floors (incl. ground + top)</span><input id="building-floor-count" type="number" min="2" max="30" step="1" value="4" /></label>
+          <div class="btn-row">
+            <button id="building-generate-slots" type="button">Choose Pieces</button>
+          </div>
+          <div id="building-slots" class="stack"></div>
+          <div class="btn-row">
+            <button id="building-create" type="button" disabled>Create Building</button>
+          </div>
           <div class="shader-shelf terrain-shader-shelf">
             <div class="panel-subhead">Terrain Shader</div>
             <div class="btn-row">
@@ -5438,6 +6075,16 @@ function buildUi() {
     roadSpline: shell.querySelector<HTMLSelectElement>("#terrain-road-spline")!,
     newRoad: shell.querySelector<HTMLButtonElement>("#terrain-new-road")!,
     deleteRoad: shell.querySelector<HTMLButtonElement>("#terrain-delete-road")!,
+    buildingStyle: shell.querySelector<HTMLInputElement>("#building-style")!,
+    buildingFloorCount: shell.querySelector<HTMLInputElement>("#building-floor-count")!,
+    buildingGenerateSlots: shell.querySelector<HTMLButtonElement>("#building-generate-slots")!,
+    buildingSlots: shell.querySelector<HTMLDivElement>("#building-slots")!,
+    buildingCreate: shell.querySelector<HTMLButtonElement>("#building-create")!,
+    buildingStatus: shell.querySelector<HTMLDivElement>("#building-status")!,
+    buildingDraftStart: shell.querySelector<HTMLButtonElement>("#building-draft-start")!,
+    buildingDraftEntrance: shell.querySelector<HTMLButtonElement>("#building-draft-entrance")!,
+    buildingDraftFinish: shell.querySelector<HTMLButtonElement>("#building-draft-finish")!,
+    buildingDraftCancel: shell.querySelector<HTMLButtonElement>("#building-draft-cancel")!,
     soilRepeat: shell.querySelector<HTMLInputElement>("#soil-repeat")!,
     sandRepeat: shell.querySelector<HTMLInputElement>("#sand-repeat")!,
     roadRepeat: shell.querySelector<HTMLInputElement>("#road-repeat")!,

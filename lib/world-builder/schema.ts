@@ -14,13 +14,60 @@ export type AssetDefinition = {
   sizeBytes?: number;
   vertexCount?: number;
   triangleCount?: number;
+  // Woven addition — populated from the backing creator_assets row's
+  // meta.buildingPart, when tagged. See BuildingPartMeta below.
+  buildingPart?: BuildingPartMeta;
+};
+
+// Building-part tagging convention (Woven addition, not part of the ported
+// standalone schema): a creator_assets row's `meta.buildingPart` field,
+// used to filter/organize the Building tool's floor-piece palette. Height
+// for stacking is measured from each loaded template's own bounding box
+// at build time instead of being hand-entered here — one less thing to
+// get wrong when tagging a piece.
+export type BuildingPartSlot =
+  | "ground"
+  | "mezzanine"
+  | "floor"
+  | "top"
+  | "roof"
+  | "window"
+  | "greeble-power"
+  | "greeble-antenna"
+  | "greeble-ac"
+  | "greeble-phone";
+
+export type BuildingPartMeta = {
+  slot: BuildingPartSlot;
+  style: string;
+};
+
+// A building's own record of which piece fills each floor slot — kept on
+// the building's PlacedObjectData (kind: "building") so it can be
+// re-edited later (swap a floor, add a floor) without losing the recipe.
+// Deliberately independent of `style` per-slot: floors can be freely
+// mixed across styles even though `style` supplies the default palette
+// filter when picking pieces.
+export type BuildingFloorSpec = {
+  slot: BuildingPartSlot;
+  assetId: string;
+};
+
+export type BuildingSpec = {
+  style: string;
+  floors: BuildingFloorSpec[]; // ordered bottom-to-top, ground first
+  roofAssetId: string;
 };
 
 export type PlacedObjectData = {
   id: string;
   parentId?: string;
-  kind?: "asset" | "light";
+  kind?: "asset" | "light" | "building";
+  // For kind "building": set to the ground floor's assetId as a fallback
+  // reference (thumbnail/label lookups elsewhere assume every object has
+  // a single `.asset`) — the real per-floor recipe lives in `building`.
   asset: string;
+  building?: BuildingSpec;
   shaderMode?: "standard" | "toon" | "outline";
   shaderSettings?: {
     toon?: {

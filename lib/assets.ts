@@ -255,6 +255,26 @@ export async function renameAsset(id: string, name: string): Promise<void> {
   if (error) throw error;
 }
 
+/** Merges a patch into an asset's freeform `meta` JSONB (read-modify-write,
+ * since a partial JSONB merge isn't expressible through the JS client) —
+ * used for per-tool metadata conventions like World Builder's
+ * `meta.buildingPart` tagging. */
+export async function updateAssetMeta(id: string, metaPatch: Record<string, unknown>): Promise<void> {
+  const supabase = client();
+  const { data: existing, error: fetchErr } = await supabase
+    .from("creator_assets")
+    .select("meta")
+    .eq("id", id)
+    .single<{ meta: Record<string, unknown> | null }>();
+  if (fetchErr) throw fetchErr;
+  const nextMeta = { ...(existing?.meta ?? {}), ...metaPatch };
+  const { error } = await supabase
+    .from("creator_assets")
+    .update({ meta: nextMeta, updated_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) throw error;
+}
+
 export async function deleteAssets(assets: AssetRow[]): Promise<void> {
   if (assets.length === 0) return;
   const supabase = client();

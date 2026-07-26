@@ -260,6 +260,22 @@ export async function getCreatorByHandle(handle: string): Promise<CreatorProfile
   return data?.[0] ?? null;
 }
 
+/** A handful of real, publicly-linkable approved creators — for the
+ * community page's "Creators to follow" widget. Requires a non-null handle
+ * since the whole point is linking to their real /studio/{handle} page. */
+export async function listRecentCreators(limit = 4): Promise<CreatorProfileRow[]> {
+  const supabase = client();
+  const { data, error } = await supabase
+    .from("creator_profiles")
+    .select("id, studio_name, handle, about, country, team_size, links, engines, banner_url, banner_pos_x, banner_pos_y, created_at")
+    .eq("status", "approved")
+    .not("handle", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return data ?? [];
+}
+
 /** The caller's own creator_profiles row, any status — for self-editing
  * (contrast with getCreatorByHandle, which requires status='approved' and
  * is for the public studio page, not self-management). */

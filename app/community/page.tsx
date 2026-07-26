@@ -2,11 +2,13 @@
 export const dynamic = "force-dynamic";
 import { useState, useEffect } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
 import CommunitySubNav from "@/components/shell/CommunitySubNav";
+import FollowButton from "@/components/FollowButton";
 import { supabase } from "@/lib/supabase";
 import { useMyStudio } from "@/lib/useMyStudio";
-import { getCreatorProfilesByIds } from "@/lib/games";
+import { getCreatorProfilesByIds, listRecentCreators, type CreatorProfileRow } from "@/lib/games";
 
 const pal: [string, string][] = [
   ["#3a7fc4", "#7d4bd0"], ["#2aa6c4", "#15527a"], ["#5cb85c", "#1e7a4a"],
@@ -204,13 +206,6 @@ const trendingHubs = [
   { name: "Foxfire Relay",  sub: "7.4k members · 61 online",   a: "#d0552a", b: "#9a2a4a" },
 ];
 
-const onlineCreators = [
-  { name: "lanternfew",  role: "Hollow Tide · Creator",   a: "#2a6aa0", b: "#7d4bd0" },
-  { name: "fernlight",   role: "Mossglow · Creator",      a: "#3a8f5a", b: "#216b7a" },
-  { name: "brassworks",  role: "Tin Can Kingdom",          a: "#b8923a", b: "#7a4a2a" },
-  { name: "maya_b",      role: "Weave Forge team",        a: "#56a6e8", b: "#2c6aa0" },
-];
-
 function GradAvatar({ a, b, className = "" }: { a: string; b: string; className?: string }) {
   return (
     <div className={`relative overflow-hidden shrink-0 ${className}`}
@@ -242,14 +237,19 @@ function ThreadVotes({ initial }: { initial: number }) {
 export default function CommunityPage() {
   const { user } = useUser();
   const authorName = user?.username ?? user?.firstName ?? "anon";
+  const searchParams = useSearchParams();
 
-  const [activeCategory, setActiveCategory] = useState("All");
+  const [activeCategory, setActiveCategory] = useState(() => {
+    const requested = searchParams.get("category");
+    return requested && categories.includes(requested) ? requested : "All";
+  });
   const [activeSort, setActiveSort] = useState("🔥 Hot");
   const [showModal, setShowModal] = useState(false);
   const [threadList, setThreadList] = useState<Thread[]>([]);
   const [studioById, setStudioById] = useState<Record<string, { studio_name: string | null; handle: string | null }>>({});
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
+  const [recentCreators, setRecentCreators] = useState<CreatorProfileRow[]>([]);
 
   useEffect(() => {
     supabase
@@ -265,6 +265,7 @@ export default function CommunityPage() {
         }
         setLoading(false);
       });
+    listRecentCreators(4).then(setRecentCreators).catch(() => {});
   }, []);
 
   const handlePost = async (t: Thread) => {
@@ -454,27 +455,34 @@ export default function CommunityPage() {
               </div>
             </div>
 
-            {/* Online creators */}
-            <div className="bg-panel border border-line rounded-[10px]">
-              <div className="px-6 py-4 border-b border-line font-bold text-[15px]">Online creators</div>
-              <div className="px-6 pt-2 pb-3">
-                {onlineCreators.map(o => (
-                  <div key={o.name} className="flex items-center gap-2.5 py-1.5">
-                    <div className="relative shrink-0">
-                      <GradAvatar a={o.a} b={o.b} className="w-[28px] h-[28px] rounded-full" />
-                      <span className="absolute -right-0.5 -bottom-0.5 w-[9px] h-[9px] rounded-full bg-green border-2 border-panel" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="font-semibold text-[13px]">@{o.name}</div>
-                      <div className="text-[11px] text-dim">{o.role}</div>
-                    </div>
-                    <button className="px-3 py-1.5 rounded-lg text-[12px] font-bold cursor-pointer bg-panel2 border border-line text-ink">
-                      Follow
-                    </button>
-                  </div>
-                ))}
+            {/* Creators to follow — real creator_profiles rows, real
+                creator_follows-backed Follow button (shared with the
+                studio page). No presence tracking exists anywhere in this
+                app, so this deliberately doesn't claim anyone is "online". */}
+            {recentCreators.length > 0 && (
+              <div className="bg-panel border border-line rounded-[10px]">
+                <div className="px-6 py-4 border-b border-line font-bold text-[15px]">Creators to follow</div>
+                <div className="px-6 pt-2 pb-3">
+                  {recentCreators.map((c, i) => {
+                    const [a, b] = pal[i % pal.length];
+                    return (
+                      <div key={c.id} className="flex items-center gap-2.5 py-1.5">
+                        <Link href={`/studio/${c.handle}`} className="relative shrink-0">
+                          <GradAvatar a={a} b={b} className="w-[28px] h-[28px] rounded-full" />
+                        </Link>
+                        <div className="flex-1 min-w-0">
+                          <Link href={`/studio/${c.handle}`} className="font-semibold text-[13px] no-underline text-ink hover:text-accent transition-colors block truncate">
+                            {c.studio_name ?? `@${c.handle}`}
+                          </Link>
+                          <div className="text-[11px] text-dim truncate">{c.engines?.[0] ?? "Creator"}</div>
+                        </div>
+                        <FollowButton creatorId={c.id} />
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
+            )}
 
             {/* Guidelines */}
             <div className="bg-panel border border-line rounded-[10px] p-4.5">

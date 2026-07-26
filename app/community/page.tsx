@@ -2,7 +2,6 @@
 export const dynamic = "force-dynamic";
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
 import CommunitySubNav from "@/components/shell/CommunitySubNav";
 import FollowButton from "@/components/FollowButton";
@@ -237,12 +236,8 @@ function ThreadVotes({ initial }: { initial: number }) {
 export default function CommunityPage() {
   const { user } = useUser();
   const authorName = user?.username ?? user?.firstName ?? "anon";
-  const searchParams = useSearchParams();
 
-  const [activeCategory, setActiveCategory] = useState(() => {
-    const requested = searchParams.get("category");
-    return requested && categories.includes(requested) ? requested : "All";
-  });
+  const [activeCategory, setActiveCategory] = useState("All");
   const [activeSort, setActiveSort] = useState("🔥 Hot");
   const [showModal, setShowModal] = useState(false);
   const [threadList, setThreadList] = useState<Thread[]>([]);
@@ -250,6 +245,18 @@ export default function CommunityPage() {
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [recentCreators, setRecentCreators] = useState<CreatorProfileRow[]>([]);
+
+  // Reads ?category= client-side only (not Next's useSearchParams()) so
+  // this page never needs a Suspense boundary for it — window.location is
+  // only touched post-mount, never during prerendering. Deliberately an
+  // effect rather than a lazy useState initializer: reading window during
+  // render would run at hydration time too and produce a client/server
+  // markup mismatch (server has no window.location.search to read).
+  useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get("category");
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing from a browser-only API on mount, see comment above
+    if (requested && categories.includes(requested)) setActiveCategory(requested);
+  }, []);
 
   useEffect(() => {
     supabase

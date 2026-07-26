@@ -268,7 +268,7 @@ controls.target.set(0, 0, 0);
 // OrbitControls' gimbal-lock jitter when the view direction lines up
 // exactly with the up vector.
 controls.maxPolarAngle = Math.PI * 0.98;
-controls.minDistance = 8;
+controls.minDistance = 0.5;
 controls.maxDistance = 500;
 
 const transformControls = new TransformControls(camera, renderer.domElement);
@@ -4009,7 +4009,7 @@ function queueRemoteSave() {
   }, 900);
 }
 
-async function saveRemoteLayout() {
+async function saveRemoteLayout(): Promise<boolean> {
   const layout = serializeLayout();
   try {
     // layout.objects (not terrainChunks[].objects, which isn't kept in sync
@@ -4060,10 +4060,30 @@ async function saveRemoteLayout() {
     state.levelId = saved.id;
     if (wasNewLevel) await refreshLevelPicker();
     updateStatus(`Saved "${saved.name}" with ${layout.objects.length} objects across ${chunkRows.length} chunks`);
+    return true;
   } catch (error) {
     console.warn("Remote level save failed; browser backup remains current.", error);
     updateStatus("Saved browser backup only. Remote save failed.", true);
+    return false;
   }
+}
+
+// Save's actual result (the topbar status line + level-picker dropdown
+// updating) was too easy to miss while looking at the 3D viewport — this
+// makes success/failure show up right on the button you clicked instead.
+let saveButtonResetTimeout: number | null = null;
+async function handleSaveButtonClick() {
+  if (saveButtonResetTimeout !== null) window.clearTimeout(saveButtonResetTimeout);
+  const originalLabel = "Save";
+  saveButton.disabled = true;
+  saveButton.textContent = "Saving...";
+  const ok = await saveRemoteLayout();
+  saveButton.disabled = false;
+  saveButton.textContent = ok ? "Saved ✓" : "Save failed";
+  saveButtonResetTimeout = window.setTimeout(() => {
+    saveButton.textContent = originalLabel;
+    saveButtonResetTimeout = null;
+  }, 1600);
 }
 
 function serializeLayout(): LevelLayout {
@@ -4353,7 +4373,7 @@ function bindUi() {
   loadButton.addEventListener("click", () => void loadWorldFromInputs());
   saveButton.addEventListener("click", () => {
     saveLocalLayout();
-    void saveRemoteLayout();
+    void handleSaveButtonClick();
   });
   exportButton.addEventListener("click", () => void exportLayoutAsZip());
   levelPicker.addEventListener("change", () => {
@@ -5740,7 +5760,7 @@ function buildUi() {
   topbar.className = "topbar";
   topbar.innerHTML = `
     <div>
-      <strong>Weave Forge Three.js</strong>
+      <strong>Three.js Worldbuilder</strong>
       <div class="status">Shared map, shared assets, separate engine build.</div>
     </div>
     <div class="toolbar">

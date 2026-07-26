@@ -146,11 +146,31 @@ export function buildGlassGraph(): { nodes: Node[]; edges: Edge[] } {
   return { nodes, edges };
 }
 
-export type TemplateKey = "celshade" | "celshade-texture" | "celshade-outline" | "glass";
+// -- Celshade + Texture + Outline -------------------------------------------
+// The textured celshade recipe (buildCelshadeTexturedGraph) with a wired
+// OutputToonOutline added — the outline is a second, independent output in
+// the same graph (compiler.ts compiles it as its own separate shader pass),
+// so it just needs its own color node, no changes to the texture chain.
+export function buildCelshadeTexturedOutlineGraph(): { nodes: Node[]; edges: Edge[] } {
+  const { nodes: textured, edges: texturedEdges } = buildCelshadeTexturedGraph();
+  const nodes: Node[] = [
+    ...textured,
+    { id: "cto_outlineColor", type: "Color", position: { x: 1300, y: 420 }, data: { r: 0.03, g: 0.03, b: 0.05, a: 1 } },
+    { id: "cto_outline", type: "OutputToonOutline", position: { x: 1560, y: 420 }, data: { outputMode: "outline", thickness: 0.025 } },
+  ];
+  const edges: Edge[] = [
+    ...texturedEdges,
+    { id: "cto_e1", source: "cto_outlineColor", sourceHandle: "color", target: "cto_outline", targetHandle: "color" },
+  ];
+  return { nodes, edges };
+}
+
+export type TemplateKey = "celshade" | "celshade-texture" | "celshade-outline" | "celshade-texture-outline" | "glass";
 
 export const TEMPLATES: { key: TemplateKey; label: string; build: () => { nodes: Node[]; edges: Edge[] } }[] = [
   { key: "celshade", label: "Celshade (2-Band)", build: buildCelshadeGraph },
   { key: "celshade-texture", label: "Celshade + Texture", build: buildCelshadeTexturedGraph },
   { key: "celshade-outline", label: "Celshade + Outline", build: buildCelshadeOutlineGraph },
+  { key: "celshade-texture-outline", label: "Celshade + Texture + Outline", build: buildCelshadeTexturedOutlineGraph },
   { key: "glass", label: "Non-RT Glass", build: buildGlassGraph },
 ];

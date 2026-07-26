@@ -53,6 +53,8 @@ import {
 } from "./schema";
 import { getAsset, listVisibleAssets, signedAssetUrl, updateAssetMeta, type AssetRow } from "@/lib/assets";
 import { loadLevel, saveLevel, listVisibleLevels, type WorldLevelRow } from "./levels";
+import { compile, type CompileResult } from "@/lib/shader-graph/compiler";
+import type { Node as ShaderGraphNode, Edge as ShaderGraphEdge } from "@xyflow/react";
 
 const STORAGE_KEY = "woven-threejs-world-builder-layout";
 const SKY_STORAGE_KEY = "woven-threejs-world-builder-sky";
@@ -89,6 +91,10 @@ type RuntimeState = {
   levelId: string | null;
   layout: LevelLayout;
   assetCatalog: AssetDefinition[];
+  // Saved Shaderade shader_graph assets — separate from assetCatalog
+  // (which only ever holds .glb rows) since these back the "Custom
+  // (Shaderade)" shader-mode picker, not placeable objects.
+  shaderCatalog: AssetRow[];
   selectedAssetUrl: string | null;
   selectedObjectId: string | null;
   activeDragId: string | null;
@@ -202,6 +208,7 @@ const state: RuntimeState = {
   levelId: null,
   layout: emptyLayout(),
   assetCatalog: loadCachedAssetCatalog(),
+  shaderCatalog: [],
   selectedAssetUrl: null,
   selectedObjectId: null,
   activeDragId: null,
@@ -347,6 +354,11 @@ const terrainMeshes: THREE.Object3D[] = [];
 const waterMeshes: THREE.Mesh[] = [];
 let waterSurfaceMesh: ThreeWater | null = null;
 const objectMeshes = new Map<string, THREE.Object3D>();
+// Currently-applied custom (Shaderade) shader materials — ticked each
+// frame for u_time/u_lightDir so animated effects keep moving. Added when
+// a custom material is built (applyCustomShaderAsync), removed when its
+// mesh is disposed (removeObjectMesh).
+const activeCustomShaderMaterials = new Set<THREE.ShaderMaterial>();
 const selectedObjectIds = new Set<string>();
 const selectableMeshes: THREE.Object3D[] = [];
 const undoStack: string[] = [];
@@ -397,6 +409,13 @@ type MeshMaterialUserData = {
   outlineSignature?: string;
   originalCastShadow?: boolean;
   originalReceiveShadow?: boolean;
+  // "custom" shader mode (a compiled Shaderade graph) — customSignature is
+  // the shader_graph asset id, so switching to a different saved shader
+  // rebuilds; textures are tracked separately since THREE.Material.dispose()
+  // doesn't reach into an arbitrary custom `uniforms` dict to free them.
+  customMaterials?: MeshMaterialList;
+  customSignature?: string;
+  customTextures?: THREE.Texture[];
 };
 
 type RoadTextureBundle = {
@@ -1624,6 +1643,7 @@ function mergeSavedLocalLayout(layout: LevelLayout) {
 async function loadAssetCatalog(_url: string) {
   try {
     const rows = await listVisibleAssets(userId);
+    state.shaderCatalog = rows.filter((row) => row.kind === "shader_graph");
     const definitions: AssetDefinition[] = rows
       .filter((row) => row.format?.toLowerCase() === "glb")
       .map((row) => {
@@ -3079,7 +3099,9 @@ function setMeshMaterials(mesh: THREE.Mesh, materials: MeshMaterialList) {
 }
 
 function getObjectShaderMode(object: PlacedObjectData): ObjectShaderMode {
-  return object.shaderMode === "toon" || object.shaderMode === "outline" ? object.shaderMode : "standard";
+  if (object.shaderMode === "toon" || object.shaderMode === "outline") return object.shaderMode;
+  if (object.shaderMode === "custom" && object.customShaderAssetId) return "custom";
+  return "standard";
 }
 
 function createOutlineFillMaterial(material: THREE.Material, settings: OutlineShaderSettings) {
@@ -3155,6 +3177,103 @@ function syncOutlineShell(mesh: THREE.Mesh, settings: OutlineShellSettings, shou
     shellMaterial.color.setRGB(settings.color[0], settings.color[1], settings.color[2]);
     shellMaterial.needsUpdate = true;
   }
+}
+
+// Builds a real THREE.ShaderMaterial from a compiled Shaderade graph —
+// same uniform-building approach as app/tools/shaderade/ShaderPreview.tsx
+// (float/vec2/vec3/vec4 direct, sampler2D via TextureLoader for data:/
+// blob: URLs or a fetch-as-blob CORS workaround for remote signed URLs).
+// Synchronous: textures that need a network fetch populate themselves in
+// place once loaded, same as Shaderade's own preview — the material is
+// already usable (just untextured until then) the moment this returns.
+function buildCustomShaderMaterial(compiled: CompiledShaderResult): { material: THREE.ShaderMaterial; textures: THREE.Texture[] } {
+  const textures: THREE.Texture[] = [];
+  const uniforms: Record<string, THREE.IUniform> = {};
+  for (const [name, spec] of Object.entries(compiled.uniforms)) {
+    if (spec.type === "float") {
+      uniforms[name] = { value: (spec.value as number) ?? 0 };
+    } else if (spec.type === "vec2") {
+      const v = (spec.value as number[]) ?? [0, 0];
+      uniforms[name] = { value: new THREE.Vector2(v[0], v[1]) };
+    } else if (spec.type === "vec3") {
+      const v = (spec.value as number[]) ?? [0, 0, 0];
+      uniforms[name] = { value: new THREE.Vector3(v[0], v[1], v[2]) };
+    } else if (spec.type === "vec4") {
+      const v = (spec.value as number[]) ?? [0, 0, 0, 1];
+      uniforms[name] = { value: new THREE.Vector4(v[0], v[1], v[2], v[3]) };
+    } else if (spec.type === "sampler2D") {
+      if (spec.value && typeof spec.value === "string") {
+        const url = spec.value;
+        if (url.startsWith("data:") || url.startsWith("blob:")) {
+          const tex = new THREE.TextureLoader().load(url);
+          tex.flipY = false;
+          textures.push(tex);
+          uniforms[name] = { value: tex };
+        } else {
+          const tex = new THREE.Texture();
+          tex.flipY = false;
+          textures.push(tex);
+          fetch(url)
+            .then((r) => {
+              if (!r.ok) throw new Error(`texture fetch failed: ${r.status}`);
+              return r.blob();
+            })
+            .then(
+              (blob) =>
+                new Promise<void>((resolve, reject) => {
+                  const objectUrl = URL.createObjectURL(blob);
+                  const img = new Image();
+                  img.onload = () => {
+                    tex.image = img;
+                    tex.needsUpdate = true;
+                    URL.revokeObjectURL(objectUrl);
+                    resolve();
+                  };
+                  img.onerror = () => {
+                    URL.revokeObjectURL(objectUrl);
+                    reject(new Error("image decode failed"));
+                  };
+                  img.src = objectUrl;
+                })
+            )
+            .catch((err) => {
+              console.warn("World Builder custom shader: failed to load texture", url, err);
+            });
+          uniforms[name] = { value: tex };
+        }
+      } else {
+        uniforms[name] = { value: null };
+      }
+    }
+  }
+  const material = new THREE.ShaderMaterial({
+    vertexShader: compiled.vertexShader,
+    fragmentShader: compiled.fragmentShader,
+    uniforms,
+    transparent: compiled.transparent,
+  });
+  return { material, textures };
+}
+
+// Orchestrates the async fetch+compile+build for one mesh's custom shader,
+// then swaps it in — called from applyObjectShaderMode when no cached
+// material exists yet for the requested shader_graph asset id. Re-checks
+// the object is still valid and still wants this exact shader before
+// applying, since this resolves well after the triggering render pass.
+async function applyCustomShaderAsync(object: PlacedObjectData, mesh: THREE.Mesh, userData: MeshMaterialUserData, assetId: string) {
+  const compiled = await compileCustomShader(assetId);
+  if (!compiled) return;
+  if (!state.layout.objects.some((item) => item.id === object.id)) return;
+  if (getObjectShaderMode(object) !== "custom" || object.customShaderAssetId !== assetId) return;
+  const { material, textures } = buildCustomShaderMaterial(compiled);
+  const standardMaterials = userData.standardMaterials ?? [];
+  userData.customMaterials = standardMaterials.map(() => material);
+  userData.customSignature = assetId;
+  userData.customTextures = textures;
+  activeCustomShaderMaterials.add(material);
+  mesh.castShadow = userData.originalCastShadow ?? true;
+  mesh.receiveShadow = userData.originalReceiveShadow ?? true;
+  setMeshMaterials(mesh, userData.customMaterials);
 }
 
 function createToonMaterial(material: THREE.Material, settings: ToonShaderSettings) {
@@ -3278,6 +3397,22 @@ function applyObjectShaderMode(object: PlacedObjectData, root: THREE.Object3D) {
       setMeshMaterials(mesh, userData.outlineFillMaterials);
       return;
     }
+    if (shaderMode === "custom" && object.customShaderAssetId) {
+      const assetId = object.customShaderAssetId;
+      if (userData.customMaterials?.length && userData.customSignature === assetId) {
+        mesh.castShadow = userData.originalCastShadow ?? true;
+        mesh.receiveShadow = userData.originalReceiveShadow ?? true;
+        setMeshMaterials(mesh, userData.customMaterials);
+      } else {
+        // Not compiled yet (or a different shader was picked) — show the
+        // normal material for now, swap in the real one once it resolves.
+        mesh.castShadow = userData.originalCastShadow ?? true;
+        mesh.receiveShadow = userData.originalReceiveShadow ?? true;
+        setMeshMaterials(mesh, standardMaterials);
+        void applyCustomShaderAsync(object, mesh, userData, assetId);
+      }
+      return;
+    }
     mesh.castShadow = userData.originalCastShadow ?? true;
     mesh.receiveShadow = userData.originalReceiveShadow ?? true;
     setMeshMaterials(mesh, standardMaterials);
@@ -3346,6 +3481,40 @@ async function resolveAssetSource(assetId: string): Promise<string> {
     return signedAssetUrl(row.storage_path);
   })();
   signedUrlByAssetId.set(assetId, pending);
+  return pending;
+}
+
+// Fetches a saved Shaderade shader_graph asset and recompiles it — the
+// saved JSON only carries the compiled shader *source strings*, not
+// CompileResult.uniforms, so a THREE.ShaderMaterial can't be built
+// directly from it; recompiling from the saved nodes/edges (via the same
+// compiler Shaderade itself uses) is what reconstructs the uniforms map
+// correctly. Cached per asset id for the life of this mount — a saved
+// graph isn't expected to change out from under an already-open level.
+type CompiledShaderResult = Extract<CompileResult, { ok: true }>;
+const compiledShaderCache = new Map<string, Promise<CompiledShaderResult | null>>();
+async function compileCustomShader(assetId: string): Promise<CompiledShaderResult | null> {
+  const cached = compiledShaderCache.get(assetId);
+  if (cached) return cached;
+  const pending = (async (): Promise<CompiledShaderResult | null> => {
+    try {
+      const url = await resolveAssetSource(assetId);
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const parsed = JSON.parse(await res.text()) as { nodes?: ShaderGraphNode[]; edges?: ShaderGraphEdge[] };
+      if (!parsed.nodes || !parsed.edges) throw new Error("Saved shader is missing nodes/edges");
+      const result = compile({ nodes: parsed.nodes, edges: parsed.edges });
+      if (!result.ok) {
+        console.warn(`Custom shader ${assetId} failed to compile: ${result.error}`);
+        return null;
+      }
+      return result;
+    } catch (error) {
+      console.warn(`Failed to load/compile custom shader ${assetId}`, error);
+      return null;
+    }
+  })();
+  compiledShaderCache.set(assetId, pending);
   return pending;
 }
 
@@ -3665,9 +3834,22 @@ function updateInspector() {
               <option value="standard" ${shaderMode === "standard" ? "selected" : ""}>Current</option>
               <option value="toon" ${shaderMode === "toon" ? "selected" : ""}>Toon</option>
               <option value="outline" ${shaderMode === "outline" ? "selected" : ""}>Outline Only</option>
+              <option value="custom" ${shaderMode === "custom" ? "selected" : ""}>Custom (Shaderade)</option>
             </select>
           </label>
         </div>
+        ${shaderMode === "custom" ? `
+          <div class="split">
+            <label>
+              <span>Shaderade Graph</span>
+              <select id="custom-shader-asset">
+                ${state.shaderCatalog.length === 0 ? `<option value="">No saved shaders</option>` : state.shaderCatalog.map((row) =>
+                  `<option value="${row.id}" ${row.id === object.customShaderAssetId ? "selected" : ""}>${row.name}</option>`
+                ).join("")}
+              </select>
+            </label>
+          </div>
+        ` : ""}
         ${shaderMode === "toon" ? `
           <div class="split">
             <label><span>Ramp Steps</span><input id="toon-steps" type="range" min="2" max="8" step="1" value="${shaderSettings.toon.steps}" /></label>
@@ -3725,6 +3907,7 @@ function bindInspectorInputs(object: PlacedObjectData) {
   const sy = inspector.querySelector<HTMLInputElement>("#sy");
   const sz = inspector.querySelector<HTMLInputElement>("#sz");
   const shaderMode = inspector.querySelector<HTMLSelectElement>("#shader-mode");
+  const customShaderAsset = inspector.querySelector<HTMLSelectElement>("#custom-shader-asset");
   const toonSteps = inspector.querySelector<HTMLInputElement>("#toon-steps");
   const toonContrast = inspector.querySelector<HTMLInputElement>("#toon-contrast");
   const toonOutlineEnabled = inspector.querySelector<HTMLInputElement>("#toon-outline-enabled");
@@ -3742,6 +3925,7 @@ function bindInspectorInputs(object: PlacedObjectData) {
   let pushedEditHistory = false;
   let previousLightType = object.lightType ?? "omni";
   let previousShaderMode = getObjectShaderMode(object);
+  let previousCustomShaderAssetId = object.customShaderAssetId;
   const readNumber = (input: HTMLInputElement | null, fallback: number) => {
     if (!input) return fallback;
     const value = Number(input.value);
@@ -3764,7 +3948,12 @@ function bindInspectorInputs(object: PlacedObjectData) {
     object.scale[2] = Math.max(0.01, readNumber(sz, object.scale[2]));
     if (shaderMode) {
       object.shaderMode =
-        shaderMode.value === "toon" || shaderMode.value === "outline" ? (shaderMode.value as ObjectShaderMode) : "standard";
+        shaderMode.value === "toon" || shaderMode.value === "outline" || shaderMode.value === "custom"
+          ? (shaderMode.value as ObjectShaderMode)
+          : "standard";
+    }
+    if (customShaderAsset?.value) {
+      object.customShaderAssetId = customShaderAsset.value;
     }
     const nextShaderMode = getObjectShaderMode(object);
     object.shaderSettings = normalizeObjectShaderSettings({
@@ -3781,8 +3970,10 @@ function bindInspectorInputs(object: PlacedObjectData) {
         color: outlineColor ? hexToRgb(outlineColor.value) : undefined,
       },
     });
-    if (previousShaderMode !== nextShaderMode) {
+    const customAssetChanged = nextShaderMode === "custom" && object.customShaderAssetId !== previousCustomShaderAssetId;
+    if (previousShaderMode !== nextShaderMode || customAssetChanged) {
       previousShaderMode = nextShaderMode;
+      previousCustomShaderAssetId = object.customShaderAssetId;
       const mesh = objectMeshes.get(object.id);
       if (mesh) applyObjectShaderMode(object, mesh);
       saveLocalLayout();
@@ -3821,6 +4012,7 @@ function bindInspectorInputs(object: PlacedObjectData) {
     sy,
     sz,
     shaderMode,
+    customShaderAsset,
     toonSteps,
     toonContrast,
     toonOutlineEnabled,
@@ -3872,7 +4064,15 @@ function removeObjectMesh(id: string) {
     }
     userData.standardMaterials?.forEach((item) => materialSet.add(item));
     userData.toonMaterials?.forEach((item) => materialSet.add(item));
+    userData.customMaterials?.forEach((item) => {
+      materialSet.add(item);
+      if (item instanceof THREE.ShaderMaterial) activeCustomShaderMaterials.delete(item);
+    });
     materialSet.forEach((item) => item.dispose?.());
+    // Custom-shader textures live in an arbitrary uniforms dict, which
+    // Material.dispose() doesn't know how to reach into — dispose them
+    // explicitly, same reason Shaderade's own preview tracks these.
+    userData.customTextures?.forEach((tex) => tex.dispose());
   });
   objectMeshes.delete(id);
   const selectableIndex = selectableMeshes.findIndex((node) => node.userData.objectId === id);
@@ -5736,6 +5936,15 @@ function onKeyDown(event: KeyboardEvent) {
   }
 }
 
+function updateActiveCustomShaderUniforms(elapsedSeconds: number) {
+  if (activeCustomShaderMaterials.size === 0) return;
+  const lightDir = sunLight.position.clone().normalize();
+  activeCustomShaderMaterials.forEach((material) => {
+    if (material.uniforms.u_time) material.uniforms.u_time.value = elapsedSeconds;
+    if (material.uniforms.u_lightDir) (material.uniforms.u_lightDir.value as THREE.Vector3).copy(lightDir);
+  });
+}
+
 function tick() {
   if (disposed) return;
   rafId = requestAnimationFrame(tick);
@@ -5746,8 +5955,10 @@ function tick() {
   }
 
   applySkyAndWater();
-  renderShaderBallViewer(performance.now() / 1000);
-  renderWaterShaderViewer(performance.now() / 1000);
+  const elapsedSeconds = performance.now() / 1000;
+  renderShaderBallViewer(elapsedSeconds);
+  renderWaterShaderViewer(elapsedSeconds);
+  updateActiveCustomShaderUniforms(elapsedSeconds);
   controls.update();
   renderer.render(scene, camera);
 }

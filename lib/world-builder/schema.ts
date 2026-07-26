@@ -68,7 +68,15 @@ export type PlacedObjectData = {
   // a single `.asset`) — the real per-floor recipe lives in `building`.
   asset: string;
   building?: BuildingSpec;
-  shaderMode?: "standard" | "toon" | "outline";
+  shaderMode?: "standard" | "toon" | "outline" | "custom";
+  // For shaderMode "custom": a creator_assets id of a saved Shaderade
+  // shader_graph asset. The graph is recompiled client-side (see
+  // compileCustomShader in editor.ts) rather than stored pre-compiled here
+  // — a shader_graph asset's saved JSON only has the compiled shader
+  // source strings, not the uniforms map a THREE.ShaderMaterial actually
+  // needs, so recompiling from the saved nodes/edges is what makes this
+  // work correctly rather than approximately.
+  customShaderAssetId?: string;
   shaderSettings?: {
     toon?: {
       steps?: number;

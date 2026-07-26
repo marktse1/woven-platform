@@ -17,6 +17,8 @@ function toolTheme(path: string) {
     return { accent: "#c47be8", headerBg: "rgba(24,16,30,0.96)", border: "#2d2035", logoBorder: "rgba(196,123,232,.4)", logoA: "#c47be8", logoB: "#8b3db0", logoBg: "#1b1520", activeText: "#f5ecff" };
   if (path.startsWith("/tools/substance-weaver"))
     return { accent: "#56a6e8", headerBg: "rgba(10,14,20,0.96)", border: "#263040", logoBorder: "rgba(86,166,232,.4)", logoA: "#56a6e8", logoB: "#2c6aa0", logoBg: "#0b0f14", activeText: "#cfe6fb" };
+  if (path.startsWith("/tools/world-builder"))
+    return { accent: "#4ac28a", headerBg: "rgba(12,22,18,0.96)", border: "#1f3329", logoBorder: "rgba(74,194,138,.4)", logoA: "#4ac28a", logoB: "#2c7a56", logoBg: "#0e1712", activeText: "#dcf7e9" };
   return { accent: "#d65b36", headerBg: "rgba(24,20,14,0.96)", border: "#2a2420", logoBorder: "rgba(214,91,54,.4)", logoA: "#d65b36", logoB: "#a03018", logoBg: "#1b1815", activeText: "#fff3ec" };
 }
 

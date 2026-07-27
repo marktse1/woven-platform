@@ -11,7 +11,7 @@ import { MeshBVH, acceleratedRaycast } from "three-mesh-bvh";
 import "three-mesh-bvh"; // pulls in BufferGeometry.boundsTree augmentation
 import { buildSeamData, type SeamData } from "@/lib/sculpt/seams";
 import { applyBrush, applyMaskDab, gatherVertices, expandSeams, type BrushMode, type BrushHit } from "@/lib/sculpt/brushes";
-import { extractMaskedRegion } from "@/lib/sculpt/extract";
+import { extractMaskedRegion, detachMaskedRegion } from "@/lib/sculpt/extract";
 import { SculptUndoStack } from "@/lib/sculpt/undo";
 import { TopoUndoStack, type TopoMeshSnapshot } from "@/lib/sculpt/topoUndo";
 import { computeAvgEdgeLen, dynTopoRefine } from "@/lib/sculpt/dyntopo";
@@ -30,9 +30,9 @@ type SubdivGeomSnapshot = {
 };
 
 type SculptMeshEntry = {
-  /** Stable identity for the Sub Tools list UI — independent of array position, which shifts as entries are added/deleted. */
+  /** Stable identity for the Submeshes list UI — independent of array position, which shifts as entries are added/deleted. */
   id: string;
-  /** Shown in the Sub Tools list — "Original" for the initially loaded mesh, "Extract N" for extracted sub-tools. */
+  /** Shown in the Submeshes list — "Original" for the initially loaded mesh, "Extract N"/"Detach N" for extracted/detached submeshes. */
   name: string;
   mesh: THREE.Mesh;
   seams: SeamData;
@@ -302,14 +302,21 @@ export type SculptViewerHandle = {
   /** A reasonable default extrude distance, scaled to the loaded mesh's density. */
   getRecommendedExtrudeDistance: () => number;
   /** ZBrush-style extraction: for every entry with a painted mask, builds a
-   * new thickened+closed shell sub-tool mesh from the masked region and adds
+   * new thickened+closed shell submesh from the masked region and adds
    * it to the scene. Never mutates the source mesh. Returns how many new
-   * sub-tools were created (0 if nothing is masked above the threshold
+   * submeshes were created (0 if nothing is masked above the threshold
    * anywhere). */
   extractMask: (threshold: number, thickness: number) => number;
+  /** For every entry with a painted mask, moves the masked triangles (with
+   * their original position/normal/uv/color, no synthetic shell) out of the
+   * source entry's own geometry and into a new independent submesh — e.g.
+   * detaching a vehicle door or wheel that already has real geometry, while
+   * keeping the shared UV map. Unlike extractMask, this DOES mutate the
+   * source entry. Returns how many new submeshes were created. */
+  detachMask: (threshold: number) => number;
   /** Resets every entry's mask to fully unmasked and clears its visualization. */
   clearMask: () => void;
-  /** Current scene contents for the Sub Tools list UI. */
+  /** Current scene contents for the Submeshes list UI. */
   getMeshEntries: () => Array<{ id: string; name: string; visible: boolean; vertexCount: number }>;
   setEntryVisible: (id: string, visible: boolean) => void;
   /** Removes an entry from the scene and disposes its GPU resources. Refuses to delete the last remaining entry. */
@@ -2232,12 +2239,64 @@ export default function SculptViewer({
     onModelLoadedRef.current?.(0);
   }, []);
 
+  // Shared by extractMask and detachMask: wraps a freshly-built geometry
+  // (already independent of the source's own buffers) as a brand-new scene
+  // entry, following the exact same setup every loaded mesh gets — BVH,
+  // seams, paint canvas, wire overlay, material cloned from the source
+  // entry's own true material. `namePrefix` produces names like
+  // "Extract 1"/"Detach 1", numbered independently per prefix.
+  const spawnDerivedEntry = useCallback((group: THREE.Group, geometry: THREE.BufferGeometry, namePrefix: string, sourceEntry: SculptMeshEntry) => {
+    geometry.boundsTree = new MeshBVH(geometry);
+    const posArr = geometry.attributes.position.array as Float32Array;
+    const seams = buildSeamData(posArr);
+    const baseEdgeLen = computeAvgEdgeLen(geometry);
+    const quadIndices = detectQuads(geometry);
+
+    // Starts from the source's own true material (not whatever debug/
+    // view material happens to be showing right now) — applyViewToGroup
+    // below immediately re-themes it to match the active view mode
+    // anyway, same as every other mesh in the scene.
+    const srcMat = originalMaterialsRef.current.get(sourceEntry.mesh.uuid) ?? sourceEntry.mesh.material;
+    const mat = (Array.isArray(srcMat) ? srcMat[0] : srcMat).clone();
+    const mesh = new THREE.Mesh(geometry, mat);
+    mesh.castShadow = sourceEntry.mesh.castShadow;
+    mesh.receiveShadow = sourceEntry.mesh.receiveShadow;
+    group.add(mesh);
+    originalMaterialsRef.current.set(mesh.uuid, mat);
+
+    // Same paint-canvas setup every other loaded mesh gets — lets a
+    // derived submesh be color-painted just like the original.
+    let paintEntry: Partial<SculptMeshEntry> = {};
+    try {
+      const canvas = document.createElement("canvas"); canvas.width = canvas.height = PAINT_TEX_SIZE;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.fillStyle = "#888888"; ctx.fillRect(0, 0, PAINT_TEX_SIZE, PAINT_TEX_SIZE);
+        const pt = new THREE.CanvasTexture(canvas); pt.colorSpace = THREE.SRGBColorSpace;
+        const pm = new THREE.MeshBasicMaterial({ map: pt });
+        paintEntry = { paintCanvas: canvas, paintTexture: pt, paintMat: pm };
+      }
+    } catch { /* canvas context unavailable */ }
+
+    const num = meshEntriesRef.current.filter((e) => e.name.startsWith(namePrefix)).length + 1;
+    meshEntriesRef.current.push({
+      id: crypto.randomUUID(),
+      name: `${namePrefix} ${num}`,
+      mesh, seams, baseEdgeLen, quadIndices,
+      ...paintEntry,
+    });
+
+    const wire = buildWireOverlay(geometry, wireMatRef.current!);
+    wire.visible = viewModeRef.current === "wireframe" || wireframeOverlayRef.current;
+    mesh.add(wire);
+  }, []);
+
   // ZBrush-style extraction: for every entry with a painted mask, builds a
-  // new thickened+closed shell sub-tool mesh (lib/sculpt/extract.ts) and
-  // adds it to the scene — the source mesh/geometry is never touched.
-  // Not integrated with the position-undo stack (it doesn't change any
+  // new thickened+closed shell submesh (lib/sculpt/extract.ts) and adds it
+  // to the scene — the source mesh/geometry is never touched. Not
+  // integrated with the position-undo stack (it doesn't change any
   // existing mesh's positions) — "undo" for an extraction is just deleting
-  // that sub-tool from the list, which is always safe since nothing else
+  // that submesh from the list, which is always safe since nothing else
   // depends on it existing.
   const extractMask = useCallback((threshold: number, thickness: number): number => {
     const group = modelRef.current;
@@ -2251,51 +2310,7 @@ export default function SculptViewer({
       if (!entry.mask) continue;
       const result = extractMaskedRegion(entry.mesh.geometry, { mask: entry.mask, threshold, thickness });
       if (!result.ok) continue;
-
-      result.geometry.boundsTree = new MeshBVH(result.geometry);
-      const posArr = result.geometry.attributes.position.array as Float32Array;
-      const seams = buildSeamData(posArr);
-      const baseEdgeLen = computeAvgEdgeLen(result.geometry);
-      const quadIndices = detectQuads(result.geometry);
-
-      // Starts from the source's own true material (not whatever debug/
-      // view material happens to be showing right now) — applyViewToGroup
-      // below immediately re-themes it to match the active view mode
-      // anyway, same as every other mesh in the scene.
-      const srcMat = originalMaterialsRef.current.get(entry.mesh.uuid) ?? entry.mesh.material;
-      const mat = (Array.isArray(srcMat) ? srcMat[0] : srcMat).clone();
-      const mesh = new THREE.Mesh(result.geometry, mat);
-      mesh.castShadow = entry.mesh.castShadow;
-      mesh.receiveShadow = entry.mesh.receiveShadow;
-      group.add(mesh);
-      originalMaterialsRef.current.set(mesh.uuid, mat);
-
-      // Same paint-canvas setup every other loaded mesh gets — lets an
-      // extracted sub-tool be color-painted just like the original.
-      let paintEntry: Partial<SculptMeshEntry> = {};
-      try {
-        const canvas = document.createElement("canvas"); canvas.width = canvas.height = PAINT_TEX_SIZE;
-        const ctx = canvas.getContext("2d");
-        if (ctx) {
-          ctx.fillStyle = "#888888"; ctx.fillRect(0, 0, PAINT_TEX_SIZE, PAINT_TEX_SIZE);
-          const pt = new THREE.CanvasTexture(canvas); pt.colorSpace = THREE.SRGBColorSpace;
-          const pm = new THREE.MeshBasicMaterial({ map: pt });
-          paintEntry = { paintCanvas: canvas, paintTexture: pt, paintMat: pm };
-        }
-      } catch { /* canvas context unavailable */ }
-
-      const extractNumber = meshEntriesRef.current.filter((e) => e.name.startsWith("Extract ")).length + 1;
-      meshEntriesRef.current.push({
-        id: crypto.randomUUID(),
-        name: `Extract ${extractNumber}`,
-        mesh, seams, baseEdgeLen, quadIndices,
-        ...paintEntry,
-      });
-
-      const wire = buildWireOverlay(result.geometry, wireMatRef.current!);
-      wire.visible = viewModeRef.current === "wireframe" || wireframeOverlayRef.current;
-      mesh.add(wire);
-
+      spawnDerivedEntry(group, result.geometry, "Extract", entry);
       created++;
     }
     if (created > 0) {
@@ -2304,7 +2319,65 @@ export default function SculptViewer({
       onModelLoadedRef.current?.(totalVerts);
     }
     return created;
-  }, []);
+  }, [spawnDerivedEntry]);
+
+  // Detach: for every entry with a painted mask, moves the masked
+  // triangles — with their ORIGINAL position/normal/uv/color, no synthetic
+  // shell — out of the source entry's own geometry and into a new
+  // independent submesh (lib/sculpt/extract.ts's detachMaskedRegion).
+  // Unlike extractMask, this DOES mutate the source: the selected
+  // triangles are removed from its index buffer and its BVH/seams/
+  // quadIndices are rebuilt afterward, following the same "rebuild
+  // auxiliary structures wholesale" convention used after every other
+  // topology-changing op in this file (DynTopo/subdivide/extrude). Not
+  // integrated with either undo stack for v1 — both assume a fixed set of
+  // mesh objects, and Detach adds one while editing another.
+  const detachMask = useCallback((threshold: number): number => {
+    const group = modelRef.current;
+    const scene = sceneRef.current;
+    if (!group || !scene) return 0;
+    let created = 0;
+    const sourceEntries = [...meshEntriesRef.current];
+    for (const entry of sourceEntries) {
+      if (!entry.mask) continue;
+      const result = detachMaskedRegion(entry.mesh.geometry, { mask: entry.mask, threshold });
+      if (!result.ok) continue;
+
+      // Remove exactly the selected triangles from the source's own index
+      // buffer — the source's vertex buffer is left untouched, so this
+      // can't create a dangling/out-of-range index, only orphaned
+      // (unreferenced) vertices, which is harmless.
+      const srcGeo = entry.mesh.geometry;
+      const srcIndex = srcGeo.index!;
+      const selectedKeys = new Set(result.selectedTris.map(([a, b, c]) => `${a}_${b}_${c}`));
+      const keptIndices: number[] = [];
+      for (let t = 0; t < srcIndex.count / 3; t++) {
+        const a = srcIndex.getX(t * 3), b = srcIndex.getX(t * 3 + 1), c = srcIndex.getX(t * 3 + 2);
+        if (selectedKeys.has(`${a}_${b}_${c}`)) continue;
+        keptIndices.push(a, b, c);
+      }
+      srcGeo.setIndex(keptIndices);
+      srcGeo.boundsTree = new MeshBVH(srcGeo);
+      entry.seams = buildSeamData(srcGeo.attributes.position.array as Float32Array);
+      entry.topology = undefined;
+      entry.mirror = undefined;
+      entry.quadIndices = detectQuads(srcGeo);
+      const oldWire = entry.mesh.children.find((c) => c.name === "__wire") as THREE.LineSegments | undefined;
+      if (oldWire) { entry.mesh.remove(oldWire); oldWire.geometry.dispose(); }
+      const newWire = buildWireOverlay(srcGeo, wireMatRef.current!);
+      newWire.visible = viewModeRef.current === "wireframe" || wireframeOverlayRef.current;
+      entry.mesh.add(newWire);
+
+      spawnDerivedEntry(group, result.geometry, "Detach", entry);
+      created++;
+    }
+    if (created > 0) {
+      applyViewToGroup(group, scene, viewModeRef.current, clayColorRef.current);
+      const totalVerts = meshEntriesRef.current.reduce((s, e) => s + e.mesh.geometry.attributes.position.count, 0);
+      onModelLoadedRef.current?.(totalVerts);
+    }
+    return created;
+  }, [spawnDerivedEntry]);
 
   const clearMask = useCallback(() => {
     for (const entry of meshEntriesRef.current) {
@@ -2379,10 +2452,10 @@ export default function SculptViewer({
       (handleRef as React.MutableRefObject<SculptViewerHandle | null>).current = {
         exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene,
         extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance,
-        extractMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb,
+        extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb,
       };
     }
-  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance, extractMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb]);
+  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance, extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb]);
 
   return <div ref={mountRef} className="w-full h-full" style={{ touchAction: "none" }} />;
 }

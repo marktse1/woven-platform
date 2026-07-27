@@ -36,22 +36,34 @@ function edgeKey(a: number, b: number): string {
   return a < b ? `${a}_${b}` : `${b}_${a}`;
 }
 
-export function extractMaskedRegion(geometry: THREE.BufferGeometry, options: ExtractOptions): ExtractResult {
-  const { mask, threshold, thickness } = options;
-  const index = geometry.index;
-  const position = geometry.attributes.position as THREE.BufferAttribute | undefined;
-  const normalAttr = geometry.attributes.normal as THREE.BufferAttribute | undefined;
-  if (!index || !position) return { ok: false, reason: "Geometry has no index/position buffer." };
-  if (!normalAttr) return { ok: false, reason: "Geometry has no normal buffer." };
-  if (mask.length < position.count) return { ok: false, reason: "Mask doesn't cover every vertex." };
-
-  // ── 1. Select triangles whose average mask exceeds the threshold ──────────
+/** Triangles whose average vertex mask exceeds `threshold` — shared by extract and detach. */
+function selectMaskedTriangles(
+  index: THREE.BufferAttribute | THREE.Uint16BufferAttribute | THREE.Uint32BufferAttribute,
+  mask: Float32Array,
+  threshold: number,
+): [number, number, number][] {
   const triCount = index.count / 3;
   const includedTris: [number, number, number][] = [];
   for (let t = 0; t < triCount; t++) {
     const a = index.getX(t * 3), b = index.getX(t * 3 + 1), c = index.getX(t * 3 + 2);
     if ((mask[a] + mask[b] + mask[c]) / 3 > threshold) includedTris.push([a, b, c]);
   }
+  return includedTris;
+}
+
+export function extractMaskedRegion(geometry: THREE.BufferGeometry, options: ExtractOptions): ExtractResult {
+  const { mask, threshold, thickness } = options;
+  const index = geometry.index;
+  const position = geometry.attributes.position as THREE.BufferAttribute | undefined;
+  const normalAttr = geometry.attributes.normal as THREE.BufferAttribute | undefined;
+  const uvAttr = geometry.attributes.uv as THREE.BufferAttribute | undefined;
+  const colorAttr = geometry.attributes.color as THREE.BufferAttribute | undefined;
+  if (!index || !position) return { ok: false, reason: "Geometry has no index/position buffer." };
+  if (!normalAttr) return { ok: false, reason: "Geometry has no normal buffer." };
+  if (mask.length < position.count) return { ok: false, reason: "Mask doesn't cover every vertex." };
+
+  // ── 1. Select triangles whose average mask exceeds the threshold ──────────
+  const includedTris = selectMaskedTriangles(index, mask, threshold);
   if (includedTris.length === 0) return { ok: false, reason: "Nothing is masked above the threshold." };
 
   // ── 2. Boundary edges: undirected edges used by exactly one included
@@ -120,36 +132,53 @@ export function extractMaskedRegion(geometry: THREE.BufferGeometry, options: Ext
   const frontCount = usedVerts.length;
 
   const positions: number[] = [];
+  const uvs: number[] | null = uvAttr ? [] : null;
+  const colors: number[] | null = colorAttr ? [] : null;
   for (const srcIdx of usedVerts) {
     positions.push(position.getX(srcIdx), position.getY(srcIdx), position.getZ(srcIdx));
+    if (uvs) uvs.push(uvAttr!.getX(srcIdx), uvAttr!.getY(srcIdx));
+    if (colors) colors.push(colorAttr!.getX(srcIdx), colorAttr!.getY(srcIdx), colorAttr!.getZ(srcIdx));
   }
   // Back layer: same vertex subset, offset along each vertex's own
-  // (source-geometry) normal by `thickness`.
+  // (source-geometry) normal by `thickness`. UVs/colors are duplicated
+  // unchanged — same surface point, just pushed along its normal.
   for (const srcIdx of usedVerts) {
     positions.push(
       position.getX(srcIdx) + normalAttr.getX(srcIdx) * thickness,
       position.getY(srcIdx) + normalAttr.getY(srcIdx) * thickness,
       position.getZ(srcIdx) + normalAttr.getZ(srcIdx) * thickness,
     );
+    if (uvs) uvs.push(uvAttr!.getX(srcIdx), uvAttr!.getY(srcIdx));
+    if (colors) colors.push(colorAttr!.getX(srcIdx), colorAttr!.getY(srcIdx), colorAttr!.getZ(srcIdx));
   }
 
+  // Winding: built below assuming POSITIVE thickness (back layer offset
+  // outward along the source normal). Under that convention the FRONT
+  // (unmoved) layer becomes the shell's inner-facing wall — it must be
+  // wound OPPOSITE to the source triangle's own winding, no longer facing
+  // the way the original surface faced. The BACK (offset) layer becomes
+  // the shell's new outward-facing side and keeps the source winding.
+  // (Verified via explicit cross-product computation on concrete
+  // coordinates, not by intuition — see this file's header/plan notes.)
+  // If thickness is actually negative, every triangle below gets its
+  // winding flipped in one uniform pass afterward, rather than threading
+  // a sign check through each push site.
   const indices: number[] = [];
-  // Front cap — original winding, original positions.
+  // Front cap — reversed winding, original positions.
   for (const [a, b, c] of includedTris) {
-    indices.push(remap.get(a)!, remap.get(b)!, remap.get(c)!);
+    indices.push(remap.get(a)!, remap.get(c)!, remap.get(b)!);
   }
-  // Back cap — same triangles on the offset layer, winding reversed so it
-  // faces the opposite direction from the front cap.
+  // Back cap — original winding, offset positions.
   for (const [a, b, c] of includedTris) {
-    indices.push(frontCount + remap.get(a)!, frontCount + remap.get(c)!, frontCount + remap.get(b)!);
+    indices.push(frontCount + remap.get(a)!, frontCount + remap.get(b)!, frontCount + remap.get(c)!);
   }
   // Stitched walls along every boundary loop — for each directed boundary
   // edge (p0->p1, using the edge's TRUE triangle-derived direction, not
   // necessarily the loop walk's own traversal direction), the standard
-  // outward-consistent wall is (p0,p1,p1b),(p0,p1b,p0b). Using dir0/dir1
-  // from edgeInfo rather than the walk's own (cur,next) order is what makes
-  // this correct regardless of which way any given loop happened to be
-  // walked above.
+  // outward-consistent wall (for positive thickness) is
+  // (p0,p1,p1b),(p0,p1b,p0b). Using dir0/dir1 from edgeInfo rather than the
+  // walk's own (cur,next) order is what makes this correct regardless of
+  // which way any given loop happened to be walked above.
   for (const loop of loops) {
     for (let i = 0; i < loop.length; i++) {
       const cur = loop[i], next = loop[(i + 1) % loop.length];
@@ -162,9 +191,89 @@ export function extractMaskedRegion(geometry: THREE.BufferGeometry, options: Ext
     }
   }
 
+  // Uniform post-process: the whole shell above is built for the
+  // positive-thickness convention. For negative thickness the entire
+  // relationship inverts (independently re-verified via the same
+  // cross-product method with the sign flipped), so flip every triangle's
+  // winding in one pass here rather than duplicating the shell logic.
+  if (thickness < 0) {
+    for (let i = 0; i < indices.length; i += 3) {
+      const tmp = indices[i + 1];
+      indices[i + 1] = indices[i + 2];
+      indices[i + 2] = tmp;
+    }
+  }
+
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  if (uvs) geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  if (colors) geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
   geo.setIndex(indices);
   geo.computeVertexNormals();
   return { ok: true, geometry: geo };
+}
+
+export type DetachOptions = {
+  mask: Float32Array;
+  /** 0..1 — a triangle is included if the average of its 3 vertices' mask values exceeds this. */
+  threshold: number;
+};
+
+export type DetachResult =
+  | { ok: true; geometry: THREE.BufferGeometry; selectedTris: [number, number, number][] }
+  | { ok: false; reason: string };
+
+/**
+ * Detach: pulls triangles that already have real geometry (e.g. a vehicle
+ * door or wheel) out of the source mesh into a new independent geometry,
+ * copying every existing attribute (position/normal/uv/color) as-authored —
+ * no synthetic shell, no offset, no boundary walk. Distinct from
+ * extractMaskedRegion, which adds thickness to a flat painted patch.
+ * Returns the selected triangles too, so the caller can remove exactly
+ * those from the source mesh's own index buffer.
+ */
+export function detachMaskedRegion(geometry: THREE.BufferGeometry, options: DetachOptions): DetachResult {
+  const { mask, threshold } = options;
+  const index = geometry.index;
+  const position = geometry.attributes.position as THREE.BufferAttribute | undefined;
+  const normalAttr = geometry.attributes.normal as THREE.BufferAttribute | undefined;
+  const uvAttr = geometry.attributes.uv as THREE.BufferAttribute | undefined;
+  const colorAttr = geometry.attributes.color as THREE.BufferAttribute | undefined;
+  if (!index || !position) return { ok: false, reason: "Geometry has no index/position buffer." };
+  if (mask.length < position.count) return { ok: false, reason: "Mask doesn't cover every vertex." };
+
+  const includedTris = selectMaskedTriangles(index, mask, threshold);
+  if (includedTris.length === 0) return { ok: false, reason: "Nothing is masked above the threshold." };
+
+  const usedVerts: number[] = [];
+  const remap = new Map<number, number>();
+  const noteVertex = (i: number) => {
+    if (!remap.has(i)) { remap.set(i, usedVerts.length); usedVerts.push(i); }
+  };
+  for (const [a, b, c] of includedTris) { noteVertex(a); noteVertex(b); noteVertex(c); }
+
+  const positions: number[] = [];
+  const normals: number[] | null = normalAttr ? [] : null;
+  const uvs: number[] | null = uvAttr ? [] : null;
+  const colors: number[] | null = colorAttr ? [] : null;
+  for (const srcIdx of usedVerts) {
+    positions.push(position.getX(srcIdx), position.getY(srcIdx), position.getZ(srcIdx));
+    if (normals) normals!.push(normalAttr!.getX(srcIdx), normalAttr!.getY(srcIdx), normalAttr!.getZ(srcIdx));
+    if (uvs) uvs.push(uvAttr!.getX(srcIdx), uvAttr!.getY(srcIdx));
+    if (colors) colors.push(colorAttr!.getX(srcIdx), colorAttr!.getY(srcIdx), colorAttr!.getZ(srcIdx));
+  }
+
+  const indices: number[] = [];
+  for (const [a, b, c] of includedTris) {
+    indices.push(remap.get(a)!, remap.get(b)!, remap.get(c)!);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  if (normals) geo.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+  if (uvs) geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  if (colors) geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  geo.setIndex(indices);
+  if (!normals) geo.computeVertexNormals();
+  return { ok: true, geometry: geo, selectedTris: includedTris };
 }

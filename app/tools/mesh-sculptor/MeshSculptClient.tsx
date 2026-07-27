@@ -29,14 +29,7 @@ const SculptViewer = dynamic(() => import("@/components/tools/SculptViewer"), {
 function BrushIcon({ mode, active }: { mode: BrushMode; active: boolean }) {
   const s = active ? "#ffffff" : "#8aa0b4";
   const w = "1.6";
-  const ICON_PNGS: Partial<Record<BrushMode, string>> = { clay_buildup: "/claybuildup.png", push: "/inflate.png", flatten: "/flatten.png", move: "/move.png", smooth: "/smooth.png", paint: "/paint.png" };
-  if (mode === "mask") return (
-    <svg width="64" height="64" viewBox="0 0 22 22" fill="none">
-      {/* dashed lasso — marks a region rather than sculpting it */}
-      <circle cx="11" cy="11" r="7.5" stroke={s} strokeWidth={w} strokeDasharray="3 2.5" />
-      <path d="M8 11 L10 13 L14.5 8" stroke={s} strokeWidth={w} strokeLinecap="round" strokeLinejoin="round" fill="none" />
-    </svg>
-  );
+  const ICON_PNGS: Partial<Record<BrushMode, string>> = { clay_buildup: "/claybuildup.png", push: "/inflate.png", flatten: "/flatten.png", move: "/move.png", smooth: "/smooth.png", paint: "/paint.png", mask: "/mask.png" };
   const png = ICON_PNGS[mode];
   if (png) return (
     <Image src={png} alt={mode} width={64} height={64}
@@ -107,7 +100,7 @@ const BRUSH_MODES: BrushDef[] = [
   { mode: "flatten",      label: "Flatten", desc: "Project vertices to local tangent plane",            shortcut: "R" },
   { mode: "move",         label: "Move",    desc: "Drag a cluster of vertices freely in any direction", shortcut: "T" },
   { mode: "paint",        label: "Paint",   desc: "Paint color onto UV albedo texture without changing geometry", shortcut: "P" },
-  { mode: "mask",         label: "Mask",    desc: "Paint a region to Extract as a new, separate sub-tool mesh", shortcut: "K", invertHint: "Alt = erase" },
+  { mode: "mask",         label: "Mask",    desc: "Paint a region to Extract or Detach as a new, separate submesh", shortcut: "K", invertHint: "Alt = erase" },
 ];
 
 const MODE_KEY: Record<string, BrushMode> = {
@@ -167,8 +160,8 @@ export default function MeshSculptClient() {
   const [maskThreshold, setMaskThreshold] = useState(0.5);
   const [maskThickness, setMaskThickness] = useState(0.1);
   const [extractMsg, setExtractMsg] = useState("");
-  const [subTools, setSubTools] = useState<Array<{ id: string; name: string; visible: boolean; vertexCount: number }>>([]);
-  const [subToolSaving, setSubToolSaving] = useState<string | null>(null);
+  const [submeshes, setSubmeshes] = useState<Array<{ id: string; name: string; visible: boolean; vertexCount: number }>>([]);
+  const [submeshSaving, setSubmeshSaving] = useState<string | null>(null);
 
   const [viewMode, setViewMode] = useState<ViewMode>("combined");
   const [subdivLevel, setSubdivLevel] = useState(0);
@@ -332,7 +325,7 @@ export default function MeshSculptClient() {
     setUploadMsg("");
     setSubdivLevel(0);
     setEditMode("sculpt");
-    setSubTools([]);
+    setSubmeshes([]);
     setExtractMsg("");
   }, []);
 
@@ -473,41 +466,47 @@ export default function MeshSculptClient() {
   }, [extrudeDistance]);
 
   // Re-reads the current scene's mesh list from the viewer — called after
-  // any action that can add/remove/rename an entry (load, Extract, delete).
-  const refreshSubTools = useCallback(() => {
-    setSubTools(viewerHandleRef.current?.getMeshEntries() ?? []);
+  // any action that can add/remove/rename an entry (load, Extract, Detach, delete).
+  const refreshSubmeshes = useCallback(() => {
+    setSubmeshes(viewerHandleRef.current?.getMeshEntries() ?? []);
   }, []);
 
   const handleModelLoaded = useCallback((count: number) => {
     setVertexCount(count);
-    refreshSubTools();
-  }, [refreshSubTools]);
+    refreshSubmeshes();
+  }, [refreshSubmeshes]);
 
   const handleExtractMask = useCallback(() => {
     const created = viewerHandleRef.current?.extractMask(maskThreshold, maskThickness) ?? 0;
-    setExtractMsg(created > 0 ? `Created ${created} sub-tool${created === 1 ? "" : "s"}.` : "Nothing masked — paint a region first.");
-    refreshSubTools();
-  }, [maskThreshold, maskThickness, refreshSubTools]);
+    setExtractMsg(created > 0 ? `Created ${created} submesh${created === 1 ? "" : "es"}.` : "Nothing masked — paint a region first.");
+    refreshSubmeshes();
+  }, [maskThreshold, maskThickness, refreshSubmeshes]);
+
+  const handleDetachMask = useCallback(() => {
+    const created = viewerHandleRef.current?.detachMask(maskThreshold) ?? 0;
+    setExtractMsg(created > 0 ? `Detached ${created} submesh${created === 1 ? "" : "es"}.` : "Nothing masked — paint a region first.");
+    refreshSubmeshes();
+  }, [maskThreshold, refreshSubmeshes]);
 
   const handleClearMask = useCallback(() => {
     viewerHandleRef.current?.clearMask();
     setExtractMsg("");
   }, []);
 
-  const handleToggleSubToolVisible = useCallback((id: string, visible: boolean) => {
+  const handleToggleSubmeshVisible = useCallback((id: string, visible: boolean) => {
     viewerHandleRef.current?.setEntryVisible(id, visible);
-    refreshSubTools();
-  }, [refreshSubTools]);
+    refreshSubmeshes();
+  }, [refreshSubmeshes]);
 
-  const handleDeleteSubTool = useCallback((id: string) => {
+  const handleDeleteSubmesh = useCallback((id: string) => {
     const result = viewerHandleRef.current?.deleteEntry(id);
     if (result && !result.ok) { setExtractMsg(result.reason ?? "Couldn't delete."); return; }
-    refreshSubTools();
-  }, [refreshSubTools]);
+    refreshSubmeshes();
+  }, [refreshSubmeshes]);
 
-  const handleSaveSubTool = useCallback(async (id: string, name: string) => {
+  const handleSaveSubmesh = useCallback(async (id: string, name: string) => {
     if (!viewerHandleRef.current || !user?.id) return;
-    setSubToolSaving(id);
+    setSubmeshSaving(id);
     try {
       const bytes = await viewerHandleRef.current.exportEntryGlb(id);
       await uploadAndMaybeCompress(
@@ -518,7 +517,7 @@ export default function MeshSculptClient() {
       );
       notifyAssetsChanged();
     } finally {
-      setSubToolSaving(null);
+      setSubmeshSaving(null);
     }
   }, [user?.id, selectedAsset, uploadAndMaybeCompress, notifyAssetsChanged]);
 
@@ -735,16 +734,17 @@ export default function MeshSculptClient() {
             </div>
           )}
 
-          {/* Mask + Extract — ZBrush-style: paint a region, then pull it out
-              as a brand new, separate sub-tool mesh (see Sub Tools list
-              below). The mask itself is purely a selection — Extract never
-              modifies the mesh you painted on. */}
+          {/* Mask + Extract/Detach — paint a region, then either pull a
+              thickened shell out of it (Extract, source untouched) or pull
+              the already-3D triangles themselves out of it (Detach, source
+              IS mutated — e.g. removing a vehicle door/wheel while keeping
+              the shared UV map). See Submeshes list below. */}
           {brushMode === "mask" && (
             <div className="mt-4 pt-4 border-t border-[#2a2320]">
-              <p className="text-[11px] text-dim mb-2">Extract</p>
+              <p className="text-[11px] text-dim mb-2">Extract / Detach</p>
               {[
                 { key: "maskThreshold", label: "Threshold", min: 0.05, max: 0.95, step: 0.01, val: maskThreshold, set: setMaskThreshold, fmt: (v: number) => Math.round(v * 100) + "%" },
-                { key: "maskThickness", label: "Thickness",  min: -0.5, max: 0.5,  step: 0.005, val: maskThickness, set: setMaskThickness, fmt: (v: number) => v.toFixed(3) },
+                { key: "maskThickness", label: "Thickness (Extract only)",  min: -0.5, max: 0.5,  step: 0.005, val: maskThickness, set: setMaskThickness, fmt: (v: number) => v.toFixed(3) },
               ].map(({ key, label, min, max, step, val, set, fmt }) => (
                 <label key={key} className="block mb-3">
                   <div className="flex justify-between mb-1">
@@ -762,11 +762,17 @@ export default function MeshSculptClient() {
                   style={{ background: PURPLE }}>
                   Extract
                 </button>
-                <button onClick={handleClearMask}
-                  className="flex-1 py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors">
-                  Clear Mask
+                <button onClick={handleDetachMask}
+                  className="flex-1 py-1.5 rounded-md text-white text-[11px] font-medium transition-colors"
+                  style={{ background: "#c48b20" }}>
+                  Detach
                 </button>
               </div>
+              <button onClick={handleClearMask}
+                className="w-full mt-2 py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors">
+                Clear Mask
+              </button>
+              <p className="text-[10px] text-amber-400 mt-1.5">Detach removes the masked triangles from this mesh — unlike Extract, it edits the mesh you&apos;re on.</p>
               {extractMsg && <p className="text-[11px] mt-1.5 text-green-400">{extractMsg}</p>}
             </div>
           )}
@@ -827,17 +833,17 @@ export default function MeshSculptClient() {
             )}
           </div>
 
-          {/* Sub Tools — every mesh currently in the scene (the original
-              load plus anything Extract has pulled out of it). Each can be
-              hidden, deleted, or saved to the library on its own. */}
-          {subTools.length > 0 && (
+          {/* Submeshes — every mesh currently in the scene (the original
+              load plus anything Extract/Detach has pulled out of it). Each
+              can be hidden, deleted, or saved to the library on its own. */}
+          {submeshes.length > 0 && (
             <div className="mt-4 pt-4 border-t border-[#2a2320]">
-              <p className="text-[11px] text-dim mb-2">Sub Tools</p>
+              <p className="text-[11px] text-dim mb-2">Submeshes</p>
               <div className="flex flex-col gap-1.5">
-                {subTools.map((t) => (
+                {submeshes.map((t) => (
                   <div key={t.id} className="flex items-center gap-1.5 px-2 py-1.5 rounded bg-[#1e1a17]">
                     <button
-                      onClick={() => handleToggleSubToolVisible(t.id, !t.visible)}
+                      onClick={() => handleToggleSubmeshVisible(t.id, !t.visible)}
                       title={t.visible ? "Hide" : "Show"}
                       className="w-5 h-5 flex items-center justify-center text-[11px] flex-shrink-0"
                       style={{ color: t.visible ? "#8aa0b4" : "#4a4040" }}>
@@ -847,16 +853,16 @@ export default function MeshSculptClient() {
                       {t.name}
                     </span>
                     <button
-                      onClick={() => handleSaveSubTool(t.id, t.name)}
-                      disabled={subToolSaving === t.id}
-                      title="Save this sub-tool as its own asset"
+                      onClick={() => handleSaveSubmesh(t.id, t.name)}
+                      disabled={submeshSaving === t.id}
+                      title="Save this submesh as its own asset"
                       className="text-[10px] px-1.5 py-0.5 rounded text-dim hover:text-ink transition-colors disabled:opacity-40">
-                      {subToolSaving === t.id ? "…" : "Save"}
+                      {submeshSaving === t.id ? "…" : "Save"}
                     </button>
                     <button
-                      onClick={() => handleDeleteSubTool(t.id)}
-                      disabled={subTools.length <= 1}
-                      title={subTools.length <= 1 ? "Can't delete the last mesh" : "Delete"}
+                      onClick={() => handleDeleteSubmesh(t.id)}
+                      disabled={submeshes.length <= 1}
+                      title={submeshes.length <= 1 ? "Can't delete the last mesh" : "Delete"}
                       className="w-5 h-5 flex items-center justify-center text-[11px] text-dim hover:text-red-400 transition-colors disabled:opacity-30 disabled:hover:text-dim flex-shrink-0">
                       ✕
                     </button>

@@ -10,7 +10,8 @@ import { TransformControls } from "three/examples/jsm/controls/TransformControls
 import { MeshBVH, acceleratedRaycast } from "three-mesh-bvh";
 import "three-mesh-bvh"; // pulls in BufferGeometry.boundsTree augmentation
 import { buildSeamData, type SeamData } from "@/lib/sculpt/seams";
-import { applyBrush, gatherVertices, expandSeams, type BrushMode, type BrushHit } from "@/lib/sculpt/brushes";
+import { applyBrush, applyMaskDab, gatherVertices, expandSeams, type BrushMode, type BrushHit } from "@/lib/sculpt/brushes";
+import { extractMaskedRegion } from "@/lib/sculpt/extract";
 import { SculptUndoStack } from "@/lib/sculpt/undo";
 import { TopoUndoStack, type TopoMeshSnapshot } from "@/lib/sculpt/topoUndo";
 import { computeAvgEdgeLen, dynTopoRefine } from "@/lib/sculpt/dyntopo";
@@ -29,6 +30,10 @@ type SubdivGeomSnapshot = {
 };
 
 type SculptMeshEntry = {
+  /** Stable identity for the Sub Tools list UI — independent of array position, which shifts as entries are added/deleted. */
+  id: string;
+  /** Shown in the Sub Tools list — "Original" for the initially loaded mesh, "Extract N" for extracted sub-tools. */
+  name: string;
   mesh: THREE.Mesh;
   seams: SeamData;
   paintCanvas?: HTMLCanvasElement;
@@ -46,7 +51,49 @@ type SculptMeshEntry = {
    * time mirror mode is turned on, thrown away (not patched) on any
    * topology change, same as topology above. */
   mirror?: MirrorData;
+  /** ZBrush-style extraction mask (0..1 per vertex) — lazily created on first mask-brush stroke. Never read/written outside mask paint + Extract. */
+  mask?: Float32Array;
+  /** Vertex-color visualization of `mask` (lazily created alongside it) and the dedicated material that displays it — swapped in only while brush mode is "mask", swapped back out (via applyViewToGroup) otherwise, so the tint never leaks into any other view mode or export. */
+  maskMat?: THREE.MeshStandardMaterial;
 };
+
+// ── ZBrush-style extraction mask painting/visualization ──────────────────────
+// Module-level (not nested in any one effect) since neither function
+// depends on component-local refs — only on the entry passed in — so both
+// the "brush mode changed" material-swap effect and the pointer-stroke
+// handling effect below can call them without duplicating this logic.
+const MASK_TINT = new THREE.Color(0xffb020);
+const _maskWhite = new THREE.Color(1, 1, 1);
+const _maskColorTmp = new THREE.Color();
+
+/** Lazily creates the mask array, its vertex-color visualization attribute,
+ * and its dedicated display material for an entry the first time it's ever
+ * mask-painted — everything stays absent (zero cost, zero visual change)
+ * for entries that never use this brush. */
+function ensureMaskState(entry: SculptMeshEntry) {
+  const vCount = entry.mesh.geometry.attributes.position.count;
+  if (!entry.mask) entry.mask = new Float32Array(vCount);
+  if (!entry.mesh.geometry.attributes.color) {
+    const colors = new Float32Array(vCount * 3).fill(1);
+    entry.mesh.geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  }
+  if (!entry.maskMat) {
+    entry.maskMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0 });
+  }
+}
+
+/** Repaints just the given (already seam-expanded) vertex indices' colors
+ * from the current mask values — proportional to brush size, not a full
+ * mesh rescan, same cost class as everything else per-dab in this file. */
+function updateMaskColors(entry: SculptMeshEntry, touched: number[]) {
+  const colorAttr = entry.mesh.geometry.attributes.color as THREE.BufferAttribute | undefined;
+  if (!colorAttr || !entry.mask) return;
+  for (const idx of touched) {
+    _maskColorTmp.copy(_maskWhite).lerp(MASK_TINT, entry.mask[idx]);
+    colorAttr.setXYZ(idx, _maskColorTmp.r, _maskColorTmp.g, _maskColorTmp.b);
+  }
+  colorAttr.needsUpdate = true;
+}
 
 /** Result of a poly-edit pick — keeps the exact hit triangle's identity (see getElementHitFromEvent). */
 type PolyEditHit = {
@@ -254,6 +301,21 @@ export type SculptViewerHandle = {
   getLoopPreview: () => { edgeCount: number; boundary: boolean; closed: boolean } | null;
   /** A reasonable default extrude distance, scaled to the loaded mesh's density. */
   getRecommendedExtrudeDistance: () => number;
+  /** ZBrush-style extraction: for every entry with a painted mask, builds a
+   * new thickened+closed shell sub-tool mesh from the masked region and adds
+   * it to the scene. Never mutates the source mesh. Returns how many new
+   * sub-tools were created (0 if nothing is masked above the threshold
+   * anywhere). */
+  extractMask: (threshold: number, thickness: number) => number;
+  /** Resets every entry's mask to fully unmasked and clears its visualization. */
+  clearMask: () => void;
+  /** Current scene contents for the Sub Tools list UI. */
+  getMeshEntries: () => Array<{ id: string; name: string; visible: boolean; vertexCount: number }>;
+  setEntryVisible: (id: string, visible: boolean) => void;
+  /** Removes an entry from the scene and disposes its GPU resources. Refuses to delete the last remaining entry. */
+  deleteEntry: (id: string) => { ok: boolean; reason?: string };
+  /** Exports just one entry as its own .glb — hides every other entry for the duration of the export, then restores visibility. */
+  exportEntryGlb: (id: string) => Promise<Uint8Array>;
 };
 
 export type ViewMode = "combined" | "clay" | "wireframe" | "albedo" | "ao";
@@ -646,6 +708,11 @@ export default function SculptViewer({
       meshEntriesRef.current.forEach((entry) => {
         if (entry.paintMat) entry.mesh.material = entry.paintMat;
       });
+    } else if (brushMode === "mask") {
+      meshEntriesRef.current.forEach((entry) => {
+        ensureMaskState(entry);
+        entry.mesh.material = entry.maskMat!;
+      });
     } else {
       applyViewToGroup(group, scene, viewModeRef.current, clayColorRef.current);
     }
@@ -1007,7 +1074,8 @@ export default function SculptViewer({
           }
         } catch { /* canvas context unavailable */ }
         const quadIndices = detectQuads(mesh.geometry);
-        meshEntriesRef.current.push({ mesh, seams, baseEdgeLen, quadIndices, ...paintEntry });
+        const entryName = mesh.name || (meshEntriesRef.current.length === 0 ? "Original" : `Mesh ${meshEntriesRef.current.length + 1}`);
+        meshEntriesRef.current.push({ id: crypto.randomUUID(), name: entryName, mesh, seams, baseEdgeLen, quadIndices, ...paintEntry });
         totalVerts += mesh.geometry.attributes.position.count;
 
         // Wireframe overlay — excluded from GLB export, hidden by default
@@ -1439,6 +1507,24 @@ export default function SculptViewer({
       entry.hasPaint = true;
     }
 
+    function applyMaskStroke(hit: BrushHit) {
+      for (const entry of meshEntriesRef.current) {
+        ensureMaskState(entry);
+        if (entry.mesh.material !== entry.maskMat) entry.mesh.material = entry.maskMat!;
+        const touched = applyMaskDab(
+          entry.mask!,
+          entry.mesh,
+          entry.seams,
+          hit.point,
+          brushRadiusRef.current,
+          brushInnerRadiusRef.current,
+          brushStrengthRef.current,
+          altDownRef.current,
+        );
+        updateMaskColors(entry, touched);
+      }
+    }
+
     // Poly-edit click-to-select tracks down/up screen distance so an
     // orbit-camera drag (mousedown, drag, mouseup) doesn't also register as
     // a selection click — only a near-stationary down/up counts as a click.
@@ -1465,8 +1551,11 @@ export default function SculptViewer({
 
       // Apply on first down
       const isPaint = brushModeRef.current === "paint";
+      const isMask = brushModeRef.current === "mask";
       if (isPaint) {
         applyPaintDab();
+      } else if (isMask) {
+        applyMaskStroke(hit);
       } else {
         const pressure = e.pointerType === "pen" && e.pressure > 0 ? e.pressure : 1.0;
         for (const entry of meshEntriesRef.current) {
@@ -1497,6 +1586,8 @@ export default function SculptViewer({
 
       if (brushModeRef.current === "paint") {
         applyPaintDab();
+      } else if (brushModeRef.current === "mask") {
+        applyMaskStroke(hit);
       } else {
         const pressure = e.pointerType === "pen" && e.pressure > 0 ? e.pressure : 1.0;
         for (const entry of meshEntriesRef.current) {
@@ -1739,19 +1830,32 @@ export default function SculptViewer({
     // Prefer cloning the original GLTF MeshStandardMaterial and patching only its
     // albedo slot so roughness/metallic/normals/AO are preserved. Fall back to the
     // plain MeshBasicMaterial for primitives (whose original is a clay matcap).
+    //
+    // Whatever material is CURRENTLY assigned to a mesh (the shared clay
+    // matcap, an albedo/AO channel preview, the mask-paint visualization
+    // material) is UI-only — computed per entry here and swapped in
+    // regardless of what the viewport happens to be showing right now, so
+    // none of those ever leak into an exported file. This also incidentally
+    // fixes exporting while in Clay/Albedo/AO view mode on an unpainted
+    // mesh, which had the same latent bug before mask painting existed.
     const swapped: Array<{ mesh: THREE.Mesh; prev: THREE.Material | THREE.Material[] }> = [];
     for (const entry of meshEntriesRef.current) {
-      if (!entry.hasPaint || !entry.paintTexture) continue;
-      const origMat = originalMaterialsRef.current.get(entry.mesh.uuid);
-      if (origMat && (origMat as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
-        const baked = (origMat as THREE.MeshStandardMaterial).clone();
-        baked.map = entry.paintTexture;
-        baked.needsUpdate = true;
+      let target: THREE.Material | THREE.Material[] | undefined;
+      if (entry.hasPaint && entry.paintTexture) {
+        const origMat = originalMaterialsRef.current.get(entry.mesh.uuid);
+        if (origMat && (origMat as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
+          const baked = (origMat as THREE.MeshStandardMaterial).clone();
+          baked.map = entry.paintTexture;
+          baked.needsUpdate = true;
+          target = baked;
+        } else if (entry.paintMat) {
+          target = entry.paintMat;
+        }
+      }
+      if (!target) target = originalMaterialsRef.current.get(entry.mesh.uuid);
+      if (target && entry.mesh.material !== target) {
         swapped.push({ mesh: entry.mesh, prev: entry.mesh.material });
-        entry.mesh.material = baked;
-      } else if (entry.paintMat && entry.mesh.material !== entry.paintMat) {
-        swapped.push({ mesh: entry.mesh, prev: entry.mesh.material });
-        entry.mesh.material = entry.paintMat;
+        entry.mesh.material = target;
       }
     }
 
@@ -1981,7 +2085,7 @@ export default function SculptViewer({
     const pt2 = new THREE.CanvasTexture(pc2); pt2.colorSpace = THREE.SRGBColorSpace;
     const pm2 = new THREE.MeshBasicMaterial({ map: pt2 });
     const primQuadIndices = detectQuads(geo);
-    meshEntriesRef.current.push({ mesh, seams, baseEdgeLen: computeAvgEdgeLen(geo), quadIndices: primQuadIndices, paintCanvas: pc2, paintTexture: pt2, paintMat: pm2 });
+    meshEntriesRef.current.push({ id: crypto.randomUUID(), name: "Original", mesh, seams, baseEdgeLen: computeAvgEdgeLen(geo), quadIndices: primQuadIndices, paintCanvas: pc2, paintTexture: pt2, paintMat: pm2 });
     const group = new THREE.Group();
     group.add(mesh);
     scene.add(group);
@@ -2044,7 +2148,7 @@ export default function SculptViewer({
     const pCtx = pc.getContext("2d")!; pCtx.fillStyle = "#888888"; pCtx.fillRect(0, 0, PAINT_TEX_SIZE, PAINT_TEX_SIZE);
     const pt = new THREE.CanvasTexture(pc); pt.colorSpace = THREE.SRGBColorSpace;
     const pm = new THREE.MeshBasicMaterial({ map: pt });
-    meshEntriesRef.current.push({ mesh, seams, baseEdgeLen: computeAvgEdgeLen(geo), quadIndices: detectQuads(geo), paintCanvas: pc, paintTexture: pt, paintMat: pm });
+    meshEntriesRef.current.push({ id: crypto.randomUUID(), name: "Original", mesh, seams, baseEdgeLen: computeAvgEdgeLen(geo), quadIndices: detectQuads(geo), paintCanvas: pc, paintTexture: pt, paintMat: pm });
     const group = new THREE.Group();
     group.add(mesh);
     scene.add(group);
@@ -2128,14 +2232,157 @@ export default function SculptViewer({
     onModelLoadedRef.current?.(0);
   }, []);
 
+  // ZBrush-style extraction: for every entry with a painted mask, builds a
+  // new thickened+closed shell sub-tool mesh (lib/sculpt/extract.ts) and
+  // adds it to the scene — the source mesh/geometry is never touched.
+  // Not integrated with the position-undo stack (it doesn't change any
+  // existing mesh's positions) — "undo" for an extraction is just deleting
+  // that sub-tool from the list, which is always safe since nothing else
+  // depends on it existing.
+  const extractMask = useCallback((threshold: number, thickness: number): number => {
+    const group = modelRef.current;
+    const scene = sceneRef.current;
+    if (!group || !scene) return 0;
+    let created = 0;
+    // Snapshot first — appending new entries below must not also be
+    // considered as extraction sources within this same call.
+    const sourceEntries = [...meshEntriesRef.current];
+    for (const entry of sourceEntries) {
+      if (!entry.mask) continue;
+      const result = extractMaskedRegion(entry.mesh.geometry, { mask: entry.mask, threshold, thickness });
+      if (!result.ok) continue;
+
+      result.geometry.boundsTree = new MeshBVH(result.geometry);
+      const posArr = result.geometry.attributes.position.array as Float32Array;
+      const seams = buildSeamData(posArr);
+      const baseEdgeLen = computeAvgEdgeLen(result.geometry);
+      const quadIndices = detectQuads(result.geometry);
+
+      // Starts from the source's own true material (not whatever debug/
+      // view material happens to be showing right now) — applyViewToGroup
+      // below immediately re-themes it to match the active view mode
+      // anyway, same as every other mesh in the scene.
+      const srcMat = originalMaterialsRef.current.get(entry.mesh.uuid) ?? entry.mesh.material;
+      const mat = (Array.isArray(srcMat) ? srcMat[0] : srcMat).clone();
+      const mesh = new THREE.Mesh(result.geometry, mat);
+      mesh.castShadow = entry.mesh.castShadow;
+      mesh.receiveShadow = entry.mesh.receiveShadow;
+      group.add(mesh);
+      originalMaterialsRef.current.set(mesh.uuid, mat);
+
+      // Same paint-canvas setup every other loaded mesh gets — lets an
+      // extracted sub-tool be color-painted just like the original.
+      let paintEntry: Partial<SculptMeshEntry> = {};
+      try {
+        const canvas = document.createElement("canvas"); canvas.width = canvas.height = PAINT_TEX_SIZE;
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          ctx.fillStyle = "#888888"; ctx.fillRect(0, 0, PAINT_TEX_SIZE, PAINT_TEX_SIZE);
+          const pt = new THREE.CanvasTexture(canvas); pt.colorSpace = THREE.SRGBColorSpace;
+          const pm = new THREE.MeshBasicMaterial({ map: pt });
+          paintEntry = { paintCanvas: canvas, paintTexture: pt, paintMat: pm };
+        }
+      } catch { /* canvas context unavailable */ }
+
+      const extractNumber = meshEntriesRef.current.filter((e) => e.name.startsWith("Extract ")).length + 1;
+      meshEntriesRef.current.push({
+        id: crypto.randomUUID(),
+        name: `Extract ${extractNumber}`,
+        mesh, seams, baseEdgeLen, quadIndices,
+        ...paintEntry,
+      });
+
+      const wire = buildWireOverlay(result.geometry, wireMatRef.current!);
+      wire.visible = viewModeRef.current === "wireframe" || wireframeOverlayRef.current;
+      mesh.add(wire);
+
+      created++;
+    }
+    if (created > 0) {
+      applyViewToGroup(group, scene, viewModeRef.current, clayColorRef.current);
+      const totalVerts = meshEntriesRef.current.reduce((s, e) => s + e.mesh.geometry.attributes.position.count, 0);
+      onModelLoadedRef.current?.(totalVerts);
+    }
+    return created;
+  }, []);
+
+  const clearMask = useCallback(() => {
+    for (const entry of meshEntriesRef.current) {
+      if (!entry.mask) continue;
+      entry.mask.fill(0);
+      const colorAttr = entry.mesh.geometry.attributes.color as THREE.BufferAttribute | undefined;
+      if (colorAttr) {
+        for (let i = 0; i < colorAttr.count; i++) colorAttr.setXYZ(i, 1, 1, 1);
+        colorAttr.needsUpdate = true;
+      }
+    }
+  }, []);
+
+  const getMeshEntries = useCallback((): Array<{ id: string; name: string; visible: boolean; vertexCount: number }> => {
+    return meshEntriesRef.current.map((e) => ({
+      id: e.id,
+      name: e.name,
+      visible: e.mesh.visible,
+      vertexCount: e.mesh.geometry.attributes.position.count,
+    }));
+  }, []);
+
+  const setEntryVisible = useCallback((id: string, visible: boolean) => {
+    const entry = meshEntriesRef.current.find((e) => e.id === id);
+    if (entry) entry.mesh.visible = visible;
+  }, []);
+
+  const deleteEntry = useCallback((id: string): { ok: boolean; reason?: string } => {
+    if (meshEntriesRef.current.length <= 1) {
+      return { ok: false, reason: "Can't delete the last remaining mesh — use Clear instead." };
+    }
+    const idx = meshEntriesRef.current.findIndex((e) => e.id === id);
+    if (idx === -1) return { ok: false, reason: "Not found." };
+    const [entry] = meshEntriesRef.current.splice(idx, 1);
+    if (selectedEntryRef.current === entry) selectedEntryRef.current = null;
+
+    modelRef.current?.remove(entry.mesh);
+    entry.mesh.geometry.boundsTree = undefined;
+    entry.mesh.geometry.dispose();
+    const mats = Array.isArray(entry.mesh.material) ? entry.mesh.material : [entry.mesh.material];
+    mats.forEach((m) => m?.dispose());
+    entry.maskMat?.dispose();
+    entry.paintTexture?.dispose();
+    entry.paintMat?.dispose();
+    const wire = entry.mesh.children.find((c) => c.name === "__wire") as THREE.LineSegments | undefined;
+    wire?.geometry.dispose();
+    originalMaterialsRef.current.delete(entry.mesh.uuid);
+
+    const totalVerts = meshEntriesRef.current.reduce((s, e) => s + e.mesh.geometry.attributes.position.count, 0);
+    onModelLoadedRef.current?.(totalVerts);
+    return { ok: true };
+  }, []);
+
+  const exportEntryGlb = useCallback(async (id: string): Promise<Uint8Array> => {
+    // GLTFExporter's onlyVisible defaults to true, so temporarily hiding
+    // every other entry is enough to scope exportGlb() to just this one —
+    // no separate export path needed.
+    const restore: Array<{ mesh: THREE.Mesh; visible: boolean }> = [];
+    for (const entry of meshEntriesRef.current) {
+      restore.push({ mesh: entry.mesh, visible: entry.mesh.visible });
+      entry.mesh.visible = entry.id === id;
+    }
+    try {
+      return await exportGlb();
+    } finally {
+      restore.forEach(({ mesh, visible }) => { mesh.visible = visible; });
+    }
+  }, [exportGlb]);
+
   useEffect(() => {
     if (handleRef) {
       (handleRef as React.MutableRefObject<SculptViewerHandle | null>).current = {
         exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene,
         extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance,
+        extractMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb,
       };
     }
-  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance]);
+  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance, extractMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb]);
 
   return <div ref={mountRef} className="w-full h-full" style={{ touchAction: "none" }} />;
 }

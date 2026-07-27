@@ -5,7 +5,7 @@ import * as THREE from "three";
 import type { SeamData } from "./seams";
 import type { MirrorData } from "./mirror";
 
-export type BrushMode = "clay_buildup" | "push" | "smooth" | "flatten" | "move" | "paint";
+export type BrushMode = "clay_buildup" | "push" | "smooth" | "flatten" | "move" | "paint" | "mask";
 
 export type BrushHit = {
   point: THREE.Vector3;   // world-space hit point
@@ -109,6 +109,7 @@ export function applyBrush(params: BrushParams): void {
   const localHit = hit.point.clone().applyMatrix4(_inv);
 
   if (mode === "paint") return; // Handled via UV raycasting in SculptViewer
+  if (mode === "mask") return; // Handled via applyMaskDab below, not position displacement
 
   if (mode === "clay_buildup") {
     const sign = invert ? -1 : 1;
@@ -336,4 +337,48 @@ export function applyBrush(params: BrushParams): void {
 
   positions.needsUpdate = true;
   mesh.geometry.computeVertexNormals();
+}
+
+/**
+ * Paints into a per-vertex mask array (0..1) instead of displacing
+ * geometry — the "mask" brush mode, used to mark a region for later
+ * extraction (see lib/sculpt/extract.ts). Reuses gatherVertices verbatim,
+ * exactly like every displacement-based mode in applyBrush() above; only
+ * what happens to the gathered vertices differs. Same seam-expansion idiom
+ * those modes use too, so a painted mask doesn't tear at UV seams (a
+ * triangle whose corners disagree on which seam-duplicate got painted would
+ * make Extract's boundary jagged right at the seam).
+ */
+export function applyMaskDab(
+  mask: Float32Array,
+  mesh: THREE.Mesh,
+  seams: SeamData,
+  worldCenter: THREE.Vector3,
+  radius: number,
+  innerRadius: number,
+  strength: number,
+  erase: boolean,
+): number[] {
+  const positions = mesh.geometry.attributes.position as THREE.BufferAttribute;
+  const gathered = gatherVertices(positions, mesh, worldCenter, radius, innerRadius);
+  if (gathered.length === 0) return [];
+
+  const allIdx = expandSeams(gathered.map((g) => g.idx), seams);
+  const foMap = new Map<number, number>();
+  for (const { idx, fo } of gathered) {
+    const group = seams.groups[seams.vertToGroup[idx]];
+    for (const j of group) {
+      const prev = foMap.get(j);
+      if (prev === undefined || fo > prev) foMap.set(j, fo);
+    }
+  }
+
+  const sign = erase ? -1 : 1;
+  for (const idx of allIdx) {
+    const fo = foMap.get(idx) ?? 0;
+    mask[idx] = Math.max(0, Math.min(1, mask[idx] + sign * fo * strength));
+  }
+  // Returned so callers (mask visualization) only need to touch this exact
+  // set of vertex colors instead of rescanning the whole mesh every dab.
+  return Array.from(allIdx);
 }

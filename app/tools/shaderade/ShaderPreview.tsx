@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { CompileResult } from "@/lib/shader-graph/compiler";
+import { triggerSplashAt, SPLASH_SLOT_COUNT } from "@/lib/shader-graph/splash";
 
 type Props = {
   compiled: CompileResult | null;
@@ -26,6 +27,10 @@ export default function ShaderPreview({ compiled, bgLightness = 0.05 }: Props) {
   // Persists across recompiles so editing an unrelated node doesn't snap a
   // dragged light back to the shader's default direction.
   const lightDirRef = useRef(new THREE.Vector3(0.45, 0.8, 0.4).normalize());
+  // Round-robins across SplashTrigger's fixed slots so repeated clicks show
+  // up to SPLASH_SLOT_COUNT overlapping splashes instead of always
+  // overwriting slot 0.
+  const nextSplashSlotRef = useRef(0);
 
   // One-time scene setup
   useEffect(() => {
@@ -443,5 +448,40 @@ export default function ShaderPreview({ compiled, bgLightness = 0.05 }: Props) {
     }
   }, [compiled]);
 
-  return <div ref={mountRef} className="w-full h-full" />;
+  // Derived straight from the `compiled` prop at render time — no state or
+  // effect needed, this doesn't change until a new compile result arrives.
+  const hasSplash = !!(compiled?.ok && compiled.uniforms.u_splash0Pos);
+
+  // Fires a real splash (SplashTrigger node) at a random point on the
+  // preview sphere's surface — proof the mechanism is genuinely live, not
+  // just plumbing. Only rendered while the compiled shader actually
+  // declares u_splash0Pos (mirrors the light gizmo's own
+  // `!!mat.uniforms.u_lightDir` visibility check above).
+  const handleTestSplash = () => {
+    const mat = materialRef.current;
+    if (!mat) return;
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(Math.random() * 2 - 1);
+    const x = Math.sin(phi) * Math.cos(theta);
+    const y = Math.cos(phi);
+    const z = Math.sin(phi) * Math.sin(theta);
+    const slot = nextSplashSlotRef.current;
+    triggerSplashAt(mat.uniforms, slot, x, y, z, clockRef.current.getElapsedTime());
+    nextSplashSlotRef.current = (slot + 1) % SPLASH_SLOT_COUNT;
+  };
+
+  return (
+    <div className="relative w-full h-full">
+      <div ref={mountRef} className="w-full h-full" />
+      {hasSplash && (
+        <button
+          type="button"
+          onClick={handleTestSplash}
+          className="absolute bottom-3 right-3 px-3 py-1.5 rounded-md bg-black/60 text-white text-xs font-medium hover:bg-black/80"
+        >
+          Test Splash
+        </button>
+      )}
+    </div>
+  );
 }

@@ -3,6 +3,7 @@
 
 import type { Node, Edge } from "@xyflow/react";
 import { getNodeDef, type GlslType } from "./nodes";
+import { SPLASH_SLOT_COUNT } from "./splash";
 
 export type ShaderGraph = {
   nodes: Node[];
@@ -153,7 +154,7 @@ function topoSort(nodes: Node[], edges: Edge[]): Node[] | null {
 const VERTEX_DISPLACEMENT_ALLOWED_TYPES = new Set([
   "Time", "Float", "Noise", "WorldPosition",
   "Split", "Combine", "Add", "Subtract", "Multiply", "Mix",
-  "Sin", "Power", "Clamp", "Smoothstep", "Step", "OneMinus", "Dot",
+  "Sin", "Fract", "Power", "Clamp", "Smoothstep", "Step", "OneMinus", "Dot",
 ]);
 
 // Compiles the subgraph feeding a VertexDisplacement node's `height` input
@@ -342,6 +343,13 @@ function compileVertexDisplacement(
         const x = inputExprFor(node, "x", "float");
         const vn = varName(node.id, "result");
         lines.push(`float ${vn} = sin(${x});`);
+        sourceExprMap.set(`${node.id}::result`, { expr: vn, type: "float" });
+        break;
+      }
+      case "Fract": {
+        const x = inputExprFor(node, "x", "float");
+        const vn = varName(node.id, "result");
+        lines.push(`float ${vn} = fract(${x});`);
         sourceExprMap.set(`${node.id}::result`, { expr: vn, type: "float" });
         break;
       }
@@ -594,6 +602,37 @@ export function compile(graph: ShaderGraph): CompileResult {
         break;
       }
 
+      case "SplashTrigger": {
+        uniforms["u_time"] = uniforms["u_time"] ?? { type: "float", value: 0 };
+        const posExpr = inputExpr("pos", "vec3");
+        const speed = (data.speed as number) ?? 1.2;
+        const lifetime = Math.max(0.001, (data.lifetime as number) ?? 1.0);
+        const width = (data.width as number) ?? 0.06;
+        const vn = varName(node.id, "ring");
+        lines.push(`float ${vn} = 0.0;`);
+        for (let i = 0; i < SPLASH_SLOT_COUNT; i++) {
+          const posName = `u_splash${i}Pos`, timeName = `u_splash${i}Time`;
+          // Default far in the past — age is always huge, so this slot
+          // renders as inactive until triggerSplashAt() (splash.ts) actually
+          // writes a real position/time into it.
+          uniforms[posName] = uniforms[posName] ?? { type: "vec3", value: [0, 0, 0] };
+          uniforms[timeName] = uniforms[timeName] ?? { type: "float", value: -1000 };
+          const p = `shaderadeSplash${i}_${node.id}`;
+          lines.push(
+            `vec3 ${p}Delta = (${posExpr}) - ${posName};`,
+            `float ${p}Dist = pow(dot(${p}Delta, ${p}Delta), 0.5);`,
+            `float ${p}Age = u_time - ${timeName};`,
+            `float ${p}Radius = ${p}Age * ${formatFloat(speed)};`,
+            `float ${p}Fade = clamp(1.0 - ${p}Age / ${formatFloat(lifetime)}, 0.0, 1.0);`,
+            `float ${p}Inner = smoothstep(${p}Radius - ${formatFloat(width)}, ${p}Radius, ${p}Dist);`,
+            `float ${p}Outer = smoothstep(${p}Radius, ${p}Radius + ${formatFloat(width)}, ${p}Dist);`,
+            `${vn} += (${p}Inner - ${p}Outer) * ${p}Fade;`,
+          );
+        }
+        sourceExprMap.set(`${node.id}::ring`, { expr: vn, type: "float" });
+        break;
+      }
+
       case "Add": {
         const a = inputExpr("a", "vec4"), b = inputExpr("b", "vec4");
         const vn = varName(node.id, "result");
@@ -662,6 +701,14 @@ export function compile(graph: ShaderGraph): CompileResult {
         const x = inputExpr("x", "float");
         const vn = varName(node.id, "result");
         lines.push(`float ${vn} = sin(${x});`);
+        sourceExprMap.set(`${node.id}::result`, { expr: vn, type: "float" });
+        break;
+      }
+
+      case "Fract": {
+        const x = inputExpr("x", "float");
+        const vn = varName(node.id, "result");
+        lines.push(`float ${vn} = fract(${x});`);
         sourceExprMap.set(`${node.id}::result`, { expr: vn, type: "float" });
         break;
       }

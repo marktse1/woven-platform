@@ -176,6 +176,28 @@ export const NODE_TYPES: NodeTypeDef[] = [
       { key: "octaves", label: "Octaves", type: "number", min: 1, max: 6, step: 1, default: 1 },
     ],
   },
+  // A real, live-triggerable ripple ring — distinct from anything built out
+  // of Noise/Time/math nodes (which can only ever loop forever, not "fire
+  // once when something actually happens"). Reads 4 fixed slots of plain
+  // uniforms (see compiler.ts) that a real caller updates via
+  // lib/shader-graph/splash.ts's triggerSplashAt() — each slot renders as
+  // inactive until actually triggered, then draws one real expanding-and-
+  // fading ring from wherever it was told to. Fragment-only for now (not
+  // usable inside a VertexDisplacement subgraph) — a bright ring reads
+  // clearly through shading alone without needing real geometry to bump.
+  {
+    type: "SplashTrigger",
+    label: "Splash Trigger",
+    category: "input",
+    inputs: [{ id: "pos", label: "Position", type: "vec3" }],
+    outputs: [{ id: "ring", label: "Ring", type: "float" }],
+    defaultData: { speed: 1.2, lifetime: 1.0, width: 0.06 },
+    params: [
+      { key: "speed", label: "Expansion Speed", type: "number", min: 0.1, max: 5, step: 0.05, default: 1.2 },
+      { key: "lifetime", label: "Lifetime (s)", type: "number", min: 0.2, max: 5, step: 0.1, default: 1.0 },
+      { key: "width", label: "Ring Width", type: "number", min: 0.01, max: 0.5, step: 0.01, default: 0.06 },
+    ],
+  },
 
   // ── Math ──────────────────────────────────────────────────────────────────
   {
@@ -269,6 +291,18 @@ export const NODE_TYPES: NodeTypeDef[] = [
   {
     type: "Sin",
     label: "Sin",
+    category: "math",
+    inputs: [{ id: "x", label: "X", type: "float" }],
+    outputs: [{ id: "result", label: "Result", type: "float" }],
+  },
+  // fract(x) — the fractional part, always in [0,1). Feeding an
+  // ever-increasing value (e.g. Time*speed) through this gives a clean
+  // repeating 0->1 sawtooth (rises, hard-resets to 0, repeats) — useful for
+  // anything that should loop forever, like an expanding-ring effect that
+  // needs to snap back to 0 rather than smoothly reverse like Sin would.
+  {
+    type: "Fract",
+    label: "Fract",
     category: "math",
     inputs: [{ id: "x", label: "X", type: "float" }],
     outputs: [{ id: "result", label: "Result", type: "float" }],

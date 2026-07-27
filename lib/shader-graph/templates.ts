@@ -417,9 +417,186 @@ export function buildRealisticWaterGraph(): { nodes: Node[]; edges: Edge[] } {
   return { nodes, edges };
 }
 
+// -- Puddle helper ------------------------------------------------------
+// A single procedural rain-ring term: pops up at a fixed (x,z) spot, grows,
+// fades, then hard-resets and repeats forever — the same "fake it, don't
+// simulate every raindrop" approach real games use. `Fract` (rather than
+// Sin) is what gives the hard reset instead of a smooth expand-then-shrink
+// pulse. All node types here (Combine/Subtract/Dot/Power/Multiply/Add/
+// Fract/OneMinus/Smoothstep) are in VERTEX_DISPLACEMENT_ALLOWED_TYPES, so
+// the exact same term can feed both real geometry displacement AND (summed
+// with the others) a fragment-side highlight color — compiler.ts compiles
+// each independently per stage, so this isn't shared/aliased state, just
+// the same recipe evaluated twice.
+function buildRainRingTerm(
+  prefix: string,
+  y: number,
+  wp: string,
+  time: string,
+  dropPos: [number, number],
+  phaseOffset: number,
+  speed: number,
+  maxRadius: number,
+  width: number,
+): { nodes: Node[]; edges: Edge[]; ringOutput: string } {
+  const nodes: Node[] = [
+    { id: `${prefix}_dropPos`, type: "Combine", position: { x: 260, y }, data: { x: dropPos[0], y: 0, z: dropPos[1], w: 0 } },
+    { id: `${prefix}_delta`, type: "Subtract", position: { x: 520, y }, data: {} },
+    { id: `${prefix}_distSq`, type: "Dot", position: { x: 780, y }, data: {} },
+    { id: `${prefix}_dist`, type: "Power", position: { x: 1040, y }, data: { exp: 0.5 } },
+    { id: `${prefix}_timeScale`, type: "Multiply", position: { x: 0, y: y + 140 }, data: { b: speed } },
+    { id: `${prefix}_phase`, type: "Add", position: { x: 260, y: y + 140 }, data: { b: phaseOffset } },
+    { id: `${prefix}_cycle`, type: "Fract", position: { x: 520, y: y + 140 }, data: {} },
+    { id: `${prefix}_radius`, type: "Multiply", position: { x: 780, y: y + 140 }, data: { b: maxRadius } },
+    { id: `${prefix}_fade`, type: "OneMinus", position: { x: 1040, y: y + 140 }, data: {} },
+    { id: `${prefix}_innerEdge`, type: "Subtract", position: { x: 1300, y }, data: { b: width } },
+    { id: `${prefix}_outerEdge`, type: "Add", position: { x: 1300, y: y + 70 }, data: { b: width } },
+    { id: `${prefix}_inner`, type: "Smoothstep", position: { x: 1560, y }, data: {} },
+    { id: `${prefix}_outer`, type: "Smoothstep", position: { x: 1560, y: y + 70 }, data: {} },
+    { id: `${prefix}_band`, type: "Subtract", position: { x: 1820, y }, data: {} },
+    { id: `${prefix}_ring`, type: "Multiply", position: { x: 2080, y }, data: {} },
+  ];
+  const edges: Edge[] = [
+    { id: `${prefix}_e1`, source: wp, sourceHandle: "pos", target: `${prefix}_delta`, targetHandle: "a" },
+    { id: `${prefix}_e2`, source: `${prefix}_dropPos`, sourceHandle: "result", target: `${prefix}_delta`, targetHandle: "b" },
+    { id: `${prefix}_e3`, source: `${prefix}_delta`, sourceHandle: "result", target: `${prefix}_distSq`, targetHandle: "a" },
+    { id: `${prefix}_e4`, source: `${prefix}_delta`, sourceHandle: "result", target: `${prefix}_distSq`, targetHandle: "b" },
+    { id: `${prefix}_e5`, source: `${prefix}_distSq`, sourceHandle: "result", target: `${prefix}_dist`, targetHandle: "base" },
+    { id: `${prefix}_e6`, source: time, sourceHandle: "time", target: `${prefix}_timeScale`, targetHandle: "a" },
+    { id: `${prefix}_e7`, source: `${prefix}_timeScale`, sourceHandle: "result", target: `${prefix}_phase`, targetHandle: "a" },
+    { id: `${prefix}_e8`, source: `${prefix}_phase`, sourceHandle: "result", target: `${prefix}_cycle`, targetHandle: "x" },
+    { id: `${prefix}_e9`, source: `${prefix}_cycle`, sourceHandle: "result", target: `${prefix}_radius`, targetHandle: "a" },
+    { id: `${prefix}_e10`, source: `${prefix}_cycle`, sourceHandle: "result", target: `${prefix}_fade`, targetHandle: "value" },
+    { id: `${prefix}_e11`, source: `${prefix}_radius`, sourceHandle: "result", target: `${prefix}_innerEdge`, targetHandle: "a" },
+    { id: `${prefix}_e12`, source: `${prefix}_radius`, sourceHandle: "result", target: `${prefix}_outerEdge`, targetHandle: "a" },
+    { id: `${prefix}_e13`, source: `${prefix}_innerEdge`, sourceHandle: "result", target: `${prefix}_inner`, targetHandle: "edge0" },
+    { id: `${prefix}_e14`, source: `${prefix}_radius`, sourceHandle: "result", target: `${prefix}_inner`, targetHandle: "edge1" },
+    { id: `${prefix}_e15`, source: `${prefix}_dist`, sourceHandle: "result", target: `${prefix}_inner`, targetHandle: "x" },
+    { id: `${prefix}_e16`, source: `${prefix}_radius`, sourceHandle: "result", target: `${prefix}_outer`, targetHandle: "edge0" },
+    { id: `${prefix}_e17`, source: `${prefix}_outerEdge`, sourceHandle: "result", target: `${prefix}_outer`, targetHandle: "edge1" },
+    { id: `${prefix}_e18`, source: `${prefix}_dist`, sourceHandle: "result", target: `${prefix}_outer`, targetHandle: "x" },
+    { id: `${prefix}_e19`, source: `${prefix}_inner`, sourceHandle: "result", target: `${prefix}_band`, targetHandle: "a" },
+    { id: `${prefix}_e20`, source: `${prefix}_outer`, sourceHandle: "result", target: `${prefix}_band`, targetHandle: "b" },
+    { id: `${prefix}_e21`, source: `${prefix}_band`, sourceHandle: "result", target: `${prefix}_ring`, targetHandle: "a" },
+    { id: `${prefix}_e22`, source: `${prefix}_fade`, sourceHandle: "result", target: `${prefix}_ring`, targetHandle: "b" },
+  ];
+  return { nodes, edges, ringOutput: `${prefix}_ring` };
+}
+
+// -- Puddle (Road) ------------------------------------------------------
+// A small, still road puddle — deliberately NO base swell (unlike the two
+// water templates above): a puddle is flat except where actively
+// rippling, which is the whole point of "more still." Total displacement
+// is just the sum of 4 ambient rain-ring terms (buildRainRingTerm, above)
+// at staggered positions/phases so they don't look synchronized, scaled
+// down to a small amplitude — a puddle is shallow, ripples stay subtle.
+//
+// A live SplashTrigger node (genuinely real, not another procedural loop —
+// see nodes.ts/compiler.ts/splash.ts) is wired into color only, not
+// displacement, per plan: a bright ring reads clearly through shading
+// alone without needing real geometry to bump for it. Nothing calls
+// triggerSplashAt() automatically here (there's nothing in World Builder
+// to call it from yet) — Shaderade's own preview has a "Test Splash"
+// button (ShaderPreview.tsx) that does, proving the mechanism is real.
+//
+// Surface is Output (PBR) like realistic-water, re-tuned: a puddle mostly
+// shows reflections rather than its own color (near-black murky albedo),
+// reads as closer to mirror-flat (lower roughness) than open water, and
+// thicknessAware stays false for the same reason realistic-water's does —
+// confirmed by testing that a flat mesh has no real front-to-back
+// thickness for that pass to measure correctly.
+export function buildPuddleGraph(): { nodes: Node[]; edges: Edge[] } {
+  const wp: Node = { id: "pd_wp", type: "WorldPosition", position: { x: 0, y: 0 }, data: {} };
+  const time: Node = { id: "pd_time", type: "Time", position: { x: 0, y: 1200 }, data: {} };
+
+  const ring1 = buildRainRingTerm("pd_r1", 0, wp.id, time.id, [0.15, -0.1], 0.0, 0.4, 0.5, 0.04);
+  const ring2 = buildRainRingTerm("pd_r2", 320, wp.id, time.id, [-0.2, 0.25], 1.6, 0.45, 0.55, 0.045);
+  const ring3 = buildRainRingTerm("pd_r3", 640, wp.id, time.id, [0.3, 0.2], 3.0, 0.38, 0.45, 0.035);
+  const ring4 = buildRainRingTerm("pd_r4", 960, wp.id, time.id, [-0.1, -0.3], 4.4, 0.5, 0.6, 0.05);
+
+  const sum12: Node = { id: "pd_sum12", type: "Add", position: { x: 2340, y: 160 }, data: {} };
+  const sum123: Node = { id: "pd_sum123", type: "Add", position: { x: 2600, y: 320 }, data: {} };
+  const sumAll: Node = { id: "pd_sumAll", type: "Add", position: { x: 2860, y: 480 }, data: {} };
+  const ambientHighlight: Node = { id: "pd_ambientHighlight", type: "Clamp", position: { x: 3120, y: 480 }, data: { min: 0, max: 1 } };
+  const ambientAmp: Node = { id: "pd_ambientAmp", type: "Multiply", position: { x: 3120, y: 640 }, data: { b: 0.03 } };
+  const disp: Node = { id: "pd_disp", type: "VertexDisplacement", position: { x: 3380, y: 640 }, data: {} };
+
+  const splash: Node = { id: "pd_splash", type: "SplashTrigger", position: { x: 0, y: 1400 }, data: {} };
+  const splashClamped: Node = { id: "pd_splashClamped", type: "Clamp", position: { x: 260, y: 1400 }, data: { min: 0, max: 1 } };
+  const totalHighlightSum: Node = { id: "pd_totalHighlightSum", type: "Add", position: { x: 3380, y: 800 }, data: {} };
+  const totalHighlight: Node = { id: "pd_totalHighlight", type: "Clamp", position: { x: 3640, y: 800 }, data: { min: 0, max: 1 } };
+
+  const albedo: Node = { id: "pd_albedo", type: "Color", position: { x: 0, y: 1600 }, data: { r: 0.03, g: 0.03, b: 0.035, a: 1 } };
+  const roughness: Node = { id: "pd_roughness", type: "Float", position: { x: 0, y: 1740 }, data: { value: 0.04 } };
+  const metallic: Node = { id: "pd_metallic", type: "Float", position: { x: 0, y: 1860 }, data: { value: 0 } };
+  const ao: Node = { id: "pd_ao", type: "Float", position: { x: 0, y: 1980 }, data: { value: 1 } };
+  const worldNormal: Node = { id: "pd_worldNormal", type: "WorldNormal", position: { x: 260, y: 2100 }, data: {} };
+  const fresnel: Node = { id: "pd_fresnel", type: "Fresnel", position: { x: 520, y: 2100 }, data: { power: 5 } };
+  const skyTint: Node = { id: "pd_skyTint", type: "Color", position: { x: 260, y: 1600 }, data: { r: 0.8, g: 0.92, b: 1.0, a: 1 } };
+  const albedoWithSky: Node = { id: "pd_albedoWithSky", type: "Mix", position: { x: 780, y: 1700 }, data: {} };
+  const rippleColor: Node = { id: "pd_rippleColor", type: "Color", position: { x: 780, y: 1900 }, data: { r: 0.85, g: 0.92, b: 0.95, a: 1 } };
+  const withRipples: Node = { id: "pd_withRipples", type: "Mix", position: { x: 1300, y: 1800 }, data: {} };
+
+  const out: Node = {
+    id: "pd_out",
+    type: "OutputPBR",
+    position: { x: 1560, y: 1800 },
+    data: {
+      outputMode: "pbr",
+      normalStrength: 1,
+      aoStrength: 1,
+      roughnessStrength: 1,
+      emissiveStrength: 1,
+      ior: 1.33,
+      transmission: 0.55,
+      thicknessAware: false,
+      absorptionDensity: 1.6,
+    },
+  };
+
+  const nodes: Node[] = [
+    wp, time, ...ring1.nodes, ...ring2.nodes, ...ring3.nodes, ...ring4.nodes,
+    sum12, sum123, sumAll, ambientHighlight, ambientAmp, disp,
+    splash, splashClamped, totalHighlightSum, totalHighlight,
+    albedo, roughness, metallic, ao, worldNormal, fresnel, skyTint, albedoWithSky, rippleColor, withRipples, out,
+  ];
+  const edges: Edge[] = [
+    ...ring1.edges, ...ring2.edges, ...ring3.edges, ...ring4.edges,
+
+    { id: "pd_sa", source: ring1.ringOutput, sourceHandle: "result", target: sum12.id, targetHandle: "a" },
+    { id: "pd_sb", source: ring2.ringOutput, sourceHandle: "result", target: sum12.id, targetHandle: "b" },
+    { id: "pd_sc", source: sum12.id, sourceHandle: "result", target: sum123.id, targetHandle: "a" },
+    { id: "pd_sd", source: ring3.ringOutput, sourceHandle: "result", target: sum123.id, targetHandle: "b" },
+    { id: "pd_se", source: sum123.id, sourceHandle: "result", target: sumAll.id, targetHandle: "a" },
+    { id: "pd_sf", source: ring4.ringOutput, sourceHandle: "result", target: sumAll.id, targetHandle: "b" },
+    { id: "pd_sg", source: sumAll.id, sourceHandle: "result", target: ambientHighlight.id, targetHandle: "value" },
+    { id: "pd_sh", source: sumAll.id, sourceHandle: "result", target: ambientAmp.id, targetHandle: "a" },
+    { id: "pd_si", source: ambientAmp.id, sourceHandle: "result", target: disp.id, targetHandle: "height" },
+
+    { id: "pd_e1", source: wp.id, sourceHandle: "pos", target: splash.id, targetHandle: "pos" },
+    { id: "pd_e2", source: splash.id, sourceHandle: "ring", target: splashClamped.id, targetHandle: "value" },
+    { id: "pd_e3", source: ambientHighlight.id, sourceHandle: "result", target: totalHighlightSum.id, targetHandle: "a" },
+    { id: "pd_e4", source: splashClamped.id, sourceHandle: "result", target: totalHighlightSum.id, targetHandle: "b" },
+    { id: "pd_e5", source: totalHighlightSum.id, sourceHandle: "result", target: totalHighlight.id, targetHandle: "value" },
+
+    { id: "pd_e6", source: worldNormal.id, sourceHandle: "normal", target: fresnel.id, targetHandle: "normal" },
+    { id: "pd_e7", source: albedo.id, sourceHandle: "color", target: albedoWithSky.id, targetHandle: "a" },
+    { id: "pd_e8", source: skyTint.id, sourceHandle: "color", target: albedoWithSky.id, targetHandle: "b" },
+    { id: "pd_e9", source: fresnel.id, sourceHandle: "fresnel", target: albedoWithSky.id, targetHandle: "t" },
+    { id: "pd_e10", source: albedoWithSky.id, sourceHandle: "result", target: withRipples.id, targetHandle: "a" },
+    { id: "pd_e11", source: rippleColor.id, sourceHandle: "color", target: withRipples.id, targetHandle: "b" },
+    { id: "pd_e12", source: totalHighlight.id, sourceHandle: "result", target: withRipples.id, targetHandle: "t" },
+    { id: "pd_e13", source: withRipples.id, sourceHandle: "result", target: out.id, targetHandle: "albedo" },
+    { id: "pd_e14", source: roughness.id, sourceHandle: "value", target: out.id, targetHandle: "roughness" },
+    { id: "pd_e15", source: metallic.id, sourceHandle: "value", target: out.id, targetHandle: "metallic" },
+    { id: "pd_e16", source: ao.id, sourceHandle: "value", target: out.id, targetHandle: "ao" },
+  ];
+  return { nodes, edges };
+}
+
 export type TemplateKey =
   | "celshade" | "celshade-texture" | "celshade-outline" | "celshade-texture-outline" | "glass"
-  | "toon-water" | "realistic-water";
+  | "toon-water" | "realistic-water" | "puddle";
 
 export const TEMPLATES: { key: TemplateKey; label: string; build: () => { nodes: Node[]; edges: Edge[] } }[] = [
   { key: "celshade", label: "Celshade (2-Band)", build: buildCelshadeGraph },
@@ -429,4 +606,5 @@ export const TEMPLATES: { key: TemplateKey; label: string; build: () => { nodes:
   { key: "glass", label: "Non-RT Glass", build: buildGlassGraph },
   { key: "toon-water", label: "Toon Water", build: buildToonWaterGraph },
   { key: "realistic-water", label: "Realistic Water", build: buildRealisticWaterGraph },
+  { key: "puddle", label: "Puddle (Road)", build: buildPuddleGraph },
 ];

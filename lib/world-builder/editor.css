@@ -114,8 +114,8 @@
   left: 0;
   top: 0;
   bottom: 0;
-  width: 380px;
-  min-width: 300px;
+  width: 260px;
+  min-width: 220px;
   max-width: min(42vw, 560px);
   height: calc(100vh - 124px);
 }
@@ -261,9 +261,9 @@
 }
 
 .wb-root .outliner-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   min-height: 28px;
   padding: 5px 7px 5px calc(7px + var(--depth, 0) * 14px);
   border: 1px solid rgb(255 255 255 / 0.08);
@@ -277,6 +277,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 100%;
 }
 
 .wb-root .outliner-row span:last-child {

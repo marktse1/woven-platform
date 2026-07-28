@@ -7,7 +7,7 @@ export type AssetDefinition = {
   category: string;
   name: string;
   url: string;
-  kind?: "asset" | "light";
+  kind?: "asset" | "light" | "water";
   physics?: "none" | "fixed" | "dynamic";
   lightType?: "directional" | "omni" | "spot";
   fileName?: string;
@@ -62,7 +62,7 @@ export type BuildingSpec = {
 export type PlacedObjectData = {
   id: string;
   parentId?: string;
-  kind?: "asset" | "light" | "building";
+  kind?: "asset" | "light" | "building" | "water";
   // For kind "building": set to the ground floor's assetId as a fallback
   // reference (thumbnail/label lookups elsewhere assume every object has
   // a single `.asset`) — the real per-floor recipe lives in `building`.

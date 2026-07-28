@@ -83,6 +83,9 @@ const LIGHT_ASSET_CATALOG: AssetDefinition[] = [
   { category: "Lights", kind: "light", lightType: "spot", name: "Spot Light", url: "light://spot" },
   { category: "Lights", kind: "light", lightType: "directional", name: "Directional Light", url: "light://directional" },
 ];
+const WATER_ASSET_CATALOG: AssetDefinition[] = [
+  { category: "Water", kind: "water", name: "Body of Water", url: "water://plane" },
+];
 
 type RuntimeState = {
   manifestUrl: string;
@@ -952,6 +955,7 @@ const timeControls = {
 };
 const inspector = ui.inspector;
 const sceneOutliner = ui.sceneOutliner;
+const placeablesPanel = ui.placeablesPanel;
 
 manifestInput.value = state.manifestUrl;
 catalogInput.value = state.assetCatalogUrl;
@@ -1123,7 +1127,7 @@ function loadPanelState(): PanelState {
 
 function loadPanelSizes(): PanelSizeState {
   const defaults: PanelSizeState = {
-    assetsWidth: 380,
+    assetsWidth: 260,
     inspectorWidth: 320,
     inspectorHeight: 640,
     worldWidth: 320,
@@ -1134,7 +1138,7 @@ function loadPanelSizes(): PanelSizeState {
   try {
     const parsed = JSON.parse(saved) as Partial<PanelSizeState>;
     return {
-      assetsWidth: Math.max(260, Number(parsed.assetsWidth) || defaults.assetsWidth),
+      assetsWidth: Math.max(220, Number(parsed.assetsWidth) || defaults.assetsWidth),
       inspectorWidth: Math.max(240, Number(parsed.inspectorWidth) || defaults.inspectorWidth),
       inspectorHeight: Math.max(320, Number(parsed.inspectorHeight) || defaults.inspectorHeight),
       worldWidth: Math.max(240, Number(parsed.worldWidth) || defaults.worldWidth),
@@ -1197,12 +1201,12 @@ function mergeAssetCatalogs(...catalogs: AssetDefinition[][]) {
 
 function loadCachedAssetCatalog() {
   const saved = localStorage.getItem(ASSET_CATALOG_STORAGE_KEY);
-  if (!saved) return normalizeAssetCatalog([...FALLBACK_ASSET_CATALOG, ...LIGHT_ASSET_CATALOG]);
+  if (!saved) return normalizeAssetCatalog([...FALLBACK_ASSET_CATALOG, ...LIGHT_ASSET_CATALOG, ...WATER_ASSET_CATALOG]);
   try {
     const parsed = JSON.parse(saved) as AssetDefinition[] | { version?: number; source?: string; assets?: AssetDefinition[] };
     const cachedAssets = Array.isArray(parsed) ? parsed : parsed.assets ?? [];
     const normalized = normalizeAssetCatalog(cachedAssets);
-    const fallbackCatalog = normalizeAssetCatalog([...FALLBACK_ASSET_CATALOG, ...LIGHT_ASSET_CATALOG]);
+    const fallbackCatalog = normalizeAssetCatalog([...FALLBACK_ASSET_CATALOG, ...LIGHT_ASSET_CATALOG, ...WATER_ASSET_CATALOG]);
     const looksLikeFallback = normalized.length === fallbackCatalog.length && normalized.every((asset, index) => asset.url === fallbackCatalog[index]?.url);
     if (looksLikeFallback) {
       localStorage.removeItem(ASSET_CATALOG_STORAGE_KEY);
@@ -1210,7 +1214,7 @@ function loadCachedAssetCatalog() {
     }
     return normalized.length > 0 ? normalized : fallbackCatalog;
   } catch {
-    return normalizeAssetCatalog([...FALLBACK_ASSET_CATALOG, ...LIGHT_ASSET_CATALOG]);
+    return normalizeAssetCatalog([...FALLBACK_ASSET_CATALOG, ...LIGHT_ASSET_CATALOG, ...WATER_ASSET_CATALOG]);
   }
 }
 
@@ -1521,6 +1525,7 @@ async function loadWorldFromInputs() {
     .then((loadedRemoteCatalog) => {
       updateAssetList();
       updateSceneOutliner();
+      updatePlaceablesPanel();
       updateDiagnostics();
       // The Inspector's "Custom (Shaderade)" dropdown reads state.shaderCatalog
       // directly, which this call just populated — if an object was already
@@ -1675,7 +1680,7 @@ async function loadAssetCatalog(_url: string) {
           buildingPart: buildingPart && buildingPart.slot && buildingPart.style ? buildingPart : undefined,
         };
       });
-    state.assetCatalog = mergeAssetCatalogs(definitions, LIGHT_ASSET_CATALOG);
+    state.assetCatalog = mergeAssetCatalogs(definitions, LIGHT_ASSET_CATALOG, WATER_ASSET_CATALOG);
     saveCachedAssetCatalog();
     return true;
   } catch (error) {
@@ -2935,6 +2940,10 @@ function spawnObject(object: PlacedObjectData) {
     spawnLightObject(object);
     return;
   }
+  if (object.kind === "water") {
+    spawnWaterObject(object);
+    return;
+  }
   if (object.kind === "building" && object.building) {
     void spawnBuildingObject(object);
     return;
@@ -3467,6 +3476,48 @@ function spawnLightObject(object: PlacedObjectData) {
   selectableMeshes.push(group);
 }
 
+// A placeable "Body of Water" — a single flat plane, code-generated like
+// spawnLightObject above rather than loaded from a .glb. Fixed base size,
+// resized via the object's own `scale` (same Transform panel every other
+// placed object already uses) rather than bespoke width/depth fields.
+// Default material is a plausible translucent blue so it looks like water
+// immediately; picking a saved Shaderade graph via the Material panel's
+// existing "Custom (Shaderade)" picker (unchanged — it already renders for
+// any non-light object) swaps in an animated shader on top of this.
+function spawnWaterObject(object: PlacedObjectData) {
+  const geometry = new THREE.PlaneGeometry(10, 10, 48, 48);
+  // Authored flat in local space so rotation:[0,0,0] means "lying on the
+  // ground," matching every other ground-level convention in this file —
+  // PlaneGeometry's own default orientation faces +Z.
+  geometry.rotateX(-Math.PI / 2);
+  const material = new THREE.MeshPhysicalMaterial({
+    color: 0x1f5f7a,
+    transparent: true,
+    opacity: 0.75,
+    roughness: 0.15,
+    metalness: 0,
+    side: THREE.DoubleSide,
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.position.set(object.position[0], object.position[1], object.position[2]);
+  mesh.rotation.set(
+    THREE.MathUtils.degToRad(object.rotation[0]),
+    THREE.MathUtils.degToRad(object.rotation[1]),
+    THREE.MathUtils.degToRad(object.rotation[2])
+  );
+  mesh.scale.set(object.scale[0], object.scale[1], object.scale[2]);
+  mesh.receiveShadow = true;
+  mesh.userData.objectId = object.id;
+  mesh.userData.definition = object;
+
+  assignStandardMaterials(mesh);
+  applyObjectShaderMode(object, mesh);
+
+  objectRoot.add(mesh);
+  objectMeshes.set(object.id, mesh);
+  selectableMeshes.push(mesh);
+}
+
 function cloneTemplate(template: THREE.Object3D) {
   if ((template as THREE.SkinnedMesh | THREE.Group).isObject3D) {
     try {
@@ -3709,6 +3760,32 @@ async function saveBuildingTag() {
 }
 
 
+// Lights + water are synthetic catalog entries (no backing .glb, see
+// LIGHT_ASSET_CATALOG/WATER_ASSET_CATALOG) so they can't appear in the
+// app-wide "My Assets" drawer that placement otherwise routes through
+// (WorldBuilderViewer.tsx only accepts real .glb rows). This is their one
+// placement entry point — a compact button list, not a full shelf
+// restoration, since there are only ever a handful of these. Clicking a
+// button just selects it the same way clicking a My Assets row does
+// (`state.selectedAssetUrl`); the existing terrain-click -> placeObjectAt
+// flow (unchanged) does the actual placing.
+function updatePlaceablesPanel() {
+  placeablesPanel.innerHTML = "";
+  const entries = state.assetCatalog.filter((asset) => asset.kind === "light" || asset.kind === "water");
+  for (const asset of entries) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = state.selectedAssetUrl === asset.url ? "is-active" : "";
+    button.textContent = asset.name;
+    button.addEventListener("click", () => {
+      state.selectedAssetUrl = asset.url;
+      updatePlaceablesPanel();
+      updateStatus(`Selected ${asset.name} — click the terrain to place it.`);
+    });
+    placeablesPanel.appendChild(button);
+  }
+}
+
 function updateSceneOutliner() {
   sceneOutliner.innerHTML = "";
   const nodes: SceneNodeData[] = [...(state.layout.groups ?? []), ...state.layout.objects];
@@ -3814,6 +3891,7 @@ function updateInspector() {
 
   const asset = state.assetCatalog.find((item) => item.url === object.asset);
   const isLight = (object.kind ?? asset?.kind) === "light";
+  const isWater = (object.kind ?? asset?.kind) === "water";
   const lightColor = rgbToHex(object.color ?? [1, 0.82, 0.48]);
   const shaderMode = getObjectShaderMode(object);
   const shaderSettings = normalizeObjectShaderSettings(object.shaderSettings);
@@ -3838,6 +3916,7 @@ function updateInspector() {
         <label><span>Scale Z</span><input id="sz" type="number" step="0.05" value="${object.scale[2]}" /></label>
       </div>
       ${isLight ? "" : `
+        ${isWater ? `<div class="panel-subhead">Water</div>` : ""}
         <div class="panel-subhead">Material</div>
         <div class="split">
           <label>
@@ -4838,7 +4917,7 @@ function beginPanelResize(event: PointerEvent, panelName: keyof PanelState, axis
     const dx = moveEvent.clientX - startX;
     const dy = moveEvent.clientY - startY;
     if (panelName === "assets") {
-      panelSizes.assetsWidth = Math.max(260, startSizes.assetsWidth + dx);
+      panelSizes.assetsWidth = Math.max(220, startSizes.assetsWidth + dx);
     } else if (panelName === "inspector") {
       panelSizes.inspectorWidth = Math.max(240, startSizes.inspectorWidth + dx);
       panelSizes.inspectorHeight = Math.max(260, startSizes.inspectorHeight + dy);
@@ -6019,6 +6098,8 @@ function buildUi() {
         <button class="panel-toggle" type="button" data-toggle-panel="assets">${panelState.assets ? "Expand" : "Collapse"}</button>
       </div>
       <div class="body">
+        <div class="panel-subhead">Lights &amp; Water</div>
+        <div id="placeables-panel" class="btn-row"></div>
         <div class="panel-subhead">Placed Objects</div>
         <div id="scene-outliner" class="scene-outliner"></div>
       </div>
@@ -6272,6 +6353,7 @@ function buildUi() {
     viewport: root,
     topbar,
     sceneOutliner: shell.querySelector<HTMLDivElement>("#scene-outliner")!,
+    placeablesPanel: shell.querySelector<HTMLDivElement>("#placeables-panel")!,
     inspector: shell.querySelector<HTMLDivElement>("#inspector")!,
     timeSlider: shell.querySelector<HTMLInputElement>("#time-slider")!,
     timePlay: shell.querySelector<HTMLButtonElement>("#time-play")!,

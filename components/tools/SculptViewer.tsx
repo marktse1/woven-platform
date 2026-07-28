@@ -10,7 +10,7 @@ import { TransformControls } from "three/examples/jsm/controls/TransformControls
 import { MeshBVH, acceleratedRaycast } from "three-mesh-bvh";
 import "three-mesh-bvh"; // pulls in BufferGeometry.boundsTree augmentation
 import { buildSeamData, type SeamData } from "@/lib/sculpt/seams";
-import { applyBrush, applyMaskDab, gatherVertices, expandSeams, type BrushMode, type BrushHit } from "@/lib/sculpt/brushes";
+import { applyBrush, applyMaskDab, applyMaskBox, gatherVertices, expandSeams, type BrushMode, type BrushHit } from "@/lib/sculpt/brushes";
 import { extractMaskedRegion, detachMaskedRegion } from "@/lib/sculpt/extract";
 import { SculptUndoStack } from "@/lib/sculpt/undo";
 import { TopoUndoStack, type TopoMeshSnapshot } from "@/lib/sculpt/topoUndo";
@@ -62,7 +62,7 @@ type SculptMeshEntry = {
 // depends on component-local refs — only on the entry passed in — so both
 // the "brush mode changed" material-swap effect and the pointer-stroke
 // handling effect below can call them without duplicating this logic.
-const MASK_TINT = new THREE.Color(0xffb020);
+const MASK_TINT = new THREE.Color(0x404040);
 const _maskWhite = new THREE.Color(1, 1, 1);
 const _maskColorTmp = new THREE.Color();
 
@@ -521,6 +521,13 @@ export default function SculptViewer({
   const lastUVRef = useRef<{ uv: THREE.Vector2; mesh: THREE.Mesh } | null>(null);
   const altDownRef = useRef(false);
   const shiftDownRef = useRef(false);
+  /** Ctrl+drag-on-mesh in Mask mode: rectangle mask select instead of a freehand stroke. */
+  const boxSelectActiveRef = useRef(false);
+  const boxSelectStartRef = useRef<{ x: number; y: number } | null>(null);
+  const boxSelectOverlayRef = useRef<HTMLDivElement | null>(null);
+  /** Ctrl+drag starting in empty space (raycast miss): orbit as normal, then
+   * snap to the nearest orthographic view on release if Ctrl is still held. */
+  const orbitDragActiveRef = useRef(false);
   const dynTopoRef = useRef(false);
   useEffect(() => { dynTopoRef.current = dynTopo; }, [dynTopo]);
   const smoothSubdivideRef = useRef(true);
@@ -1172,6 +1179,91 @@ export default function SculptViewer({
       return { point: nearest.point.clone(), normal };
     }
 
+    // ── Box-select mask overlay (Ctrl+drag on mesh in Mask mode) ─────────────
+    // A plain absolutely-positioned DOM rectangle, not a Three.js object —
+    // simplest way to draw UI chrome on top of the WebGL canvas, matching
+    // this file's existing "imperative DOM, no React re-render" convention.
+    function ensureBoxOverlay(): HTMLDivElement {
+      let el = boxSelectOverlayRef.current;
+      if (!el) {
+        // `mount` (the SculptViewer root div) has no explicit `position` of
+        // its own (just w-full h-full) — without this, the overlay's
+        // `position: absolute` below would resolve against whatever
+        // ancestor further up happens to be positioned, not against
+        // `mount`'s own bounding rect, which is what updateBoxOverlay's
+        // math assumes.
+        mount.style.position = "relative";
+        el = document.createElement("div");
+        el.style.position = "absolute";
+        el.style.border = "1px dashed #8aa0b4";
+        el.style.background = "rgba(138,160,180,0.15)";
+        el.style.pointerEvents = "none";
+        el.style.display = "none";
+        el.style.zIndex = "5";
+        mount.appendChild(el);
+        boxSelectOverlayRef.current = el;
+      }
+      return el;
+    }
+    function updateBoxOverlay(x0: number, y0: number, x1: number, y1: number) {
+      const el = ensureBoxOverlay();
+      const rect = mount.getBoundingClientRect();
+      const left = Math.min(x0, x1) - rect.left, top = Math.min(y0, y1) - rect.top;
+      el.style.left = `${left}px`;
+      el.style.top = `${top}px`;
+      el.style.width = `${Math.abs(x1 - x0)}px`;
+      el.style.height = `${Math.abs(y1 - y0)}px`;
+      el.style.display = "block";
+    }
+    function hideBoxOverlay() {
+      if (boxSelectOverlayRef.current) boxSelectOverlayRef.current.style.display = "none";
+    }
+    /** Client-pixel rect (as tracked by the overlay above) -> NDC min/max, using the same rect basis raycastMeshes uses. */
+    function clientRectToNdc(x0: number, y0: number, x1: number, y1: number): { min: { x: number; y: number }; max: { x: number; y: number } } {
+      const rect = renderer!.domElement.getBoundingClientRect();
+      const toNdc = (cx: number, cy: number) => ({
+        x: ((cx - rect.left) / rect.width) * 2 - 1,
+        y: -((cy - rect.top) / rect.height) * 2 + 1,
+      });
+      const p0 = toNdc(x0, y0), p1 = toNdc(x1, y1);
+      return {
+        min: { x: Math.min(p0.x, p1.x), y: Math.min(p0.y, p1.y) },
+        max: { x: Math.max(p0.x, p1.x), y: Math.max(p0.y, p1.y) },
+      };
+    }
+
+    // ── Ortho-view-snap (Ctrl+drag starting in empty space) ──────────────────
+    // ZBrush-style: same Ctrl modifier as box-select above, disambiguated by
+    // where the drag starts (empty space here, on-mesh for box-select) —
+    // independent of brush mode, since this is camera behavior, not a tool.
+    function angleDiff(a: number, b: number): number {
+      let d = (a - b) % (Math.PI * 2);
+      if (d > Math.PI) d -= Math.PI * 2;
+      if (d < -Math.PI) d += Math.PI * 2;
+      return Math.abs(d);
+    }
+    const ORTHO_SNAP_THRESHOLD = THREE.MathUtils.degToRad(8);
+    function maybeSnapToOrthoView() {
+      const camera = cameraRef.current;
+      const controls = controlsRef.current;
+      if (!camera || !controls) return;
+      const offset = camera.position.clone().sub(controls.target);
+      const spherical = new THREE.Spherical().setFromVector3(offset);
+      const HALF_PI = Math.PI / 2;
+      const thetaSnap = Math.round(spherical.theta / HALF_PI) * HALF_PI;
+      const phiSnap = Math.round(spherical.phi / HALF_PI) * HALF_PI;
+      const withinTheta = angleDiff(spherical.theta, thetaSnap) < ORTHO_SNAP_THRESHOLD;
+      const withinPhi = angleDiff(spherical.phi, phiSnap) < ORTHO_SNAP_THRESHOLD;
+      if (!withinTheta && !withinPhi) return;
+      if (withinTheta) spherical.theta = thetaSnap;
+      // Clamped away from the poles — phi = 0/PI exactly is a degenerate
+      // lookAt (camera directly above/below target, undefined "up" twist).
+      if (withinPhi) spherical.phi = THREE.MathUtils.clamp(phiSnap, 0.02, Math.PI - 0.02);
+      camera.position.copy(controls.target).add(new THREE.Vector3().setFromSpherical(spherical));
+      camera.lookAt(controls.target);
+      controls.update();
+    }
+
     // Poly-edit picking. Unlike getHitFromEvent above, this keeps the exact
     // hit triangle's identity (nearest.faceIndex/face.a/b/c) instead of
     // collapsing to just a world point — three.js already computes these
@@ -1538,14 +1630,26 @@ export default function SculptViewer({
     let polyEditDownPos: { x: number; y: number } | null = null;
 
     function onPointerDown(e: PointerEvent) {
-      if (e.button !== 0) return;
+      // Widened for Ctrl+drag on macOS trackpads: "Secondary click -> Click
+      // or tap with Control key" remaps a Control-click to button 2 (right)
+      // before it ever reaches the browser — without this, a trackpad
+      // user's Ctrl+drag would be silently dropped by a plain `!== 0` check.
+      // External mice are unaffected (Ctrl+Left-click stays button 0).
+      if (e.button !== 0 && !(e.ctrlKey && e.button === 2)) return;
       if (editModeRef.current === "poly_edit") {
         if (transformControlsRef.current?.dragging) return;
         polyEditDownPos = { x: e.clientX, y: e.clientY };
         return;
       }
       const hit = getHitFromEvent(e);
-      if (!hit) return;
+      if (!hit) {
+        // Raycast missed everything — OrbitControls handles this drag as a
+        // normal orbit rotate on its own; just remember Ctrl might turn it
+        // into an ortho-snap on release (checked there, not here, since
+        // Ctrl could be pressed/released mid-drag).
+        orbitDragActiveRef.current = true;
+        return;
+      }
 
       // Take undo snapshot before first displacement
       undoRef.current.push(meshEntriesRef.current.map((e) => e.mesh));
@@ -1562,7 +1666,13 @@ export default function SculptViewer({
       if (isPaint) {
         applyPaintDab();
       } else if (isMask) {
-        applyMaskStroke(hit);
+        if (e.ctrlKey) {
+          boxSelectActiveRef.current = true;
+          boxSelectStartRef.current = { x: e.clientX, y: e.clientY };
+          updateBoxOverlay(e.clientX, e.clientY, e.clientX, e.clientY);
+        } else {
+          applyMaskStroke(hit);
+        }
       } else {
         const pressure = e.pointerType === "pen" && e.pressure > 0 ? e.pressure : 1.0;
         for (const entry of meshEntriesRef.current) {
@@ -1583,6 +1693,13 @@ export default function SculptViewer({
 
     function onPointerMove(e: PointerEvent) {
       if (editModeRef.current === "poly_edit") return; // no hover preview in poly-edit this pass
+
+      if (boxSelectActiveRef.current) {
+        const start = boxSelectStartRef.current;
+        if (start) updateBoxOverlay(start.x, start.y, e.clientX, e.clientY);
+        return;
+      }
+
       const hit = getHitFromEvent(e);
       updateIndicator(hit);
       updateHighlightPoints(hit);
@@ -1625,13 +1742,36 @@ export default function SculptViewer({
         applyPolyEditSelection(getElementHitFromEvent(e), e.shiftKey);
         return;
       }
+      if (orbitDragActiveRef.current) {
+        orbitDragActiveRef.current = false;
+        if (e.ctrlKey) maybeSnapToOrthoView();
+      }
+
+      const wasBoxSelect = boxSelectActiveRef.current;
+      if (wasBoxSelect) {
+        boxSelectActiveRef.current = false;
+        const start = boxSelectStartRef.current;
+        boxSelectStartRef.current = null;
+        hideBoxOverlay();
+        const camera = cameraRef.current;
+        if (start && camera) {
+          const { min, max } = clientRectToNdc(start.x, start.y, e.clientX, e.clientY);
+          for (const entry of meshEntriesRef.current) {
+            ensureMaskState(entry);
+            if (entry.mesh.material !== entry.maskMat) entry.mesh.material = entry.maskMat!;
+            const touched = applyMaskBox(entry.mask!, entry.mesh, entry.seams, camera, min, max, altDownRef.current);
+            updateMaskColors(entry, touched);
+          }
+        }
+      }
+
       if (!strokeActiveRef.current) return;
       strokeActiveRef.current = false;
       lastHitRef.current = null;
       controlsRef.current!.enabled = true;
       mount.releasePointerCapture(e.pointerId);
 
-      if (dynTopoRef.current && meshEntriesRef.current.length > 0) {
+      if (!wasBoxSelect && dynTopoRef.current && meshEntriesRef.current.length > 0) {
         let totalVerts = 0;
         let anyChanged = false;
         for (const entry of meshEntriesRef.current) {
@@ -1683,16 +1823,28 @@ export default function SculptViewer({
       }
     }
 
+    // Suppress the native right-click menu over the viewport — the macOS
+    // trackpad Ctrl-click remap (see onPointerDown above) synthesizes a
+    // secondary-click, which would otherwise pop up a context menu mid-drag.
+    // Nothing in this viewport relies on a native context menu.
+    function onContextMenu(e: MouseEvent) { e.preventDefault(); }
+
     const el = mount;
     el.addEventListener("pointerdown", onPointerDown);
     el.addEventListener("pointermove", onPointerMove);
     el.addEventListener("pointerup", onPointerUp);
     el.addEventListener("pointerleave", onPointerLeave);
+    el.addEventListener("contextmenu", onContextMenu);
     return () => {
       el.removeEventListener("pointerdown", onPointerDown);
       el.removeEventListener("pointermove", onPointerMove);
       el.removeEventListener("pointerup", onPointerUp);
       el.removeEventListener("pointerleave", onPointerLeave);
+      el.removeEventListener("contextmenu", onContextMenu);
+      if (boxSelectOverlayRef.current) {
+        boxSelectOverlayRef.current.remove();
+        boxSelectOverlayRef.current = null;
+      }
     };
   }, []);
 

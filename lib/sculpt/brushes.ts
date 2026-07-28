@@ -382,3 +382,60 @@ export function applyMaskDab(
   // set of vertex colors instead of rescanning the whole mesh every dab.
   return Array.from(allIdx);
 }
+
+const _boxWp = new THREE.Vector3();
+const _boxNdc = new THREE.Vector3();
+const _boxWn = new THREE.Vector3();
+const _boxToCam = new THREE.Vector3();
+const _boxCamPos = new THREE.Vector3();
+const _boxNormalMat = new THREE.Matrix3();
+
+/**
+ * Box-select masking: every vertex whose screen projection falls inside
+ * [ndcMin, ndcMax] AND faces toward the camera gets masked (or erased),
+ * binary — no radial falloff, unlike the freehand dab above. The
+ * front-facing check is a simple normal/view-direction dot product, not a
+ * real occlusion/raycast test — a box drawn over a visible bump can also
+ * mask a simultaneously front-facing patch on a concave far side of the
+ * same mesh. Accepted tradeoff for the common case (roughly convex panels
+ * like vehicle doors/wheels); a real occlusion test would need a BVH
+ * raycast per candidate vertex.
+ */
+export function applyMaskBox(
+  mask: Float32Array,
+  mesh: THREE.Mesh,
+  seams: SeamData,
+  camera: THREE.Camera,
+  ndcMin: { x: number; y: number },
+  ndcMax: { x: number; y: number },
+  erase: boolean,
+): number[] {
+  const positions = mesh.geometry.attributes.position as THREE.BufferAttribute;
+  const normals = mesh.geometry.attributes.normal as THREE.BufferAttribute | undefined;
+  const matWorld = mesh.matrixWorld;
+  _boxNormalMat.getNormalMatrix(matWorld);
+  camera.updateMatrixWorld();
+  _boxCamPos.setFromMatrixPosition(camera.matrixWorld);
+
+  const gathered: number[] = [];
+  for (let i = 0; i < positions.count; i++) {
+    _boxWp.fromBufferAttribute(positions, i).applyMatrix4(matWorld);
+    _boxNdc.copy(_boxWp).project(camera);
+    if (_boxNdc.z < -1 || _boxNdc.z > 1) continue;
+    if (_boxNdc.x < ndcMin.x || _boxNdc.x > ndcMax.x || _boxNdc.y < ndcMin.y || _boxNdc.y > ndcMax.y) continue;
+    if (normals) {
+      _boxWn.fromBufferAttribute(normals, i).applyMatrix3(_boxNormalMat).normalize();
+      _boxToCam.copy(_boxCamPos).sub(_boxWp).normalize();
+      if (_boxWn.dot(_boxToCam) <= 0) continue; // back-facing — skip
+    }
+    gathered.push(i);
+  }
+  if (gathered.length === 0) return [];
+
+  const allIdx = expandSeams(gathered, seams);
+  const sign = erase ? -1 : 1;
+  for (const idx of allIdx) {
+    mask[idx] = Math.max(0, Math.min(1, mask[idx] + sign));
+  }
+  return Array.from(allIdx);
+}

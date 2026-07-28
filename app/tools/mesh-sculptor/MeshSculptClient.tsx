@@ -404,44 +404,6 @@ export default function MeshSculptClient() {
     })();
   }, [selectedAsset]);
 
-  useEffect(() => {
-    function onDown(e: KeyboardEvent) {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-      if (e.key === "Tab") {
-        e.preventDefault();
-        setEditMode((m) => (m === "sculpt" ? "poly_edit" : "sculpt"));
-        return;
-      }
-      // Above the poly_edit branch (like Tab) so it works in both modes —
-      // ZBrush-style symmetry applies to sculpt strokes and poly-edit alike.
-      if (e.key.toLowerCase() === "m") {
-        setMirrorMode((m) => !m);
-        return;
-      }
-      if (editMode === "poly_edit") {
-        // Blender-style select-mode/transform-mode shortcuts, scoped to
-        // poly-edit only — no conflict with the sculpt brush shortcuts below
-        // (E/R mean smooth/flatten there) since the two modes are mutually
-        // exclusive and this branch returns before reaching MODE_KEY.
-        if (e.key === "1") setSelectMode("vertex");
-        else if (e.key === "2") setSelectMode("edge");
-        else if (e.key === "3") setSelectMode("face");
-        else if (e.key.toLowerCase() === "w") setTransformMode("translate");
-        else if (e.key.toLowerCase() === "e") setTransformMode("rotate");
-        else if (e.key.toLowerCase() === "r") setTransformMode("scale");
-        return;
-      }
-      const m = MODE_KEY[e.key.toLowerCase()];
-      if (m) setBrushMode(m);
-      if (e.key === "Shift") setShiftHeld(true);
-      if (e.key === "Alt") { e.preventDefault(); setAltHeld(true); }
-    }
-    function onUp(e: KeyboardEvent) { if (e.key === "Shift") setShiftHeld(false); if (e.key === "Alt") setAltHeld(false); }
-    window.addEventListener("keydown", onDown);
-    window.addEventListener("keyup", onUp);
-    return () => { window.removeEventListener("keydown", onDown); window.removeEventListener("keyup", onUp); };
-  }, [editMode]);
-
   // Seed the extrude-distance slider from the loaded mesh's own density the
   // moment poly-edit mode is entered, so it starts at a sensible scale
   // instead of an arbitrary constant.
@@ -492,6 +454,51 @@ export default function MeshSculptClient() {
     viewerHandleRef.current?.clearMask();
     setExtractMsg("");
   }, []);
+
+  useEffect(() => {
+    function onDown(e: KeyboardEvent) {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === "Tab") {
+        e.preventDefault();
+        setEditMode((m) => (m === "sculpt" ? "poly_edit" : "sculpt"));
+        return;
+      }
+      // Above the poly_edit branch (like Tab) so it works in both modes —
+      // ZBrush-style symmetry applies to sculpt strokes and poly-edit alike.
+      if (e.key.toLowerCase() === "m") {
+        setMirrorMode((m) => !m);
+        return;
+      }
+      if (editMode === "poly_edit") {
+        // Blender-style select-mode/transform-mode shortcuts, scoped to
+        // poly-edit only — no conflict with the sculpt brush shortcuts below
+        // (E/R mean smooth/flatten there) since the two modes are mutually
+        // exclusive and this branch returns before reaching MODE_KEY.
+        if (e.key === "1") setSelectMode("vertex");
+        else if (e.key === "2") setSelectMode("edge");
+        else if (e.key === "3") setSelectMode("face");
+        else if (e.key.toLowerCase() === "w") setTransformMode("translate");
+        else if (e.key.toLowerCase() === "e") setTransformMode("rotate");
+        else if (e.key.toLowerCase() === "r") setTransformMode("scale");
+        return;
+      }
+      // Power-user shortcut for the Clear Mask button, only while Mask
+      // brush mode is active (same gating as the button itself).
+      if (brushMode === "mask" && (e.key === "Backspace" || e.key === "Delete")) {
+        e.preventDefault();
+        handleClearMask();
+        return;
+      }
+      const m = MODE_KEY[e.key.toLowerCase()];
+      if (m) setBrushMode(m);
+      if (e.key === "Shift") setShiftHeld(true);
+      if (e.key === "Alt") { e.preventDefault(); setAltHeld(true); }
+    }
+    function onUp(e: KeyboardEvent) { if (e.key === "Shift") setShiftHeld(false); if (e.key === "Alt") setAltHeld(false); }
+    window.addEventListener("keydown", onDown);
+    window.addEventListener("keyup", onUp);
+    return () => { window.removeEventListener("keydown", onDown); window.removeEventListener("keyup", onUp); };
+  }, [editMode, brushMode, handleClearMask]);
 
   const handleToggleSubmeshVisible = useCallback((id: string, visible: boolean) => {
     viewerHandleRef.current?.setEntryVisible(id, visible);

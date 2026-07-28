@@ -52,6 +52,15 @@ import {
   terrainBrushWeight,
 } from "./schema";
 import { getAsset, listVisibleAssets, signedAssetUrl, updateAssetMeta, type AssetRow } from "@/lib/assets";
+import {
+  clamp,
+  mixRgb,
+  smoothstep,
+  distanceToSegment2d,
+  layerMaskForChunk,
+  layerBlendValueAt,
+  createTerrainMesh as createTerrainMeshShared,
+} from "./terrainMesh";
 import { loadLevel, saveLevel, listVisibleLevels, type WorldLevelRow } from "./levels";
 import { compile, type CompileResult } from "@/lib/shader-graph/compiler";
 import type { Node as ShaderGraphNode, Edge as ShaderGraphEdge } from "@xyflow/react";
@@ -368,6 +377,10 @@ const objectMeshes = new Map<string, THREE.Object3D>();
 // a custom material is built (applyCustomShaderAsync), removed when its
 // mesh is disposed (removeObjectMesh).
 const activeCustomShaderMaterials = new Set<THREE.ShaderMaterial>();
+// Placed "Body of Water" objects (spawnWaterObject) — ticked each frame
+// the same way, so their ripples/reflection actually animate. Added on
+// spawn, removed when the object is deleted (removeObjectMesh).
+const activeWaterMeshes = new Set<ThreeWater>();
 const selectedObjectIds = new Set<string>();
 const selectableMeshes: THREE.Object3D[] = [];
 const undoStack: string[] = [];
@@ -494,9 +507,10 @@ let saveTimeoutId: number | null = null;
 
 function createTerrainBlendTexture(chunk: TerrainChunkData) {
   const resolution = chunk.resolution || 33;
+  const waterLevel = state.layout.terrain?.waterLevel ?? -1.35;
   const data = new Uint8Array(resolution * resolution);
   for (let index = 0; index < data.length; index += 1) {
-    data[index] = Math.round(clamp(layerBlendValueAt(chunk, "sand", index), 0, 1) * 255);
+    data[index] = Math.round(clamp(layerBlendValueAt(chunk, "sand", index, waterLevel), 0, 1) * 255);
   }
   const texture = new THREE.DataTexture(data, resolution, resolution, THREE.RedFormat, THREE.UnsignedByteType);
   texture.needsUpdate = true;
@@ -1352,10 +1366,6 @@ function normalizeWaterSettings(next?: Partial<WaterSurfaceSettings> | null): Wa
   };
 }
 
-function clamp(v: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, v));
-}
-
 function createSolidTexture(rgba: [number, number, number, number]) {
   const texture = new THREE.DataTexture(new Uint8Array(rgba), 1, 1, THREE.RGBAFormat);
   texture.needsUpdate = true;
@@ -1363,14 +1373,6 @@ function createSolidTexture(rgba: [number, number, number, number]) {
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.RepeatWrapping;
   return texture;
-}
-
-function mixRgb(a: [number, number, number], b: [number, number, number], t: number): [number, number, number] {
-  return [
-    a[0] + (b[0] - a[0]) * t,
-    a[1] + (b[1] - a[1]) * t,
-    a[2] + (b[2] - a[2]) * t,
-  ];
 }
 
 function scaleRgb(color: [number, number, number], scale: number): [number, number, number] {
@@ -2114,33 +2116,14 @@ function clearGroup(group: THREE.Group) {
   }
 }
 
+// createTerrainMesh/buildHeightfield's real implementations live in
+// ./terrainMesh (shared with the eventual standalone player runtime) —
+// these wrappers just supply waterLevel/terrainMaterial from this
+// editor's own state, so every existing call site in this file is
+// unchanged.
 function createTerrainMesh(chunk: TerrainChunkData): THREE.Object3D {
-  const geometry = buildHeightfield(chunk);
-  const material = terrainMaterial.clone();
-  material.vertexColors = true;
-  material.transparent = false;
-  material.depthWrite = true;
-  material.needsUpdate = true;
-  const mesh = new THREE.Mesh(geometry, material);
-  mesh.receiveShadow = true;
-  mesh.renderOrder = 0;
-  mesh.userData = { kind: "terrain", chunkId: chunk.id, waterMask: chunk.waterMask };
-  const group = new THREE.Group();
-  group.add(mesh);
-  group.userData = { kind: "terrain", chunkId: chunk.id, waterMask: chunk.waterMask };
-  return group;
-}
-
-function distanceToSegment2d(px: number, pz: number, ax: number, az: number, bx: number, bz: number) {
-  const abx = bx - ax;
-  const abz = bz - az;
-  const apx = px - ax;
-  const apz = pz - az;
-  const lengthSq = abx * abx + abz * abz;
-  const t = lengthSq > 0 ? clamp((apx * abx + apz * abz) / lengthSq, 0, 1) : 0;
-  const x = ax + abx * t;
-  const z = az + abz * t;
-  return Math.hypot(px - x, pz - z);
+  const waterLevel = state.layout.terrain?.waterLevel ?? -1.35;
+  return createTerrainMeshShared(chunk, waterLevel, terrainMaterial);
 }
 
 function roadBlendAt(x: number, z: number) {
@@ -2159,94 +2142,6 @@ function roadBlendAt(x: number, z: number) {
     }
   }
   return blend;
-}
-
-function smoothstep(edge0: number, edge1: number, value: number) {
-  const t = clamp((value - edge0) / Math.max(0.0001, edge1 - edge0), 0, 1);
-  return t * t * (3 - 2 * t);
-}
-
-function buildHeightfield(chunk: TerrainChunkData) {
-  const resolution = chunk.resolution || 33;
-  const spacing = chunk.spacing || 2;
-  const vertices = resolution * resolution;
-  const positions = new Float32Array(vertices * 3);
-  const uvs = new Float32Array(vertices * 2);
-  const colors = new Float32Array(vertices * 3);
-  const indices: number[] = [];
-  const heights = chunk.heights ?? [];
-  const waterMask = chunk.waterMask ?? [];
-  const maxIndex = resolution - 1;
-  const originX = chunk.origin?.[0] ?? 0;
-  const originZ = chunk.origin?.[1] ?? 0;
-  const waterLevel = state.layout.terrain?.waterLevel ?? -1.35;
-  const soilColor: [number, number, number] = [0.49, 0.39, 0.26];
-  const sandColor: [number, number, number] = [0.78, 0.68, 0.46];
-  const grassColor: [number, number, number] = [0.18, 0.34, 0.16];
-  const wetTint: [number, number, number] = [0.14, 0.12, 0.1];
-
-  for (let z = 0; z < resolution; z += 1) {
-  for (let x = 0; x < resolution; x += 1) {
-      const index = z * resolution + x;
-      const posIndex = index * 3;
-      const height = heights[index] ?? 0;
-      const left = heights[index - 1] ?? height;
-      const right = heights[index + 1] ?? height;
-      const down = heights[index - resolution] ?? height;
-      const up = heights[index + resolution] ?? height;
-      const slope = Math.max(Math.abs(height - left), Math.abs(height - right), Math.abs(height - down), Math.abs(height - up)) / Math.max(1, spacing);
-      const wetness = smoothstep(waterLevel - 0.18, waterLevel + 0.85, waterLevel - height + 0.48);
-      const sandWeight = clamp(layerBlendValueAt(chunk, "sand", index), 0, 1);
-      const grassWeight = clamp(layerBlendValueAt(chunk, "grass", index), 0, 1);
-      const slopeGrass = clamp(1 - smoothstep(0.08, 0.28, slope), 0, 1);
-      let sandMix = clamp(sandWeight, 0, 1);
-      let grassMix = clamp(grassWeight * slopeGrass, 0, 1);
-      const blendSum = sandMix + grassMix;
-      if (blendSum > 1) {
-        sandMix /= blendSum;
-        grassMix /= blendSum;
-      }
-      const soilMix = clamp(1 - sandMix - grassMix, 0, 1);
-      const landColor = [
-        soilColor[0] * soilMix + sandColor[0] * sandMix + grassColor[0] * grassMix,
-        soilColor[1] * soilMix + sandColor[1] * sandMix + grassColor[1] * grassMix,
-        soilColor[2] * soilMix + sandColor[2] * sandMix + grassColor[2] * grassMix,
-      ] as [number, number, number];
-      const wetDarken = clamp(wetness * 0.35, 0, 0.35);
-      const finalColor = mixRgb(landColor, wetTint, wetDarken);
-      positions[posIndex] = originX + x * spacing;
-      positions[posIndex + 1] = height;
-      positions[posIndex + 2] = originZ + z * spacing;
-      uvs[index * 2] = x / maxIndex;
-      uvs[index * 2 + 1] = z / maxIndex;
-      colors[posIndex] = finalColor[0];
-      colors[posIndex + 1] = finalColor[1];
-      colors[posIndex + 2] = finalColor[2];
-    }
-  }
-
-  for (let z = 0; z < maxIndex; z += 1) {
-    for (let x = 0; x < maxIndex; x += 1) {
-      const i = z * resolution + x;
-      indices.push(i, i + resolution, i + 1);
-      indices.push(i + 1, i + resolution, i + resolution + 1);
-    }
-  }
-
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-  geometry.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
-  geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-  geometry.setIndex(indices);
-  geometry.computeVertexNormals();
-  return geometry;
-}
-
-function layerMaskForChunk(chunk: TerrainChunkData) {
-  chunk.paintMask ??= {};
-  chunk.paintMask.grass ??= new Array(chunk.heights.length).fill(0);
-  chunk.paintMask.sand ??= new Array(chunk.heights.length).fill(0);
-  return chunk.paintMask;
 }
 
 function paintShaderAt(point: THREE.Vector3) {
@@ -2284,35 +2179,6 @@ function paintShaderAt(point: THREE.Vector3) {
   terrain.revision += 1;
   rebuildTerrainSurfaces();
   saveLocalLayout();
-}
-
-function autoSandAt(chunk: TerrainChunkData, index: number) {
-  const waterLevel = state.layout.terrain?.waterLevel ?? -1.35;
-  const height = chunk.heights[index] ?? waterLevel;
-  return smoothstep(-0.35, 1.15, waterLevel - height + 0.45) * 0.8;
-}
-
-function autoGrassAt(chunk: TerrainChunkData, index: number) {
-  const waterLevel = state.layout.terrain?.waterLevel ?? -1.35;
-  const height = chunk.heights[index] ?? waterLevel;
-  const resolution = chunk.resolution || 33;
-  const spacing = chunk.spacing || 2;
-  const left = chunk.heights[index - 1] ?? height;
-  const right = chunk.heights[index + 1] ?? height;
-  const down = chunk.heights[index - resolution] ?? height;
-  const up = chunk.heights[index + resolution] ?? height;
-  const slope = Math.max(Math.abs(height - left), Math.abs(height - right), Math.abs(height - down), Math.abs(height - up)) / Math.max(1, spacing);
-  const elevation = smoothstep(waterLevel + 0.1, waterLevel + 3.6, height);
-  const flatness = 1 - smoothstep(0.08, 0.26, slope);
-  return clamp(elevation * flatness, 0, 1);
-}
-
-function layerBlendValueAt(chunk: TerrainChunkData, layer: "sand" | "grass", index: number) {
-  const mask = layerMaskForChunk(chunk);
-  const painted = mask[layer]?.[index] ?? 0;
-  if (layer === "sand") return Math.max(painted, autoSandAt(chunk, index));
-  if (layer === "grass") return Math.max(painted, autoGrassAt(chunk, index));
-  return painted;
 }
 
 function createWaterMesh(chunk: TerrainChunkData) {
@@ -3484,21 +3350,34 @@ function spawnLightObject(object: PlacedObjectData) {
 // immediately; picking a saved Shaderade graph via the Material panel's
 // existing "Custom (Shaderade)" picker (unchanged — it already renders for
 // any non-light object) swaps in an animated shader on top of this.
+// Default look for a placed "Body of Water" — reuses the exact same
+// THREE.Water class + normals texture (waterNormalMap) the terrain-wide
+// ocean already uses (createWaterSurfaceMesh, above), instead of a flat
+// static material. THREE.Water's reflection is its own render-to-texture
+// mirror-camera technique, not standard PBR envMap reflection — it looks
+// right without needing any environment map in the scene (there isn't
+// one anywhere in World Builder today). Picking a saved Shaderade graph
+// via the object's own Material panel (unchanged, applyObjectShaderMode)
+// still swaps in a fully custom animated look on top of this, exactly
+// like it already does for every other placed object.
 function spawnWaterObject(object: PlacedObjectData) {
   const geometry = new THREE.PlaneGeometry(10, 10, 48, 48);
   // Authored flat in local space so rotation:[0,0,0] means "lying on the
   // ground," matching every other ground-level convention in this file —
   // PlaneGeometry's own default orientation faces +Z.
   geometry.rotateX(-Math.PI / 2);
-  const material = new THREE.MeshPhysicalMaterial({
-    color: 0x1f5f7a,
-    transparent: true,
-    opacity: 0.75,
-    roughness: 0.15,
-    metalness: 0,
+  const mesh = new ThreeWater(geometry, {
+    textureWidth: 512,
+    textureHeight: 512,
+    waterNormals: waterNormalMap,
+    alpha: 0.85,
+    sunDirection: sunLight.position.clone().normalize(),
+    sunColor: 0xffffff,
+    waterColor: 0x1f5f7a,
+    distortionScale: 2.2,
+    fog: scene.fog != null,
     side: THREE.DoubleSide,
   });
-  const mesh = new THREE.Mesh(geometry, material);
   mesh.position.set(object.position[0], object.position[1], object.position[2]);
   mesh.rotation.set(
     THREE.MathUtils.degToRad(object.rotation[0]),
@@ -3512,6 +3391,7 @@ function spawnWaterObject(object: PlacedObjectData) {
 
   assignStandardMaterials(mesh);
   applyObjectShaderMode(object, mesh);
+  activeWaterMeshes.add(mesh);
 
   objectRoot.add(mesh);
   objectMeshes.set(object.id, mesh);
@@ -3789,8 +3669,10 @@ function updatePlaceablesPanel() {
     const button = document.createElement("button");
     button.type = "button";
     button.draggable = true;
+    button.title = asset.name;
+    button.setAttribute("aria-label", asset.name);
     const icon = PLACEABLE_ICONS[asset.url];
-    button.innerHTML = icon ? `<img src="${icon}" alt="" /><span>${asset.name}</span>` : `<span>${asset.name}</span>`;
+    button.innerHTML = icon ? `<img src="${icon}" alt="${asset.name}" />` : asset.name;
     button.addEventListener("click", () => {
       placeAssetById(asset.url);
     });
@@ -3914,7 +3796,15 @@ function updateInspector() {
   const isLight = (object.kind ?? asset?.kind) === "light";
   const isWater = (object.kind ?? asset?.kind) === "water";
   const lightColor = rgbToHex(object.color ?? [1, 0.82, 0.48]);
-  const shaderMode = getObjectShaderMode(object);
+  // Deliberately the raw stored value, NOT getObjectShaderMode(object) —
+  // that resolves "custom" back to "standard" until customShaderAssetId
+  // is already set, which is correct for deciding what material to
+  // actually render (applyObjectShaderMode, elsewhere) but wrong here:
+  // it created a deadlock where switching the dropdown to "Custom
+  // (Shaderade)" could never reveal the graph picker below, since the
+  // picker's own visibility was gated on a value that requires a graph
+  // to already be picked.
+  const uiShaderMode = object.shaderMode ?? "standard";
   const shaderSettings = normalizeObjectShaderSettings(object.shaderSettings);
   inspector.innerHTML = `
     <div class="stack">
@@ -3943,14 +3833,14 @@ function updateInspector() {
           <label>
             <span>Shader</span>
             <select id="shader-mode">
-              <option value="standard" ${shaderMode === "standard" ? "selected" : ""}>Current</option>
-              <option value="toon" ${shaderMode === "toon" ? "selected" : ""}>Toon</option>
-              <option value="outline" ${shaderMode === "outline" ? "selected" : ""}>Outline Only</option>
-              <option value="custom" ${shaderMode === "custom" ? "selected" : ""}>Custom (Shaderade)</option>
+              <option value="standard" ${uiShaderMode === "standard" ? "selected" : ""}>Current</option>
+              <option value="toon" ${uiShaderMode === "toon" ? "selected" : ""}>Toon</option>
+              <option value="outline" ${uiShaderMode === "outline" ? "selected" : ""}>Outline Only</option>
+              <option value="custom" ${uiShaderMode === "custom" ? "selected" : ""}>Custom (Shaderade)</option>
             </select>
           </label>
         </div>
-        ${shaderMode === "custom" ? `
+        ${uiShaderMode === "custom" ? `
           <div class="split">
             <label>
               <span>Shaderade Graph</span>
@@ -3962,7 +3852,7 @@ function updateInspector() {
             </label>
           </div>
         ` : ""}
-        ${shaderMode === "toon" ? `
+        ${uiShaderMode === "toon" ? `
           <div class="split">
             <label><span>Ramp Steps</span><input id="toon-steps" type="range" min="2" max="8" step="1" value="${shaderSettings.toon.steps}" /></label>
             <label><span>Ramp Contrast</span><input id="toon-contrast" type="range" min="0.35" max="2.5" step="0.05" value="${shaderSettings.toon.contrast}" /></label>
@@ -3973,7 +3863,7 @@ function updateInspector() {
             <label><span>Toon Outline Color</span><input id="toon-outline-color" type="color" value="${rgbToHex(shaderSettings.toon.outlineColor)}" /></label>
           </div>
         ` : ""}
-        ${shaderMode === "outline" ? `
+        ${uiShaderMode === "outline" ? `
           <div class="split">
             <label><span>Fill Color</span><input id="outline-fill-color" type="color" value="${rgbToHex(shaderSettings.outline.fillColor)}" /></label>
             <label><span>Outline Width</span><input id="outline-thickness" type="range" min="0.002" max="0.18" step="0.002" value="${shaderSettings.outline.thickness}" /></label>
@@ -4036,7 +3926,12 @@ function bindInspectorInputs(object: PlacedObjectData) {
   const beforeEditSnapshot = JSON.stringify(serializeLayout());
   let pushedEditHistory = false;
   let previousLightType = object.lightType ?? "omni";
-  let previousShaderMode = getObjectShaderMode(object);
+  // Raw stored value, not getObjectShaderMode(object) — same reasoning as
+  // updateInspector()'s uiShaderMode: comparing the resolved value here
+  // meant switching the dropdown to "custom" (with no graph picked yet)
+  // never looked like a change, so the panel never re-rendered to reveal
+  // the Shaderade Graph picker in the first place.
+  let previousUiShaderMode = object.shaderMode ?? "standard";
   let previousCustomShaderAssetId = object.customShaderAssetId;
   const readNumber = (input: HTMLInputElement | null, fallback: number) => {
     if (!input) return fallback;
@@ -4067,6 +3962,7 @@ function bindInspectorInputs(object: PlacedObjectData) {
     if (customShaderAsset?.value) {
       object.customShaderAssetId = customShaderAsset.value;
     }
+    const nextUiShaderMode = object.shaderMode ?? "standard";
     const nextShaderMode = getObjectShaderMode(object);
     object.shaderSettings = normalizeObjectShaderSettings({
       toon: {
@@ -4083,8 +3979,8 @@ function bindInspectorInputs(object: PlacedObjectData) {
       },
     });
     const customAssetChanged = nextShaderMode === "custom" && object.customShaderAssetId !== previousCustomShaderAssetId;
-    if (previousShaderMode !== nextShaderMode || customAssetChanged) {
-      previousShaderMode = nextShaderMode;
+    if (previousUiShaderMode !== nextUiShaderMode || customAssetChanged) {
+      previousUiShaderMode = nextUiShaderMode;
       previousCustomShaderAssetId = object.customShaderAssetId;
       const mesh = objectMeshes.get(object.id);
       if (mesh) applyObjectShaderMode(object, mesh);
@@ -4162,6 +4058,7 @@ function syncObjectTransform(object: PlacedObjectData) {
 function removeObjectMesh(id: string) {
   const mesh = objectMeshes.get(id);
   if (!mesh) return;
+  if (mesh instanceof ThreeWater) activeWaterMeshes.delete(mesh);
   objectRoot.remove(mesh);
   mesh.traverse((node) => {
     const meshNode = node as THREE.Mesh;
@@ -6067,6 +5964,17 @@ function updateActiveCustomShaderUniforms(elapsedSeconds: number) {
   });
 }
 
+function updateActiveWaterMeshes(elapsedSeconds: number) {
+  if (activeWaterMeshes.size === 0) return;
+  const sunDirection = sunLight.position.clone().normalize();
+  activeWaterMeshes.forEach((mesh) => {
+    const uniforms = (mesh.material as THREE.ShaderMaterial).uniforms;
+    uniforms.time.value = elapsedSeconds;
+    uniforms.sunDirection.value.copy(sunDirection);
+    uniforms.eye.value.copy(camera.position);
+  });
+}
+
 function tick() {
   if (disposed) return;
   rafId = requestAnimationFrame(tick);
@@ -6081,6 +5989,7 @@ function tick() {
   renderShaderBallViewer(elapsedSeconds);
   renderWaterShaderViewer(elapsedSeconds);
   updateActiveCustomShaderUniforms(elapsedSeconds);
+  updateActiveWaterMeshes(elapsedSeconds);
   controls.update();
   renderer.render(scene, camera);
 }
@@ -6120,7 +6029,7 @@ function buildUi() {
       </div>
       <div class="body">
         <div class="panel-subhead">Lights &amp; Water</div>
-        <div id="placeables-panel" class="btn-row"></div>
+        <div id="placeables-panel" class="placeables-grid"></div>
         <div class="panel-subhead">Placed Objects</div>
         <div id="scene-outliner" class="scene-outliner"></div>
       </div>

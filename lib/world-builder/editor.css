@@ -363,18 +363,39 @@
   color: #eef2f7;
 }
 
-.wb-root .btn-row button img {
-  width: 18px;
-  height: 18px;
-  object-fit: contain;
-  vertical-align: middle;
-  margin-right: 4px;
-}
-
 .wb-root .btn-row button.is-active {
   border-color: #56a6e8;
   background: rgb(20 38 56 / 0.96);
   color: #ffffff;
+}
+
+.wb-root .placeables-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.wb-root .placeables-grid button {
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 6px;
+  background: rgb(18 24 35 / 0.96);
+}
+
+.wb-root .placeables-grid button:hover {
+  border-color: #56a6e8;
+  background: rgb(20 38 56 / 0.96);
+}
+
+.wb-root .placeables-grid button img {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
 }
 
 .wb-root .canvas-hint {

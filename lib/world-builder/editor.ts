@@ -2958,12 +2958,24 @@ function createToonGradientMap(stepCount = 4, contrast = 1) {
 
 function createWaterNormalMap() {
   const size = 128;
+  // Frequencies are exact multiples of 2π/size (integer cycle counts
+  // across the texture) rather than the arbitrary constants this used to
+  // use — that made the texture non-seamless (pixel 0 didn't match pixel
+  // `size`), which showed up as real visible seam lines everywhere
+  // THREE.Water tiles this via RepeatWrapping. Integer k keeps sin/cos
+  // exactly periodic, including the combined (x+y)/(x-y) terms (shifting
+  // either x or y by `size` shifts those sums by a multiple of `size`
+  // too, i.e. an exact multiple of 2π once scaled by 2πk/size).
+  const freqA = (2 * Math.PI * 5) / size;
+  const freqB = (2 * Math.PI * 4) / size;
+  const freqC = (2 * Math.PI * 2) / size;
+  const freqD = (2 * Math.PI * 1) / size;
   const data = new Uint8Array(size * size * 4);
   for (let y = 0; y < size; y += 1) {
     for (let x = 0; x < size; x += 1) {
       const index = (y * size + x) * 4;
-      const nx = Math.sin(x * 0.23) * 0.5 + Math.sin((x + y) * 0.11) * 0.5;
-      const ny = Math.cos(y * 0.19) * 0.5 + Math.sin((x - y) * 0.07) * 0.5;
+      const nx = Math.sin(x * freqA) * 0.5 + Math.sin((x + y) * freqC) * 0.5;
+      const ny = Math.cos(y * freqB) * 0.5 + Math.sin((x - y) * freqD) * 0.5;
       data[index] = Math.round((nx * 0.5 + 0.5) * 255);
       data[index + 1] = Math.round((ny * 0.5 + 0.5) * 255);
       data[index + 2] = 255;
@@ -3129,7 +3141,18 @@ function buildCustomShaderMaterial(compiled: CompiledShaderResult): { material: 
           uniforms[name] = { value: tex };
         }
       } else {
-        uniforms[name] = { value: null };
+        // No source texture — a sampler2D uniform bound to `null` is a
+        // real crash risk (this is exactly what happened with Glass's
+        // thickness-aware absorption: its u_backfaceDepth uniform has no
+        // World-Builder-side back-face depth pass to feed it, since only
+        // Shaderade's own preview implements that; left `null`, Three.js's
+        // own uniform-binding code throws trying to read/set `.value` on
+        // it during render). A solid black 1x1 fallback texture is always
+        // safe to bind, and for the depth-sampling case specifically it
+        // degrades thickness-aware absorption to "no absorption" (the
+        // computed thickness comes out ~0, see buildCustomShaderMaterial's
+        // caller-side comment) rather than an arbitrary/wrong value.
+        uniforms[name] = { value: createSolidTexture([0, 0, 0, 255]) };
       }
     }
   }
@@ -3378,6 +3401,16 @@ function spawnWaterObject(object: PlacedObjectData) {
     fog: scene.fog != null,
     side: THREE.DoubleSide,
   });
+  // THREE.Water samples its normal map by world-space XZ position * the
+  // "size" uniform (not mesh UVs, confirmed from the addon's own source)
+  // — not a constructor option, only settable post-construction (same
+  // pattern configureWaterSurface already uses for the terrain-wide
+  // ocean). Left at its default 1.0 this plane's compact 10x10 footprint
+  // would repeat the texture roughly once per world unit (~10 tiles
+  // across the whole plane); this smaller value makes the ripple pattern
+  // read as a natural water scale instead of visibly tiled — a starting
+  // point, tune by eye if it still looks off at typical camera distances.
+  (mesh.material as THREE.ShaderMaterial).uniforms.size.value = 0.4;
   mesh.position.set(object.position[0], object.position[1], object.position[2]);
   mesh.rotation.set(
     THREE.MathUtils.degToRad(object.rotation[0]),
@@ -5961,6 +5994,17 @@ function updateActiveCustomShaderUniforms(elapsedSeconds: number) {
   activeCustomShaderMaterials.forEach((material) => {
     if (material.uniforms.u_time) material.uniforms.u_time.value = elapsedSeconds;
     if (material.uniforms.u_lightDir) (material.uniforms.u_lightDir.value as THREE.Vector3).copy(lightDir);
+    // Present on thickness-aware graphs (e.g. the Glass template). No
+    // real back-face depth pass exists in World Builder yet (see
+    // buildCustomShaderMaterial's sampler2D fallback), so u_backfaceDepth
+    // itself stays a flat dummy — but these three are still worth keeping
+    // accurate rather than frozen at the compiler's static placeholders.
+    if (material.uniforms.u_resolution) {
+      const size = renderer.getSize(new THREE.Vector2());
+      (material.uniforms.u_resolution.value as THREE.Vector2).set(size.x, size.y);
+    }
+    if (material.uniforms.u_camNear) material.uniforms.u_camNear.value = camera.near;
+    if (material.uniforms.u_camFar) material.uniforms.u_camFar.value = camera.far;
   });
 }
 

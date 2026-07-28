@@ -9,14 +9,21 @@
 // orchestration), and lets this, the highest-risk new code in the
 // feature, be verified standalone with no browser/WebGL needed.
 //
-// Reuses two patterns already proven elsewhere in this codebase:
-// - The canonical "minIdx_maxIdx" edge-key convention (topology.ts,
-//   dyntopo.ts, catmullclark.ts) for the boundary-edge map.
-// - topology.ts's walkEdgeLoop() technique (walk from an edge via the
-//   unique "other" boundary neighbor at each step) — generalized here
-//   into "find and walk every boundary loop", since a mask can produce
-//   several: multiple disconnected islands, or a single island shaped
-//   like a ring (two loops).
+// Reuses a pattern already proven elsewhere in this codebase: the
+// canonical "minIdx_maxIdx" edge-key convention (topology.ts, dyntopo.ts,
+// catmullclark.ts) for the boundary-edge map.
+//
+// Every boundary edge gets its own independent stitched wall quad — no
+// loop assembly. An earlier version walked boundary edges into closed
+// loops first (topology.ts's walkEdgeLoop() technique, generalized to
+// "find every boundary loop"), but that required every canonical vertex
+// along the way to have exactly 2 boundary neighbors, which UV-seam
+// canonicalization can violate (two raw vertices that were each
+// individually fine can merge into one canonical vertex with 4+
+// neighbors). Hitting that dropped the *entire* loop being walked, not
+// just the one problematic edge — a large, real hole, not "a small gap."
+// Stitching per-edge instead sidesteps this rather than working around
+// it: nothing here ever inspects vertex degree.
 
 import * as THREE from "three";
 import type { SeamData } from "./seams";
@@ -88,9 +95,8 @@ export function extractMaskedRegion(geometry: THREE.BufferGeometry, options: Ext
 
   // ── 2. Boundary edges: undirected edges used by exactly one included
   // triangle. Also records the edge's actual directed order as it appeared
-  // in that triangle's own winding (dir0->dir1) — needed later to get the
-  // stitched wall's winding right regardless of which direction the loop
-  // walk below happens to traverse that edge.
+  // in that triangle's own winding (dir0->dir1) — needed later to get each
+  // stitched wall quad's winding right.
   //
   // The map key is canonicalized through `seams` (NOT dir0/dir1, which
   // stay raw) so that a masked region crossing a UV seam — where the
@@ -108,56 +114,7 @@ export function extractMaskedRegion(geometry: THREE.BufferGeometry, options: Ext
       else edgeInfo.set(k, { dir0: v0, dir1: v1, count: 1 });
     }
   }
-  // Neighbor graph nodes are CANONICAL vertex ids, not raw — at a
-  // seam-crossing corner (e.g. this box test's shared edge's endpoints),
-  // the boundary chain arrives via one side's raw index and must leave via
-  // the other side's, which only lines up once both are canonicalized. If
-  // this stayed raw, the walk below would dead-end right at the seam
-  // instead of continuing around the combined loop.
-  const boundaryNeighbors = new Map<number, number[]>();
-  for (const { dir0, dir1, count } of edgeInfo.values()) {
-    if (count !== 1) continue;
-    const add = (a: number, b: number) => {
-      const list = boundaryNeighbors.get(a);
-      if (list) list.push(b); else boundaryNeighbors.set(a, [b]);
-    };
-    add(canonicalVertex(dir0, seams), canonicalVertex(dir1, seams));
-    add(canonicalVertex(dir1, seams), canonicalVertex(dir0, seams));
-  }
-
-  // ── 3. Walk every boundary loop (in canonical vertex-id space — see
-  // above). A well-formed boundary vertex has exactly 2 boundary
-  // neighbors; a vertex with more (a branch/pinch point, e.g. two masked
-  // islands touching at a single vertex) is a dead end for whichever loop
-  // reaches it first — same "stop rather than guess" choice topology.ts's
-  // walkEdgeLoop already makes. Those edges simply don't get a stitched
-  // wall (a small gap in an unusual mask shape), not a crash.
-  const visitedEdges = new Set<string>();
-  const loops: number[][] = [];
-  for (const v0 of boundaryNeighbors.keys()) {
-    for (const v1 of boundaryNeighbors.get(v0)!) {
-      const startKey = edgeKey(v0, v1);
-      if (visitedEdges.has(startKey)) continue;
-      visitedEdges.add(startKey);
-      const loop = [v0, v1];
-      let prev = v0, cur = v1, closed = false;
-      for (let guard = 0; guard < 200_000; guard++) {
-        const neighbors = boundaryNeighbors.get(cur) ?? [];
-        if (neighbors.length !== 2) break; // dead end / branch point
-        const next = neighbors.find((n) => n !== prev);
-        if (next === undefined) break;
-        const k = edgeKey(cur, next);
-        if (next === v0) { visitedEdges.add(k); closed = true; break; }
-        if (visitedEdges.has(k)) break;
-        visitedEdges.add(k);
-        loop.push(next);
-        prev = cur; cur = next;
-      }
-      if (closed && loop.length >= 3) loops.push(loop);
-    }
-  }
-
-  // ── 4. Remap the used vertex subset into a fresh 0..k-1 index space ───────
+  // ── 3. Remap the used vertex subset into a fresh 0..k-1 index space ───────
   const usedVerts: number[] = [];
   const remap = new Map<number, number>();
   // A seam-crossing boundary loop can pass through a canonical vertex that
@@ -173,13 +130,47 @@ export function extractMaskedRegion(geometry: THREE.BufferGeometry, options: Ext
   // wall segment touching a given loop vertex pointing at the same output
   // vertex regardless of which side's boundary edge it came from.
   const canonicalRawForWall = new Map<number, number>();
+  // At a genuinely interior HARD edge (two masked faces meeting at an
+  // angle, e.g. a box corner) each side's raw copy has a DIFFERENT normal
+  // even though they share the same front position — offsetting each by
+  // its own normal would pull the back layer apart along the entire
+  // length of that edge, not just its endpoints (confirmed directly: 12
+  // mismatched edges on a subdivided box, scaling with edge density, not
+  // a fixed small number). Averaging every used raw copy's normal per
+  // seam group and using that shared average for ALL of them closes this
+  // — their back positions become identical too, same as their front
+  // positions already are. Restricted to `usedVerts` (not the whole
+  // mesh's seam group) so an unmasked 3rd face sharing the same corner
+  // doesn't skew the average. A no-op whenever a group has only one used
+  // member (every currently-passing non-seam test), so this can't change
+  // behavior anywhere seams aren't involved.
+  const canonicalNormalSum = new Map<number, THREE.Vector3>();
   const noteVertex = (i: number) => {
     if (!remap.has(i)) { remap.set(i, usedVerts.length); usedVerts.push(i); }
     const c = canonicalVertex(i, seams);
     if (!canonicalRawForWall.has(c)) canonicalRawForWall.set(c, i);
+    const sum = canonicalNormalSum.get(c);
+    if (sum) sum.set(sum.x + normalAttr.getX(i), sum.y + normalAttr.getY(i), sum.z + normalAttr.getZ(i));
+    else canonicalNormalSum.set(c, new THREE.Vector3(normalAttr.getX(i), normalAttr.getY(i), normalAttr.getZ(i)));
   };
   for (const [a, b, c] of includedTris) { noteVertex(a); noteVertex(b); noteVertex(c); }
   const frontCount = usedVerts.length;
+
+  // Averaged back-offset direction per canonical vertex, normalized once
+  // up front. Falls back to the vertex's own raw normal in the (very
+  // unusual — e.g. masking both sides of a paper-thin fold) case where a
+  // group's normals sum to ~zero, rather than normalizing a near-zero
+  // vector into NaN.
+  const backOffsetNormal = new Map<number, THREE.Vector3>();
+  const backOffsetFor = (srcIdx: number): THREE.Vector3 => {
+    const c = canonicalVertex(srcIdx, seams);
+    let n = backOffsetNormal.get(c);
+    if (n) return n;
+    const sum = canonicalNormalSum.get(c)!;
+    n = sum.lengthSq() > 1e-10 ? sum.clone().normalize() : new THREE.Vector3(normalAttr.getX(srcIdx), normalAttr.getY(srcIdx), normalAttr.getZ(srcIdx));
+    backOffsetNormal.set(c, n);
+    return n;
+  };
 
   const positions: number[] = [];
   const uvs: number[] | null = uvAttr ? [] : null;
@@ -189,14 +180,16 @@ export function extractMaskedRegion(geometry: THREE.BufferGeometry, options: Ext
     if (uvs) uvs.push(uvAttr!.getX(srcIdx), uvAttr!.getY(srcIdx));
     if (colors) colors.push(colorAttr!.getX(srcIdx), colorAttr!.getY(srcIdx), colorAttr!.getZ(srcIdx));
   }
-  // Back layer: same vertex subset, offset along each vertex's own
-  // (source-geometry) normal by `thickness`. UVs/colors are duplicated
-  // unchanged — same surface point, just pushed along its normal.
+  // Back layer: same vertex subset, offset along each vertex's SEAM
+  // GROUP's averaged normal (see backOffsetFor above) by `thickness`.
+  // UVs/colors are duplicated unchanged — same surface point, just
+  // pushed along its (now seam-consistent) offset direction.
   for (const srcIdx of usedVerts) {
+    const n = backOffsetFor(srcIdx);
     positions.push(
-      position.getX(srcIdx) + normalAttr.getX(srcIdx) * thickness,
-      position.getY(srcIdx) + normalAttr.getY(srcIdx) * thickness,
-      position.getZ(srcIdx) + normalAttr.getZ(srcIdx) * thickness,
+      position.getX(srcIdx) + n.x * thickness,
+      position.getY(srcIdx) + n.y * thickness,
+      position.getZ(srcIdx) + n.z * thickness,
     );
     if (uvs) uvs.push(uvAttr!.getX(srcIdx), uvAttr!.getY(srcIdx));
     if (colors) colors.push(colorAttr!.getX(srcIdx), colorAttr!.getY(srcIdx), colorAttr!.getZ(srcIdx));
@@ -222,35 +215,25 @@ export function extractMaskedRegion(geometry: THREE.BufferGeometry, options: Ext
   for (const [a, b, c] of includedTris) {
     indices.push(frontCount + remap.get(a)!, frontCount + remap.get(b)!, frontCount + remap.get(c)!);
   }
-  // Stitched walls along every boundary loop — for each directed boundary
-  // edge (p0->p1, using the edge's TRUE triangle-derived direction, not
-  // necessarily the loop walk's own traversal direction), the standard
-  // outward-consistent wall (for positive thickness) is
-  // (p0,p1,p1b),(p0,p1b,p0b). Using dir0/dir1 from edgeInfo rather than the
-  // walk's own (cur,next) order is what makes this correct regardless of
-  // which way any given loop happened to be walked above.
-  for (const loop of loops) {
-    for (let i = 0; i < loop.length; i++) {
-      // cur/next are already canonical ids (the loop was walked in
-      // canonical space — see step 2/3 above), so this looks up edgeInfo
-      // directly with no further canonicalization needed.
-      const cur = loop[i], next = loop[(i + 1) % loop.length];
-      const info = edgeInfo.get(edgeKey(cur, next));
-      if (!info) continue; // shouldn't happen — every loop edge came from edgeInfo
-      // Determine TRUE direction (cur->next or next->cur) by comparing
-      // against the owning triangle's own winding (info.dir0), in
-      // canonical space — this is what keeps wall winding correct
-      // regardless of which direction the loop walk happened to traverse.
-      // Then resolve each endpoint to ITS canonical group's single
-      // consistently-chosen raw vertex (canonicalRawForWall), not
-      // info.dir0/dir1 directly — using dir0/dir1 as-is here would
-      // reintroduce the seam-transition mismatch this map exists to avoid.
-      const [p0c, p1c] = canonicalVertex(info.dir0, seams) === cur ? [cur, next] : [next, cur];
-      const p0 = canonicalRawForWall.get(p0c)!, p1 = canonicalRawForWall.get(p1c)!;
-      const f0 = remap.get(p0)!, f1 = remap.get(p1)!;
-      const b0 = frontCount + f0, b1 = frontCount + f1;
-      indices.push(f0, f1, b1, f0, b1, b0);
-    }
+  // Stitched walls, one independent quad per boundary edge (count === 1
+  // entries in edgeInfo) — no loop assembly, so nothing here depends on
+  // vertex degree or traversal order (see this file's header comment for
+  // why that matters). For each edge, (dir0, dir1) is the TRUE direction
+  // as it appeared in its owning triangle's own winding, which is what
+  // keeps every wall quad's winding correct regardless of iteration
+  // order. Each endpoint is resolved through its canonical group's single
+  // consistently-chosen raw vertex (canonicalRawForWall), not dir0/dir1
+  // directly — using dir0/dir1 as-is would reintroduce the seam-
+  // transition mismatch that map exists to avoid (two wall quads meeting
+  // at a seam-crossing corner would otherwise reference different output
+  // vertices at the same 3D point).
+  for (const { dir0, dir1, count } of edgeInfo.values()) {
+    if (count !== 1) continue;
+    const p0c = canonicalVertex(dir0, seams), p1c = canonicalVertex(dir1, seams);
+    const p0 = canonicalRawForWall.get(p0c)!, p1 = canonicalRawForWall.get(p1c)!;
+    const f0 = remap.get(p0)!, f1 = remap.get(p1)!;
+    const b0 = frontCount + f0, b1 = frontCount + f1;
+    indices.push(f0, f1, b1, f0, b1, b0);
   }
 
   // Uniform post-process: the whole shell above is built for the

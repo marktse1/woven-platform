@@ -66,6 +66,27 @@ const MASK_TINT = new THREE.Color(0x404040);
 const _maskWhite = new THREE.Color(1, 1, 1);
 const _maskColorTmp = new THREE.Color();
 
+/** Keeps an entry's mask array sized to its CURRENT geometry. Several ops
+ * (subdivide, subdivideDown, remesh, extrude, poly-edit — anywhere
+ * `entry.topology`/`entry.mirror` get invalidated) replace `entry.mesh.
+ * geometry` wholesale with a different vertex count, but never touch
+ * `entry.mask` directly — so without this, a mask painted before one of
+ * those ops silently goes stale (too short), causing brush strokes on the
+ * new vertices to read past the array end (NaN mask-color lerps) and
+ * Extract/Detach to fail their `mask.length < position.count` guard.
+ * Deliberately a read-side guard rather than patched into every mutation
+ * site: cheap, idempotent, and covers ops we haven't hunted down too.
+ * Vertex 0..oldLength-1 keep their painted values; anything beyond that
+ * (new geometry created by the op) starts unpainted. */
+function resizeMaskToGeometry(entry: SculptMeshEntry) {
+  if (!entry.mask) return;
+  const vCount = entry.mesh.geometry.attributes.position.count;
+  if (entry.mask.length === vCount) return;
+  const next = new Float32Array(vCount);
+  next.set(entry.mask.subarray(0, Math.min(entry.mask.length, vCount)));
+  entry.mask = next;
+}
+
 /** Lazily creates the mask array, its vertex-color visualization attribute,
  * and its dedicated display material for an entry the first time it's ever
  * mask-painted — everything stays absent (zero cost, zero visual change)
@@ -73,12 +94,25 @@ const _maskColorTmp = new THREE.Color();
 function ensureMaskState(entry: SculptMeshEntry) {
   const vCount = entry.mesh.geometry.attributes.position.count;
   if (!entry.mask) entry.mask = new Float32Array(vCount);
-  if (!entry.mesh.geometry.attributes.color) {
+  else resizeMaskToGeometry(entry);
+  const colorWasMissing = !entry.mesh.geometry.attributes.color;
+  if (colorWasMissing) {
     const colors = new Float32Array(vCount * 3).fill(1);
     entry.mesh.geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
   }
   if (!entry.maskMat) {
     entry.maskMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0 });
+  }
+  // The color attribute is recreated blank above whenever it was missing —
+  // true both the first time an entry is ever painted (correctly blank/
+  // white) AND after an op like subdivide rebuilds geometry without
+  // carrying color forward (NOT correctly blank — the mask itself may
+  // already have real painted values that need to show immediately,
+  // rather than only after the next brush dab touches them).
+  if (colorWasMissing && entry.mask.some((v) => v !== 0)) {
+    const all: number[] = new Array(vCount);
+    for (let i = 0; i < vCount; i++) all[i] = i;
+    updateMaskColors(entry, all);
   }
 }
 
@@ -2460,8 +2494,9 @@ export default function SculptViewer({
     const sourceEntries = [...meshEntriesRef.current];
     for (const entry of sourceEntries) {
       if (!entry.mask) continue;
+      resizeMaskToGeometry(entry); // self-heal a mask left stale by subdivide/remesh/etc. since it was painted
       const result = extractMaskedRegion(entry.mesh.geometry, { mask: entry.mask, threshold, thickness, seams: entry.seams });
-      if (!result.ok) continue;
+      if (!result.ok) { console.warn(`extractMask: ${result.reason}`); continue; }
       spawnDerivedEntry(group, result.geometry, "Extract", entry);
       created++;
     }
@@ -2492,8 +2527,9 @@ export default function SculptViewer({
     const sourceEntries = [...meshEntriesRef.current];
     for (const entry of sourceEntries) {
       if (!entry.mask) continue;
+      resizeMaskToGeometry(entry); // self-heal a mask left stale by subdivide/remesh/etc. since it was painted
       const result = detachMaskedRegion(entry.mesh.geometry, { mask: entry.mask, threshold });
-      if (!result.ok) continue;
+      if (!result.ok) { console.warn(`detachMask: ${result.reason}`); continue; }
 
       // Remove exactly the selected triangles from the source's own index
       // buffer — the source's vertex buffer is left untouched, so this

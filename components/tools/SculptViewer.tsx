@@ -12,6 +12,7 @@ import "three-mesh-bvh"; // pulls in BufferGeometry.boundsTree augmentation
 import { buildSeamData, type SeamData } from "@/lib/sculpt/seams";
 import { applyBrush, applyMaskDab, applyMaskBox, gatherVertices, expandSeams, type BrushMode, type BrushHit } from "@/lib/sculpt/brushes";
 import { extractMaskedRegion, detachMaskedRegion } from "@/lib/sculpt/extract";
+import { weldGeometryByPosition } from "@/lib/sculpt/weld";
 import { SculptUndoStack } from "@/lib/sculpt/undo";
 import { TopoUndoStack, type TopoMeshSnapshot } from "@/lib/sculpt/topoUndo";
 import { computeAvgEdgeLen, dynTopoRefine } from "@/lib/sculpt/dyntopo";
@@ -401,17 +402,29 @@ function buildHumanBase(): THREE.BufferGeometry {
 }
 
 function buildPrimitiveGeometry(type: PrimitiveType): THREE.BufferGeometry {
-  switch (type) {
-    case "sphere":   return new THREE.SphereGeometry(1, 16, 12);
-    case "box":      return new THREE.BoxGeometry(1.8, 1.8, 1.8);
-    case "cylinder": return new THREE.CylinderGeometry(0.8, 0.8, 2, 16);
-    case "cone":     return new THREE.ConeGeometry(1, 2, 16);
-    case "torus":    return new THREE.TorusGeometry(0.8, 0.35, 12, 24);
-    case "capsule":  return new THREE.CapsuleGeometry(0.7, 1.4, 8, 16);
-    case "plane":    return new THREE.PlaneGeometry(2, 2, 4, 4);
-    case "human":    return buildHumanBase();
-    default:         return new THREE.SphereGeometry(1, 16, 12);
-  }
+  const geo = (() => {
+    switch (type) {
+      case "sphere":   return new THREE.SphereGeometry(1, 16, 12);
+      case "box":      return new THREE.BoxGeometry(1.8, 1.8, 1.8);
+      case "cylinder": return new THREE.CylinderGeometry(0.8, 0.8, 2, 16);
+      case "cone":     return new THREE.ConeGeometry(1, 2, 16);
+      case "torus":    return new THREE.TorusGeometry(0.8, 0.35, 12, 24);
+      case "capsule":  return new THREE.CapsuleGeometry(0.7, 1.4, 8, 16);
+      case "plane":    return new THREE.PlaneGeometry(2, 2, 4, 4);
+      case "human":    return buildHumanBase();
+      default:         return new THREE.SphereGeometry(1, 16, 12);
+    }
+  })();
+  // Every one of these ships with duplicate vertices at its own face/UV
+  // seams (a box alone has 24 raw verts for 8 physical corners) — weld
+  // them into one real shared vertex per point so Subdivide/Extract
+  // (and everything downstream) start from genuinely sealed topology
+  // instead of relying on treating duplicates as "the same point"
+  // throughout. See lib/sculpt/weld.ts for the accepted UV/shading
+  // trade-offs. Import paths (loadGeometry) deliberately do NOT go
+  // through this — external meshes may have authored seams worth
+  // preserving.
+  return weldGeometryByPosition(geo);
 }
 // ─────────────────────────────────────────────────────────────────────────────
 function generateClayMatcap(color: THREE.Color, size = 256): THREE.CanvasTexture {

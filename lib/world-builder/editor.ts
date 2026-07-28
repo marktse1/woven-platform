@@ -6012,10 +6012,20 @@ function updateActiveWaterMeshes(elapsedSeconds: number) {
   if (activeWaterMeshes.size === 0) return;
   const sunDirection = sunLight.position.clone().normalize();
   activeWaterMeshes.forEach((mesh) => {
+    // mesh.material isn't always THREE.Water's own material — switching
+    // this object's Shader to Custom/Toon/Outline swaps in a different
+    // material (Shaderade-compiled uniforms are never named time/
+    // sunDirection/eye; toon/outline materials aren't ShaderMaterials at
+    // all), while the mesh itself stays in this set. Guard each access
+    // the same way updateActiveCustomShaderUniforms already does for
+    // u_time/u_lightDir, so this is a safe no-op whenever the object
+    // isn't currently showing the Water look, rather than assuming it
+    // always is.
     const uniforms = (mesh.material as THREE.ShaderMaterial).uniforms;
-    uniforms.time.value = elapsedSeconds;
-    uniforms.sunDirection.value.copy(sunDirection);
-    uniforms.eye.value.copy(camera.position);
+    if (!uniforms) return;
+    if (uniforms.time) uniforms.time.value = elapsedSeconds;
+    if (uniforms.sunDirection) (uniforms.sunDirection.value as THREE.Vector3).copy(sunDirection);
+    if (uniforms.eye) (uniforms.eye.value as THREE.Vector3).copy(camera.position);
   });
 }
 

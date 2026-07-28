@@ -363,6 +363,14 @@
   color: #eef2f7;
 }
 
+.wb-root .btn-row button img {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
 .wb-root .btn-row button.is-active {
   border-color: #56a6e8;
   background: rgb(20 38 56 / 0.96);

@@ -3760,27 +3760,47 @@ async function saveBuildingTag() {
 }
 
 
+const PLACEABLE_ICONS: Record<string, string> = {
+  "light://omni": "/point_light.png",
+  "light://spot": "/spot_light.png",
+  "light://directional": "/directional_light.png",
+  "water://plane": "/water_plane.png",
+};
+
 // Lights + water are synthetic catalog entries (no backing .glb, see
 // LIGHT_ASSET_CATALOG/WATER_ASSET_CATALOG) so they can't appear in the
 // app-wide "My Assets" drawer that placement otherwise routes through
 // (WorldBuilderViewer.tsx only accepts real .glb rows). This is their one
 // placement entry point — a compact button list, not a full shelf
-// restoration, since there are only ever a handful of these. Clicking a
-// button just selects it the same way clicking a My Assets row does
-// (`state.selectedAssetUrl`); the existing terrain-click -> placeObjectAt
-// flow (unchanged) does the actual placing.
+// restoration, since there are only ever a handful of these.
+//
+// Two ways to place, matching the two working placement paths that
+// already exist elsewhere in this file (there is no third "click to
+// arm, then click the terrain" path anywhere — an earlier version of
+// this panel assumed one existed and was a dead end because of it):
+// - Click -> placeAssetById(), same instant-at-camera-target placement
+//   the My Assets drawer already uses for every other asset.
+// - Drag -> the canvas's existing dragover/drop listeners +
+//   placeDraggedAssetAt() (unchanged), for placing at a precise point.
 function updatePlaceablesPanel() {
   placeablesPanel.innerHTML = "";
   const entries = state.assetCatalog.filter((asset) => asset.kind === "light" || asset.kind === "water");
   for (const asset of entries) {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = state.selectedAssetUrl === asset.url ? "is-active" : "";
-    button.textContent = asset.name;
+    button.draggable = true;
+    const icon = PLACEABLE_ICONS[asset.url];
+    button.innerHTML = icon ? `<img src="${icon}" alt="" /><span>${asset.name}</span>` : `<span>${asset.name}</span>`;
     button.addEventListener("click", () => {
+      placeAssetById(asset.url);
+    });
+    button.addEventListener("dragstart", (event) => {
       state.selectedAssetUrl = asset.url;
-      updatePlaceablesPanel();
-      updateStatus(`Selected ${asset.name} — click the terrain to place it.`);
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "copy";
+        event.dataTransfer.setData("text/plain", asset.url);
+      }
+      updateStatus(`Dragging ${asset.name}. Drop onto the terrain to place it.`);
     });
     placeablesPanel.appendChild(button);
   }
@@ -3851,6 +3871,7 @@ function objectKindLabel(node: SceneNodeData) {
   if (node.kind === "group") return "GROUP";
   if ((node.kind ?? "asset") === "light") return `LIGHT ${node.lightType ?? "omni"}`;
   if (node.kind === "building") return `BUILDING (${node.building?.floors.length ?? 0} floors)`;
+  if (node.kind === "water") return "WATER";
   const asset = state.assetCatalog.find((item) => item.url === node.asset);
   return asset?.category ?? "ASSET";
 }

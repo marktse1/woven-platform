@@ -2460,7 +2460,7 @@ export default function SculptViewer({
     const sourceEntries = [...meshEntriesRef.current];
     for (const entry of sourceEntries) {
       if (!entry.mask) continue;
-      const result = extractMaskedRegion(entry.mesh.geometry, { mask: entry.mask, threshold, thickness });
+      const result = extractMaskedRegion(entry.mesh.geometry, { mask: entry.mask, threshold, thickness, seams: entry.seams });
       if (!result.ok) continue;
       spawnDerivedEntry(group, result.geometry, "Extract", entry);
       created++;

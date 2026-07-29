@@ -51,6 +51,7 @@ import {
   TERRAIN_SPACING,
   terrainBrushWeight,
 } from "./schema";
+import { buildShoreWetnessTexture, type ShoreWetnessBake } from "./waterFoam";
 import { getAsset, listVisibleAssets, signedAssetUrl, updateAssetMeta, type AssetRow } from "@/lib/assets";
 import {
   clamp,
@@ -381,6 +382,12 @@ const activeCustomShaderMaterials = new Set<THREE.ShaderMaterial>();
 // the same way, so their ripples/reflection actually animate. Added on
 // spawn, removed when the object is deleted (removeObjectMesh).
 const activeWaterMeshes = new Set<ThreeWater>();
+// Shared shore-wetness bake (see waterFoam.ts) — one texture covering the
+// whole terrain's world extent, referenced by every water mesh's shader
+// (both the terrain-wide ocean and individually placed water objects,
+// since they aren't terrain-grid-aligned and can't each bake their own).
+let shoreWetnessBake: ShoreWetnessBake | null = null;
+let shoreWetnessRebakeTimer: ReturnType<typeof setTimeout> | null = null;
 const selectedObjectIds = new Set<string>();
 const selectableMeshes: THREE.Object3D[] = [];
 const undoStack: string[] = [];
@@ -1427,6 +1434,7 @@ function configureWaterSurface(mesh: ThreeWater | null, settings: WaterSurfaceSe
   uniforms.sunColor.value.copy(sunColor);
   uniforms.waterColor.value.copy(waterColor);
   uniforms.eye.value.copy(camera.position);
+  syncShoreFoamUniforms(mesh, settings);
 }
 
 function sampleWaterMotion(x: number, z: number, timeSeconds: number, settings: WaterSurfaceSettings) {
@@ -1928,6 +1936,7 @@ function rebuildWorld() {
   }
   const waterSurface = createWaterSurfaceMesh(chunks);
   if (waterSurface) waterRoot.add(waterSurface);
+  scheduleShoreWetnessRebake();
   rebuildRoadMeshes();
 
   for (const object of state.layout.objects) {
@@ -1956,6 +1965,7 @@ function rebuildTerrainSurfaces() {
   }
   const waterSurface = createWaterSurfaceMesh(terrainChunks());
   if (waterSurface) waterRoot.add(waterSurface);
+  scheduleShoreWetnessRebake();
   rebuildRoadMeshes();
   updateDiagnostics();
 }
@@ -2245,6 +2255,112 @@ function createWaterMesh(chunk: TerrainChunkData) {
   return mesh;
 }
 
+// Neutral 1x1 stand-in for u_shoreWetness before any bake exists (or for a
+// water object with no nearby terrain) — same "always give a sampler a
+// real texture" discipline as buildCustomShaderMaterial's fallback,
+// avoiding the null-sampler2D crash that bit that path earlier.
+const shoreWetnessFallbackTexture = createSolidTexture([255, 255, 255, 255]);
+
+// Extends THREE.Water's own shader with a shore-proximity foam band,
+// rather than replacing the whole material — that would lose the
+// built-in real-time planar reflection. onBeforeCompile's GLSL string-
+// injection is the only extension point Three.js exposes for a built-in
+// ShaderMaterial like this. Anchors ("uniform vec3 waterColor;" and
+// "vec3 outgoingLight = albedo;") are unique, verified lines in Water.js's
+// fragment shader; worldPosition is already a fragment-stage varying in
+// that shader, so no vertex-shader change is needed. Initial uniform
+// values are read from the live shoreWetnessBake/state.water at whatever
+// moment WebGL actually lazily compiles this material (its own closure,
+// not a snapshot) — subsequent changes are pushed by syncShoreFoamUniforms.
+function attachShoreFoamShader(mesh: ThreeWater) {
+  const material = mesh.material as THREE.ShaderMaterial;
+  material.onBeforeCompile = (shader) => {
+    const bake = shoreWetnessBake;
+    shader.uniforms.u_shoreWetness = { value: bake ? bake.texture : shoreWetnessFallbackTexture };
+    shader.uniforms.u_shoreOrigin = { value: new THREE.Vector2(bake ? bake.origin[0] : 0, bake ? bake.origin[1] : 0) };
+    shader.uniforms.u_shoreWorldSize = { value: new THREE.Vector2(bake ? bake.worldSize[0] : 1, bake ? bake.worldSize[1] : 1) };
+    shader.uniforms.u_hasShoreData = { value: bake ? 1 : 0 };
+    shader.uniforms.u_foamIntensity = { value: state.water.foamIntensity };
+    shader.uniforms.u_foamThreshold = { value: state.water.foamThreshold };
+    shader.uniforms.u_foamContrast = { value: state.water.foamContrast };
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "uniform vec3 waterColor;",
+        `uniform vec3 waterColor;
+	uniform sampler2D u_shoreWetness;
+	uniform vec2 u_shoreOrigin;
+	uniform vec2 u_shoreWorldSize;
+	uniform float u_hasShoreData;
+	uniform float u_foamIntensity;
+	uniform float u_foamThreshold;
+	uniform float u_foamContrast;`
+      )
+      .replace(
+        "vec3 outgoingLight = albedo;",
+        `vec2 shoreUv = clamp( ( worldPosition.xz - u_shoreOrigin ) / max( u_shoreWorldSize, vec2( 0.0001 ) ), 0.0, 1.0 );
+	float shoreWetness = texture2D( u_shoreWetness, shoreUv ).r;
+	float foamBandWidth = mix( 0.02, 0.35, clamp( u_foamThreshold, 0.0, 1.0 ) );
+	float foamSoftness = mix( 0.12, 0.01, clamp( ( u_foamContrast - 0.4 ) / 1.6, 0.0, 1.0 ) );
+	float foamBand = ( 1.0 - smoothstep( foamBandWidth, foamBandWidth + foamSoftness, abs( shoreWetness - 0.5 ) ) ) * u_hasShoreData * clamp( u_foamIntensity, 0.0, 2.0 );
+	vec3 outgoingLight = mix( albedo, vec3( 0.95, 0.98, 1.0 ), clamp( foamBand, 0.0, 1.0 ) );`
+      );
+  };
+}
+
+// Pushes the current shore-wetness bake + foam slider settings into an
+// already-compiled water material's uniforms (onBeforeCompile only runs
+// once per material, at first render — this is the ongoing per-frame
+// update path, called from configureWaterSurface and
+// updateActiveWaterMeshes, the same two places that already sync this
+// mesh's other live uniforms). No-ops for a material that hasn't compiled
+// yet (uniforms not injected) or that got swapped to Toon/Custom/Outline
+// (not a Water shader at all) — same guard style as updateActiveWaterMeshes
+// already uses for time/sunDirection/eye.
+function syncShoreFoamUniforms(mesh: ThreeWater, settings: WaterSurfaceSettings) {
+  const uniforms = (mesh.material as THREE.ShaderMaterial).uniforms;
+  if (!uniforms.u_shoreWetness) return;
+  if (shoreWetnessBake) {
+    uniforms.u_shoreWetness.value = shoreWetnessBake.texture;
+    (uniforms.u_shoreOrigin.value as THREE.Vector2).set(shoreWetnessBake.origin[0], shoreWetnessBake.origin[1]);
+    (uniforms.u_shoreWorldSize.value as THREE.Vector2).set(shoreWetnessBake.worldSize[0], shoreWetnessBake.worldSize[1]);
+    uniforms.u_hasShoreData.value = 1;
+  } else {
+    uniforms.u_hasShoreData.value = 0;
+  }
+  uniforms.u_foamIntensity.value = settings.foamIntensity;
+  uniforms.u_foamThreshold.value = settings.foamThreshold;
+  uniforms.u_foamContrast.value = settings.foamContrast;
+}
+
+// Rebuilds the shared shore-wetness texture from the current terrain
+// state (see waterFoam.ts) and disposes the old one — called (debounced,
+// see scheduleShoreWetnessRebake) whenever terrain/water-level changes,
+// since that's the only thing that can move a shoreline.
+function rebakeShoreWetness() {
+  const terrain = state.layout.terrain ?? defaultTerrainSettings();
+  const waterLevel = terrain.waterLevel ?? -1.35;
+  const previous = shoreWetnessBake;
+  shoreWetnessBake = buildShoreWetnessTexture(terrainChunks(), waterLevel);
+  previous?.texture.dispose();
+}
+
+// A brush stroke fires many terrain edits per second (each one already
+// triggers a full rebuildTerrainSurfaces, a pre-existing cost this
+// doesn't try to fix) — baking a 512x512 texture on every single one of
+// those would make dragging noticeably worse. Coalesces any edits within
+// a 200ms window into one rebake shortly after the drag settles; the
+// already-live water meshes just keep showing the previous bake in the
+// meantime via syncShoreFoamUniforms's per-frame push, so the foam only
+// ever looks briefly stale, never broken.
+function scheduleShoreWetnessRebake() {
+  if (shoreWetnessRebakeTimer !== null) return;
+  shoreWetnessRebakeTimer = setTimeout(() => {
+    shoreWetnessRebakeTimer = null;
+    rebakeShoreWetness();
+  }, 200);
+}
+
 function createWaterSurfaceMesh(chunks: TerrainChunkData[]) {
   const hasVisibleWater = chunks.some((chunk) => (chunk.waterMask ?? []).some((value) => value > 0));
   if (!hasVisibleWater) return null;
@@ -2283,6 +2399,7 @@ function createWaterSurfaceMesh(chunks: TerrainChunkData[]) {
     fog: false,
     side: THREE.DoubleSide,
   });
+  attachShoreFoamShader(mesh);
   mesh.rotation.x = -Math.PI / 2;
   mesh.position.set((bounds.minX + bounds.maxX) * 0.5, waterLevel + 0.08, (bounds.minZ + bounds.maxZ) * 0.5);
   mesh.renderOrder = 50;
@@ -3401,6 +3518,7 @@ function spawnWaterObject(object: PlacedObjectData) {
     fog: scene.fog != null,
     side: THREE.DoubleSide,
   });
+  attachShoreFoamShader(mesh);
   // THREE.Water samples its normal map by world-space XZ position * the
   // "size" uniform (not mesh UVs, confirmed from the addon's own source)
   // — not a constructor option, only settable post-construction (same
@@ -6026,6 +6144,7 @@ function updateActiveWaterMeshes(elapsedSeconds: number) {
     if (uniforms.time) uniforms.time.value = elapsedSeconds;
     if (uniforms.sunDirection) (uniforms.sunDirection.value as THREE.Vector3).copy(sunDirection);
     if (uniforms.eye) (uniforms.eye.value as THREE.Vector3).copy(camera.position);
+    syncShoreFoamUniforms(mesh, state.water);
   });
 }
 

@@ -188,6 +188,7 @@ export default function MeshSculptClient() {
   // skeleton (e.g. an AccuRIG-exported GLB) — most loads won't.
   const [bones, setBones] = useState<Array<{ entryId: string; id: string; name: string; depth: number }>>([]);
   const [selectedBoneId, setSelectedBoneId] = useState<string | null>(null);
+  const [isOrthographic, setIsOrthographic] = useState(false);
 
   // Rig mode: manually-placed joints (lib/sculpt/rig.ts) — distinct from
   // `bones` above (an imported skeleton). Starts empty on every mesh;
@@ -958,6 +959,18 @@ export default function MeshSculptClient() {
               className="flex-1 py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors" title="Ctrl+Shift+Z">Redo</button>
           </div>
 
+          <div className="flex gap-2 mt-2">
+            <button onClick={() => viewerHandleRef.current?.recenterView()}
+              className="flex-1 py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors"
+              title="Frame the selected submesh, or the whole scene if nothing's selected">Recenter View</button>
+            <button onClick={() => viewerHandleRef.current?.toggleProjection()}
+              className="flex-1 py-1.5 rounded text-[11px] font-medium transition-colors"
+              style={{ background: isOrthographic ? "rgba(196,123,232,.22)" : "#1e1a17", color: isOrthographic ? PURPLE : "#8aa0b4" }}
+              title="Switch between Perspective and Orthographic projection">
+              {isOrthographic ? "Orthographic" : "Perspective"}
+            </button>
+          </div>
+
           {/* Paint Color Picker */}
           {brushMode === "paint" && (
             <div className="mt-4 pt-4 border-t border-[#2a2320]">
@@ -1371,6 +1384,7 @@ export default function MeshSculptClient() {
             onLoopPreview={handleLoopPreview}
             onBoneSelect={setSelectedBoneId}
             onJointSelect={handleJointSelectionChange}
+            onProjectionChange={setIsOrthographic}
             paintColor={paintColor}
             handleRef={viewerHandleRef}
           />

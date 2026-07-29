@@ -335,6 +335,44 @@ function wireColorFor(vm: ViewMode): number {
   return vm === "clay" ? WIRE_COLOR_CLAY : WIRE_COLOR_DEFAULT;
 }
 
+type SculptCamera = THREE.PerspectiveCamera | THREE.OrthographicCamera;
+
+// Frames the camera on `object`'s current world-space bounding box —
+// shared by every load path (primitive spawn, GLB import, arbitrary
+// geometry load) and the Recenter View button, replacing what used to be
+// 3 separately hand-rolled copies of this math (2 of which pinned
+// controls.target to a hardcoded (0,0,0) without recentering the object
+// first, silently drifting off-target for anything not already centered
+// at its own local origin — e.g. loadGeometry's arbitrary/extracted
+// meshes). With `recenterObject`, also shifts `object.position` so its
+// bbox center lands at the world origin first — used only by the load
+// paths, since nudging an in-progress edit's position would be a
+// surprising side effect of the Recenter View button, which should just
+// look at wherever the object already is.
+function frameCameraOnObject(
+  object: THREE.Object3D,
+  camera: SculptCamera,
+  controls: OrbitControls,
+  options?: { recenterObject?: boolean }
+) {
+  const box = new THREE.Box3().setFromObject(object);
+  if (box.isEmpty()) return;
+  if (options?.recenterObject) {
+    object.position.sub(box.getCenter(new THREE.Vector3()));
+    box.setFromObject(object);
+  }
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  const dist = maxDim * 2.2;
+  camera.position.set(center.x + dist * 0.7, center.y + dist * 0.5, center.z + dist);
+  camera.near = maxDim / 100;
+  camera.far = maxDim * 100;
+  camera.updateProjectionMatrix();
+  controls.target.copy(center);
+  controls.update();
+}
+
 const PAINT_TEX_SIZE = 1024;
 export type SculptViewerHandle = {
   exportGlb: () => Promise<Uint8Array>;
@@ -389,6 +427,12 @@ export type SculptViewerHandle = {
   /** Restores every bone in an entry's skeleton to its originally-imported
    * bind pose (a no-op if the entry has no skeleton). */
   resetPose: (entryId: string) => void;
+  /** Re-frames the camera on the currently-selected mesh/submesh, or the
+   * whole scene if nothing's selected. */
+  recenterView: () => void;
+  /** Switches between Perspective and Orthographic camera projection,
+   * matching apparent size at the moment of the switch. */
+  toggleProjection: () => void;
   /** Manually-placed Rig-mode joints for a given entry (empty until the
    * user places one — most entries won't have any), depth-indented for
    * the Rig-mode Bones list. Distinct from getBones above — these are
@@ -557,6 +601,9 @@ type Props = {
   onBoneSelect?: (boneId: string | null) => void;
   /** Same as onBoneSelect, for Rig mode's manually-placed joints. */
   onJointSelect?: (jointId: string | null) => void;
+  /** Fired whenever the Perspective/Ortho projection toggle switches, so
+   * the toggle button can show which mode is currently active. */
+  onProjectionChange?: (isOrthographic: boolean) => void;
   handleRef?: React.RefObject<SculptViewerHandle | null>;
 };
 
@@ -584,12 +631,13 @@ export default function SculptViewer({
   onLoopPreview,
   onBoneSelect,
   onJointSelect,
+  onProjectionChange,
   handleRef,
 }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
-  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  const cameraRef = useRef<SculptCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
   const ktx2LoaderRef = useRef<KTX2Loader | null>(null);
   const modelRef = useRef<THREE.Group | null>(null);
@@ -675,12 +723,14 @@ export default function SculptViewer({
   const onLoopPreviewRef = useRef(onLoopPreview);
   const onBoneSelectRef = useRef(onBoneSelect);
   const onJointSelectRef = useRef(onJointSelect);
+  const onProjectionChangeRef = useRef(onProjectionChange);
   useEffect(() => { onModelLoadedRef.current = onModelLoaded; }, [onModelLoaded]);
   useEffect(() => { onLoadErrorRef.current = onLoadError; }, [onLoadError]);
   useEffect(() => { onSelectionChangeRef.current = onSelectionChange; }, [onSelectionChange]);
   useEffect(() => { onLoopPreviewRef.current = onLoopPreview; }, [onLoopPreview]);
   useEffect(() => { onBoneSelectRef.current = onBoneSelect; }, [onBoneSelect]);
   useEffect(() => { onJointSelectRef.current = onJointSelect; }, [onJointSelect]);
+  useEffect(() => { onProjectionChangeRef.current = onProjectionChange; }, [onProjectionChange]);
 
   // ── poly-edit mode: selection state + transform gizmo ─────────────────────
   const editModeRef = useRef<EditMode>(editMode);
@@ -723,6 +773,7 @@ export default function SculptViewer({
   const boneHandlesRef = useRef<THREE.Points | null>(null);
   const boneLinksRef = useRef<THREE.LineSegments | null>(null);
   const selectedBoneRef = useRef<THREE.Bone | null>(null);
+  const toggleProjectionRef = useRef<() => void>(() => {});
   const selectedBoneEntryRef = useRef<SculptMeshEntry | null>(null);
   const updateBoneHandlesRef = useRef<() => void>(() => {});
   const selectBoneRef = useRef<(entry: SculptMeshEntry | null, bone: THREE.Bone | null) => void>(() => {});
@@ -914,6 +965,14 @@ export default function SculptViewer({
     camera.position.set(2.4, 1.8, 3.2);
     cameraRef.current = camera;
 
+    // Second camera for the Perspective/Ortho toggle — a real
+    // OrthographicCamera, not a narrow-FOV perspective hack, so proportions
+    // read as true parallel projection. Frustum (left/right/top/bottom) is
+    // kept in sync with the viewport aspect ratio in resize() below; only
+    // .zoom changes at toggle time to match apparent size.
+    const orthoCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 5000);
+    orthoCamera.position.copy(camera.position);
+
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -928,6 +987,16 @@ export default function SculptViewer({
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
+    // Default RIGHT=PAN silently breaks Ctrl+drag orbiting: macOS remaps
+    // Control+click to a synthetic button-2 (right-click) event before it
+    // reaches the browser (see the matching comment in onPointerDown
+    // below), and since this app deliberately leaves OrbitControls enabled
+    // for empty-space drags, it would see that button-2 event and pan the
+    // target instead of rotating — real, cumulative camera-target drift,
+    // not just a missed ortho-snap. Routing RIGHT to ROTATE too (same as
+    // LEFT) fixes that; MIDDLE takes over panning (it was DOLLY by
+    // default, redundant with scroll-wheel zoom).
+    controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
     controlsRef.current = controls;
 
     scene.add(new THREE.HemisphereLight(0xbcd4ff, 0x1a2230, 1.4));
@@ -1480,17 +1549,59 @@ export default function SculptViewer({
       const w = mount.clientWidth || 1;
       const h = mount.clientHeight || 1;
       renderer.setSize(w, h);
-      camera.aspect = w / h;
+      const aspect = w / h;
+      camera.aspect = aspect;
       camera.updateProjectionMatrix();
+      // Kept in sync regardless of which camera is active, so toggling
+      // projection never needs its own resize pass.
+      orthoCamera.left = -aspect;
+      orthoCamera.right = aspect;
+      orthoCamera.top = 1;
+      orthoCamera.bottom = -1;
+      orthoCamera.updateProjectionMatrix();
     };
     resize();
     const ro = new ResizeObserver(resize);
     ro.observe(mount);
 
+    // Swaps which of camera/orthoCamera is "the" active camera — copies
+    // position/orientation across, matches the ortho camera's .zoom to the
+    // perspective camera's current apparent size (or vice versa) so the
+    // switch doesn't visibly jump, and re-points every control that holds
+    // its own camera reference (OrbitControls uses .object; TransformControls
+    // — which already has built-in isOrthographicCamera handling for its own
+    // gizmo scale — uses .camera).
+    function toggleProjection() {
+      const active = cameraRef.current!;
+      const goingOrtho = active === camera;
+      const next: SculptCamera = goingOrtho ? orthoCamera : camera;
+      next.position.copy(active.position);
+      next.quaternion.copy(active.quaternion);
+      const dist = active.position.distanceTo(controls.target);
+      if (goingOrtho) {
+        const worldHeightAtDist = 2 * dist * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+        const orthoHeight = orthoCamera.top - orthoCamera.bottom;
+        orthoCamera.zoom = orthoHeight / Math.max(worldHeightAtDist, 1e-6);
+      } else {
+        camera.zoom = 1;
+      }
+      next.near = active.near;
+      next.far = active.far;
+      next.updateProjectionMatrix();
+      cameraRef.current = next;
+      controls.object = next;
+      controls.update();
+      transformControls.camera = next;
+      poseTransformControls.camera = next;
+      rigTransformControls.camera = next;
+      onProjectionChangeRef.current?.(goingOrtho);
+    }
+    toggleProjectionRef.current = toggleProjection;
+
     let raf = 0;
     const tick = () => {
       controls.update();
-      renderer.render(scene, camera);
+      renderer.render(scene, cameraRef.current!);
       raf = requestAnimationFrame(tick);
     };
     tick();
@@ -1636,19 +1747,7 @@ export default function SculptViewer({
       });
 
       // Frame model
-      const box = new THREE.Box3().setFromObject(group);
-      const size = box.getSize(new THREE.Vector3());
-      const center = box.getCenter(new THREE.Vector3());
-      const maxDim = Math.max(size.x, size.y, size.z) || 1;
-      group.position.sub(center);
-
-      const dist = maxDim * 2.2;
-      camera.position.set(dist * 0.7, dist * 0.5, dist);
-      camera.near = maxDim / 100;
-      camera.far = maxDim * 100;
-      camera.updateProjectionMatrix();
-      controls.target.set(0, 0, 0);
-      controls.update();
+      frameCameraOnObject(group, camera, controls, { recenterObject: true });
 
       scene.add(group);
       modelRef.current = group;
@@ -2331,7 +2430,7 @@ export default function SculptViewer({
       }
       if (orbitDragActiveRef.current) {
         orbitDragActiveRef.current = false;
-        if (e.ctrlKey) maybeSnapToOrthoView();
+        if (e.ctrlKey || e.shiftKey) maybeSnapToOrthoView();
       }
 
       const wasBoxSelect = boxSelectActiveRef.current;
@@ -2841,14 +2940,7 @@ export default function SculptViewer({
     channelMatsRef.current.forEach((m) => m.dispose());
     channelMatsRef.current = [];
     // Frame camera
-    const box = new THREE.Box3().setFromObject(group);
-    const sz  = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(sz.x, sz.y, sz.z) || 1;
-    const dist = maxDim * 2.2;
-    camera.position.set(dist * 0.7, dist * 0.5, dist);
-    camera.near = maxDim / 100; camera.far = maxDim * 100;
-    camera.updateProjectionMatrix();
-    controls.target.set(0, 0, 0); controls.update();
+    frameCameraOnObject(group, camera, controls, { recenterObject: true });
     applyViewToGroup(group, scene, viewModeRef.current, clayColorRef.current);
     onModelLoadedRef.current?.(geo.attributes.position.count);
   }, []);
@@ -2903,14 +2995,7 @@ export default function SculptViewer({
     originalMaterialsRef.current.set(mesh.uuid, mesh.material);
     channelMatsRef.current.forEach((m) => m.dispose());
     channelMatsRef.current = [];
-    const box = new THREE.Box3().setFromObject(group);
-    const sz  = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(sz.x, sz.y, sz.z) || 1;
-    const dist = maxDim * 2.2;
-    camera.position.set(dist * 0.7, dist * 0.5, dist);
-    camera.near = maxDim / 100; camera.far = maxDim * 100;
-    camera.updateProjectionMatrix();
-    controls.target.set(0, 0, 0); controls.update();
+    frameCameraOnObject(group, camera, controls, { recenterObject: true });
     applyViewToGroup(group, scene, viewModeRef.current, clayColorRef.current);
     onModelLoadedRef.current?.(geo.attributes.position.count);
   }, []);
@@ -3169,6 +3254,23 @@ export default function SculptViewer({
     if (entry) resetPoseRef.current(entry);
   }, []);
 
+  // Frames the currently-selected mesh/submesh (selectedEntryRef, already
+  // tracked for poly-edit and other per-entry tools) if one is selected,
+  // otherwise the whole scene — so this doubles as "look at my selection"
+  // and "look at everything," without needing two separate buttons.
+  const recenterView = useCallback(() => {
+    const camera = cameraRef.current;
+    const controls = controlsRef.current;
+    if (!camera || !controls) return;
+    const target = selectedEntryRef.current?.mesh ?? modelRef.current;
+    if (!target) return;
+    frameCameraOnObject(target, camera, controls);
+  }, []);
+
+  const toggleProjection = useCallback(() => {
+    toggleProjectionRef.current();
+  }, []);
+
   const getJoints = useCallback((entryId: string): Array<{ id: string; name: string; depth: number }> => {
     const entry = meshEntriesRef.current.find((e) => e.id === entryId);
     if (!entry?.rig) return [];
@@ -3256,11 +3358,11 @@ export default function SculptViewer({
         exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene,
         extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance,
         extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb,
-        getBones, selectBone: selectBoneById, resetPose,
+        getBones, selectBone: selectBoneById, resetPose, recenterView, toggleProjection,
         getJoints, selectJoint: selectJointById, renameJoint, deleteJoint,
       };
     }
-  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance, extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb, getBones, selectBoneById, resetPose, getJoints, selectJointById, renameJoint, deleteJoint]);
+  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance, extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb, getBones, selectBoneById, resetPose, recenterView, toggleProjection, getJoints, selectJointById, renameJoint, deleteJoint]);
 
   return <div ref={mountRef} className="w-full h-full" style={{ touchAction: "none" }} />;
 }

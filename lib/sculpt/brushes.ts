@@ -5,7 +5,7 @@ import * as THREE from "three";
 import type { SeamData } from "./seams";
 import type { MirrorData } from "./mirror";
 
-export type BrushMode = "clay_buildup" | "push" | "smooth" | "flatten" | "move" | "paint" | "mask";
+export type BrushMode = "clay_buildup" | "push" | "smooth" | "flatten" | "move" | "pinch" | "paint" | "mask";
 
 export type BrushHit = {
   point: THREE.Vector3;   // world-space hit point
@@ -331,6 +331,56 @@ export function applyBrush(params: BrushParams): void {
           positions.getY(idx) + dy * fo,
           positions.getZ(idx) + dz * fo,
         );
+      }
+    }
+  } else if (mode === "pinch") {
+    // Contracts vertices toward the axis through localHit running along
+    // localNormal — sharpens ridges/creases, unlike smooth (blends toward
+    // neighbors) or move (translates a whole cluster). Structurally the
+    // same shape as flatten (shared localHit/localNormal reference), but
+    // targets the axis through that point instead of the plane through it.
+    const sign = invert ? -1 : 1;
+    const allIdx = expandSeams(gathered.map((g) => g.idx), seams);
+    const foMap = new Map<number, number>();
+    for (const { idx, fo } of gathered) {
+      const group = seams.groups[seams.vertToGroup[idx]];
+      for (const j of group) {
+        const prev = foMap.get(j);
+        if (prev === undefined || fo > prev) foMap.set(j, fo);
+      }
+    }
+
+    for (const idx of allIdx) {
+      const fo = foMap.get(idx) ?? 0;
+      const t = sign * fo * strength * 0.5;
+      const vx = positions.getX(idx);
+      const vy = positions.getY(idx);
+      const vz = positions.getZ(idx);
+      const toHitX = vx - localHit.x, toHitY = vy - localHit.y, toHitZ = vz - localHit.z;
+      const alongNormal = toHitX * localNormal.x + toHitY * localNormal.y + toHitZ * localNormal.z;
+      const radialX = toHitX - alongNormal * localNormal.x;
+      const radialY = toHitY - alongNormal * localNormal.y;
+      const radialZ = toHitZ - alongNormal * localNormal.z;
+      positions.setXYZ(idx, vx - radialX * t, vy - radialY * t, vz - radialZ * t);
+    }
+    if (mirror) {
+      // Same reflect-the-shared-reference-once approach flatten uses: mirror
+      // localHit/localNormal across X, then run the identical
+      // axis-contraction math against the mirror-side gathered vertices.
+      const mFoMap = mirrorFalloffMap(foMap, mirror, seams);
+      const mHitX = -localHit.x, mHitY = localHit.y, mHitZ = localHit.z;
+      const mnx = -localNormal.x, mny = localNormal.y, mnz = localNormal.z;
+      for (const [idx, fo] of mFoMap) {
+        const t = sign * fo * strength * 0.5;
+        const vx = positions.getX(idx);
+        const vy = positions.getY(idx);
+        const vz = positions.getZ(idx);
+        const toHitX = vx - mHitX, toHitY = vy - mHitY, toHitZ = vz - mHitZ;
+        const alongNormal = toHitX * mnx + toHitY * mny + toHitZ * mnz;
+        const radialX = toHitX - alongNormal * mnx;
+        const radialY = toHitY - alongNormal * mny;
+        const radialZ = toHitZ - alongNormal * mnz;
+        positions.setXYZ(idx, vx - radialX * t, vy - radialY * t, vz - radialZ * t);
       }
     }
   }

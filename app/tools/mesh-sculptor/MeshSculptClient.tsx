@@ -29,7 +29,7 @@ const SculptViewer = dynamic(() => import("@/components/tools/SculptViewer"), {
 function BrushIcon({ mode, active }: { mode: BrushMode; active: boolean }) {
   const s = active ? "#ffffff" : "#8aa0b4";
   const w = "1.6";
-  const ICON_PNGS: Partial<Record<BrushMode, string>> = { clay_buildup: "/claybuildup.png", push: "/inflate.png", flatten: "/flatten.png", move: "/move.png", smooth: "/smooth.png", paint: "/paint.png", mask: "/mask.png" };
+  const ICON_PNGS: Partial<Record<BrushMode, string>> = { clay_buildup: "/claybuildup.png", push: "/inflate.png", flatten: "/flatten.png", move: "/move.png", pinch: "/pinch.png", smooth: "/smooth.png", paint: "/paint.png", mask: "/mask.png" };
   const png = ICON_PNGS[mode];
   if (png) return (
     <Image src={png} alt={mode} width={64} height={64}
@@ -98,13 +98,14 @@ const BRUSH_MODES: BrushDef[] = [
   { mode: "push",         label: "Inflate", desc: "Puff vertices outward along their own normals (Alt = deflate)", shortcut: "Q", invertHint: "Alt = deflate" },
   { mode: "smooth",       label: "Smooth",  desc: "Blend vertices toward local average",                shortcut: "E" },
   { mode: "flatten",      label: "Flatten", desc: "Project vertices to local tangent plane",            shortcut: "R" },
+  { mode: "pinch",        label: "Pinch",   desc: "Pull vertices toward the brush's center line, sharpening ridges and creases", shortcut: "N", invertHint: "Alt = spread apart" },
   { mode: "move",         label: "Move",    desc: "Drag a cluster of vertices freely in any direction", shortcut: "T" },
   { mode: "paint",        label: "Paint",   desc: "Paint color onto UV albedo texture without changing geometry", shortcut: "P" },
   { mode: "mask",         label: "Mask",    desc: "Paint a region to Extract or Detach as a new, separate submesh", shortcut: "K", invertHint: "Alt = erase" },
 ];
 
 const MODE_KEY: Record<string, BrushMode> = {
-  c: "clay_buildup", q: "push", e: "smooth", r: "flatten", t: "move", p: "paint", k: "mask",
+  c: "clay_buildup", q: "push", e: "smooth", r: "flatten", n: "pinch", t: "move", p: "paint", k: "mask",
 };
 
 // "wireframe" is no longer a selectable view mode here — it's superseded by

@@ -391,24 +391,23 @@ const _boxCamPos = new THREE.Vector3();
 const _boxNormalMat = new THREE.Matrix3();
 
 /**
- * Box-select masking: every vertex whose screen projection falls inside
- * [ndcMin, ndcMax] AND faces toward the camera gets masked (or erased),
- * binary — no radial falloff, unlike the freehand dab above. The
- * front-facing check is a simple normal/view-direction dot product, not a
- * real occlusion/raycast test — a box drawn over a visible bump can also
- * mask a simultaneously front-facing patch on a concave far side of the
- * same mesh. Accepted tradeoff for the common case (roughly convex panels
+ * Every vertex whose screen-space projection satisfies `inRegion(ndcX,
+ * ndcY)` AND faces toward the camera — shared core for any drag-region
+ * select (box, lasso, ...): pass a rectangle test for one, a
+ * point-in-polygon test for the other. The front-facing check is a
+ * simple normal/view-direction dot product, not a real occlusion/raycast
+ * test — a region drawn over a visible bump can also gather a
+ * simultaneously front-facing patch on a concave far side of the same
+ * mesh. Accepted tradeoff for the common case (roughly convex panels
  * like vehicle doors/wheels); a real occlusion test would need a BVH
- * raycast per candidate vertex.
+ * raycast per candidate vertex. Returns raw (non seam-expanded) vertex
+ * indices — callers decide whether/how to expand through seams, since
+ * mask-painting and poly-edit selection need that at different points.
  */
-export function applyMaskBox(
-  mask: Float32Array,
+export function gatherVerticesInRegion(
   mesh: THREE.Mesh,
-  seams: SeamData,
   camera: THREE.Camera,
-  ndcMin: { x: number; y: number },
-  ndcMax: { x: number; y: number },
-  erase: boolean,
+  inRegion: (ndcX: number, ndcY: number) => boolean,
 ): number[] {
   const positions = mesh.geometry.attributes.position as THREE.BufferAttribute;
   const normals = mesh.geometry.attributes.normal as THREE.BufferAttribute | undefined;
@@ -422,7 +421,7 @@ export function applyMaskBox(
     _boxWp.fromBufferAttribute(positions, i).applyMatrix4(matWorld);
     _boxNdc.copy(_boxWp).project(camera);
     if (_boxNdc.z < -1 || _boxNdc.z > 1) continue;
-    if (_boxNdc.x < ndcMin.x || _boxNdc.x > ndcMax.x || _boxNdc.y < ndcMin.y || _boxNdc.y > ndcMax.y) continue;
+    if (!inRegion(_boxNdc.x, _boxNdc.y)) continue;
     if (normals) {
       _boxWn.fromBufferAttribute(normals, i).applyMatrix3(_boxNormalMat).normalize();
       _boxToCam.copy(_boxCamPos).sub(_boxWp).normalize();
@@ -430,6 +429,43 @@ export function applyMaskBox(
     }
     gathered.push(i);
   }
+  return gathered;
+}
+
+/** Standard ray-casting point-in-polygon test (odd-even rule) — the
+ * predicate a lasso drag passes to gatherVerticesInRegion. `path` is a
+ * closed loop of NDC points (does not need an explicit closing point;
+ * the last-to-first edge is included automatically). */
+export function pointInPolygon(x: number, y: number, path: Array<{ x: number; y: number }>): boolean {
+  let inside = false;
+  for (let i = 0, j = path.length - 1; i < path.length; j = i++) {
+    const xi = path[i].x, yi = path[i].y;
+    const xj = path[j].x, yj = path[j].y;
+    const intersects = (yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * Box-select masking: every vertex whose screen projection falls inside
+ * [ndcMin, ndcMax] AND faces toward the camera gets masked (or erased),
+ * binary — no radial falloff, unlike the freehand dab above.
+ */
+export function applyMaskBox(
+  mask: Float32Array,
+  mesh: THREE.Mesh,
+  seams: SeamData,
+  camera: THREE.Camera,
+  ndcMin: { x: number; y: number },
+  ndcMax: { x: number; y: number },
+  erase: boolean,
+): number[] {
+  const gathered = gatherVerticesInRegion(
+    mesh,
+    camera,
+    (x, y) => x >= ndcMin.x && x <= ndcMax.x && y >= ndcMin.y && y <= ndcMax.y,
+  );
   if (gathered.length === 0) return [];
 
   const allIdx = expandSeams(gathered, seams);

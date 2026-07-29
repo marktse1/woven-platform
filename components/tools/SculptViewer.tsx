@@ -10,7 +10,7 @@ import { TransformControls } from "three/examples/jsm/controls/TransformControls
 import { MeshBVH, acceleratedRaycast } from "three-mesh-bvh";
 import "three-mesh-bvh"; // pulls in BufferGeometry.boundsTree augmentation
 import { buildSeamData, type SeamData } from "@/lib/sculpt/seams";
-import { applyBrush, applyMaskDab, applyMaskBox, gatherVertices, expandSeams, type BrushMode, type BrushHit } from "@/lib/sculpt/brushes";
+import { applyBrush, applyMaskDab, applyMaskBox, gatherVertices, gatherVerticesInRegion, pointInPolygon, expandSeams, type BrushMode, type BrushHit } from "@/lib/sculpt/brushes";
 import { extractMaskedRegion, detachMaskedRegion } from "@/lib/sculpt/extract";
 import { weldGeometryByPosition } from "@/lib/sculpt/weld";
 import { SculptUndoStack } from "@/lib/sculpt/undo";
@@ -167,6 +167,9 @@ type PolyEditHit = {
 export type EditMode = "sculpt" | "poly_edit" | "pose" | "rig";
 export type SelectMode = "vertex" | "edge" | "face";
 export type TransformMode = "translate" | "rotate" | "scale";
+/** Poly-edit selection input: click one element at a time, or drag a
+ * region (rectangle or freeform loop) to select many at once. */
+export type PolyEditSelectTool = "click" | "box" | "lasso";
 /** Brush-radius vertex highlight density — "all" gets visually noisy on
  * dense/subdivided meshes. */
 export type HighlightMode = "center" | "all" | "none";
@@ -586,6 +589,7 @@ type Props = {
   mirrorMode?: boolean;
   editMode?: EditMode;
   selectMode?: SelectMode;
+  polyEditSelectTool?: PolyEditSelectTool;
   transformMode?: TransformMode;
   onModelLoaded?: (vertexCount: number) => void;
   onLoadError?: (msg: string) => void;
@@ -624,6 +628,7 @@ export default function SculptViewer({
   mirrorMode = false,
   editMode = "sculpt",
   selectMode = "vertex",
+  polyEditSelectTool = "click",
   transformMode = "translate",
   onModelLoaded,
   onLoadError,
@@ -670,6 +675,12 @@ export default function SculptViewer({
   const boxSelectActiveRef = useRef(false);
   const boxSelectStartRef = useRef<{ x: number; y: number } | null>(null);
   const boxSelectOverlayRef = useRef<HTMLDivElement | null>(null);
+  /** Ctrl+drag in poly_edit mode, when the Box/Lasso selection tool is
+   * active: region-select instead of the default click-to-select. */
+  const polyEditRegionActiveRef = useRef(false);
+  const polyEditRegionStartRef = useRef<{ x: number; y: number } | null>(null);
+  const polyEditRegionPathRef = useRef<Array<{ x: number; y: number }>>([]);
+  const lassoOverlayRef = useRef<SVGSVGElement | null>(null);
   /** Ctrl+drag starting in empty space (raycast miss): orbit as normal, then
    * snap to the nearest orthographic view on release if Ctrl is still held. */
   const orbitDragActiveRef = useRef(false);
@@ -735,6 +746,7 @@ export default function SculptViewer({
   // ── poly-edit mode: selection state + transform gizmo ─────────────────────
   const editModeRef = useRef<EditMode>(editMode);
   const selectModeRef = useRef<SelectMode>(selectMode);
+  const polyEditSelectToolRef = useRef<PolyEditSelectTool>(polyEditSelectTool);
   const transformModeRef = useRef<TransformMode>(transformMode);
   // Selection is scoped to a single mesh entry at a time (documented
   // simplification vs. sculpt brushes, which already apply across all
@@ -836,6 +848,7 @@ export default function SculptViewer({
     // selectMode flips to edge/face) — clear rather than try to translate.
     clearPolyEditSelectionRef.current();
   }, [selectMode]);
+  useEffect(() => { polyEditSelectToolRef.current = polyEditSelectTool; }, [polyEditSelectTool]);
   useEffect(() => {
     transformModeRef.current = transformMode;
     transformControlsRef.current?.setMode(transformMode);
@@ -1872,6 +1885,50 @@ export default function SculptViewer({
         max: { x: Math.max(p0.x, p1.x), y: Math.max(p0.y, p1.y) },
       };
     }
+    /** Single client-pixel point -> NDC, same basis as clientRectToNdc above. */
+    function clientPointToNdc(cx: number, cy: number): { x: number; y: number } {
+      const rect = renderer!.domElement.getBoundingClientRect();
+      return { x: ((cx - rect.left) / rect.width) * 2 - 1, y: -((cy - rect.top) / rect.height) * 2 + 1 };
+    }
+
+    // ── Lasso-select overlay (Ctrl+drag in poly_edit, Lasso tool) ─────────────
+    // An SVG polygon rather than a plain <div> (updateBoxOverlay's approach)
+    // since a freeform loop isn't expressible as a CSS box — same "plain DOM,
+    // no Three.js object" convention otherwise.
+    function ensureLassoOverlay(): SVGSVGElement {
+      let el = lassoOverlayRef.current;
+      if (!el) {
+        mount.style.position = "relative";
+        el = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        el.style.position = "absolute";
+        el.style.left = "0";
+        el.style.top = "0";
+        el.style.width = "100%";
+        el.style.height = "100%";
+        el.style.pointerEvents = "none";
+        el.style.display = "none";
+        el.style.zIndex = "5";
+        const poly = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+        poly.setAttribute("fill", "rgba(138,160,180,0.15)");
+        poly.setAttribute("stroke", "#8aa0b4");
+        poly.setAttribute("stroke-dasharray", "4 3");
+        poly.setAttribute("stroke-width", "1.5");
+        el.appendChild(poly);
+        mount.appendChild(el);
+        lassoOverlayRef.current = el;
+      }
+      return el;
+    }
+    function updateLassoOverlay(points: Array<{ x: number; y: number }>) {
+      const el = ensureLassoOverlay();
+      const rect = mount.getBoundingClientRect();
+      const poly = el.firstElementChild as SVGPolygonElement;
+      poly.setAttribute("points", points.map((p) => `${p.x - rect.left},${p.y - rect.top}`).join(" "));
+      el.style.display = "block";
+    }
+    function hideLassoOverlay() {
+      if (lassoOverlayRef.current) lassoOverlayRef.current.style.display = "none";
+    }
 
     // ── Ortho-view-snap (Ctrl+drag starting in empty space) ──────────────────
     // ZBrush-style: same Ctrl modifier as box-select above, disambiguated by
@@ -2220,6 +2277,71 @@ export default function SculptViewer({
       notifySelectionChange();
     }
 
+    // Resolves every vertex/edge/face key touched by a drag-region
+    // (box or lasso) select — same key formats keyForHit produces
+    // (v{i}, {min}_{max}, q{i}/t{i}), built from gatherVerticesInRegion's
+    // raw (non seam-expanded) vertex list, same as click-select's own
+    // keys aren't seam-expanded until selectionVertexIndices resolves
+    // them later.
+    function resolveRegionSelection(
+      entry: SculptMeshEntry,
+      camera: THREE.Camera,
+      inRegion: (ndcX: number, ndcY: number) => boolean,
+      mode: SelectMode,
+    ): string[] {
+      const gathered = gatherVerticesInRegion(entry.mesh, camera, inRegion);
+      if (gathered.length === 0) return [];
+      const gatheredSet = new Set(gathered);
+
+      if (mode === "vertex") return gathered.map((i) => `v${i}`);
+
+      const index = entry.mesh.geometry.index;
+      if (!index) return [];
+      const triCount = index.count / 3;
+      const keys = new Set<string>();
+
+      if (mode === "edge") {
+        for (let ti = 0; ti < triCount; ti++) {
+          const a = index.getX(ti * 3), b = index.getX(ti * 3 + 1), c = index.getX(ti * 3 + 2);
+          for (const [v0, v1] of [[a, b], [b, c], [c, a]] as const) {
+            if (gatheredSet.has(v0) && gatheredSet.has(v1)) keys.add(`${Math.min(v0, v1)}_${Math.max(v0, v1)}`);
+          }
+        }
+      } else {
+        const consideredQuads = new Set<number>();
+        for (let ti = 0; ti < triCount; ti++) {
+          const quadIdx = entry.topology?.triToQuad.get(ti);
+          if (quadIdx !== undefined) {
+            if (consideredQuads.has(quadIdx)) continue;
+            consideredQuads.add(quadIdx);
+            const corners = entry.topology!.quadCorners[quadIdx];
+            if (corners.every((v) => gatheredSet.has(v))) keys.add(`q${quadIdx}`);
+          } else {
+            const a = index.getX(ti * 3), b = index.getX(ti * 3 + 1), c = index.getX(ti * 3 + 2);
+            if (gatheredSet.has(a) && gatheredSet.has(b) && gatheredSet.has(c)) keys.add(`t${ti}`);
+          }
+        }
+      }
+      return Array.from(keys);
+    }
+
+    // Merges a drag-region selection result into the live selection —
+    // shift adds, alt subtracts (matches applyMaskBox's own erase
+    // convention), neither replaces — then finishes with the same
+    // bookkeeping applyPolyEditSelection already does.
+    function applyPolyEditRegionSelection(entry: SculptMeshEntry, keys: string[], shift: boolean, subtract: boolean) {
+      if (subtract) {
+        for (const key of keys) selectionRef.current.delete(key);
+      } else {
+        if (!shift || selectedEntryRef.current !== entry) selectionRef.current = new Set();
+        selectedEntryRef.current = entry;
+        for (const key of keys) selectionRef.current.add(key);
+      }
+      updateSelectionHighlightPoints();
+      repositionGizmoToSelection();
+      notifySelectionChange();
+    }
+
     // ── UV texture painting ──────────────────────────────────────────────────
     function applyPaintDab() {
       const uvHit = lastUVRef.current;
@@ -2283,6 +2405,17 @@ export default function SculptViewer({
       if (e.button !== 0 && !(e.ctrlKey && e.button === 2)) return;
       if (editModeRef.current === "poly_edit") {
         if (transformControlsRef.current?.dragging) return;
+        // Ctrl+drag with Box/Lasso active: region-select instead of the
+        // default click-to-select — same Ctrl+drag convention Mask mode's
+        // box-select already uses, so this isn't a new modifier meaning.
+        if (e.ctrlKey && polyEditSelectToolRef.current !== "click") {
+          polyEditRegionActiveRef.current = true;
+          polyEditRegionStartRef.current = { x: e.clientX, y: e.clientY };
+          polyEditRegionPathRef.current = [{ x: e.clientX, y: e.clientY }];
+          if (polyEditSelectToolRef.current === "box") updateBoxOverlay(e.clientX, e.clientY, e.clientX, e.clientY);
+          else updateLassoOverlay(polyEditRegionPathRef.current);
+          return;
+        }
         polyEditDownPos = { x: e.clientX, y: e.clientY };
         return;
       }
@@ -2347,7 +2480,18 @@ export default function SculptViewer({
     }
 
     function onPointerMove(e: PointerEvent) {
-      if (editModeRef.current === "poly_edit") return; // no hover preview in poly-edit this pass
+      if (editModeRef.current === "poly_edit") {
+        if (polyEditRegionActiveRef.current) {
+          if (polyEditSelectToolRef.current === "box") {
+            const start = polyEditRegionStartRef.current;
+            if (start) updateBoxOverlay(start.x, start.y, e.clientX, e.clientY);
+          } else {
+            polyEditRegionPathRef.current.push({ x: e.clientX, y: e.clientY });
+            updateLassoOverlay(polyEditRegionPathRef.current);
+          }
+        }
+        return; // no hover preview in poly-edit otherwise
+      }
       if (editModeRef.current === "pose") return; // no hover preview in pose mode either
       if (editModeRef.current === "rig") return; // no hover preview in rig mode either
 
@@ -2392,6 +2536,33 @@ export default function SculptViewer({
 
     function onPointerUp(e: PointerEvent) {
       if (editModeRef.current === "poly_edit") {
+        if (polyEditRegionActiveRef.current) {
+          polyEditRegionActiveRef.current = false;
+          const camera = cameraRef.current;
+          const entry = selectedEntryRef.current ?? meshEntriesRef.current[0];
+          if (camera && entry) {
+            let predicate: (x: number, y: number) => boolean;
+            if (polyEditSelectToolRef.current === "box") {
+              const start = polyEditRegionStartRef.current;
+              predicate = start
+                ? (() => {
+                    const { min, max } = clientRectToNdc(start.x, start.y, e.clientX, e.clientY);
+                    return (x: number, y: number) => x >= min.x && x <= max.x && y >= min.y && y <= max.y;
+                  })()
+                : () => false;
+              hideBoxOverlay();
+            } else {
+              const path = polyEditRegionPathRef.current.map((p) => clientPointToNdc(p.x, p.y));
+              predicate = (x, y) => pointInPolygon(x, y, path);
+              hideLassoOverlay();
+            }
+            const keys = resolveRegionSelection(entry, camera, predicate, selectModeRef.current);
+            applyPolyEditRegionSelection(entry, keys, e.shiftKey, altDownRef.current);
+          }
+          polyEditRegionStartRef.current = null;
+          polyEditRegionPathRef.current = [];
+          return;
+        }
         const down = polyEditDownPos;
         polyEditDownPos = null;
         if (transformControlsRef.current?.dragging) return;
@@ -2530,6 +2701,10 @@ export default function SculptViewer({
       if (boxSelectOverlayRef.current) {
         boxSelectOverlayRef.current.remove();
         boxSelectOverlayRef.current = null;
+      }
+      if (lassoOverlayRef.current) {
+        lassoOverlayRef.current.remove();
+        lassoOverlayRef.current = null;
       }
     };
   }, []);

@@ -12,7 +12,7 @@ import {
   signedAssetUrl,
   type AssetRow,
 } from "@/lib/assets";
-import type { SculptViewerHandle, ViewMode, PrimitiveType, EditMode, SelectMode, TransformMode, HighlightMode } from "@/components/tools/SculptViewer";
+import type { SculptViewerHandle, ViewMode, PrimitiveType, EditMode, SelectMode, PolyEditSelectTool, TransformMode, HighlightMode } from "@/components/tools/SculptViewer";
 import type { BrushMode } from "@/lib/sculpt/brushes";
 import type * as THREE from "three";
 
@@ -178,6 +178,7 @@ export default function MeshSculptClient() {
 
   const [editMode, setEditMode] = useState<EditMode>("sculpt");
   const [selectMode, setSelectMode] = useState<SelectMode>("vertex");
+  const [polyEditSelectTool, setPolyEditSelectTool] = useState<PolyEditSelectTool>("click");
   const [transformMode, setTransformMode] = useState<TransformMode>("translate");
   const [selectionCount, setSelectionCount] = useState(0);
   const [extrudeDistance, setExtrudeDistance] = useState(0.1);
@@ -766,6 +767,18 @@ export default function MeshSculptClient() {
                       </button>
                     ))}
                   </div>
+
+                  <p className="text-[10px] text-dim uppercase tracking-wide mb-1.5">Selection Tool</p>
+                  <div className="flex gap-1 mb-3">
+                    {([["click", "Click"], ["box", "Box"], ["lasso", "Lasso"]] as [PolyEditSelectTool, string][]).map(([t, label]) => (
+                      <button key={t} onClick={() => setPolyEditSelectTool(t)}
+                        title={t === "click" ? "Click one element at a time" : `Ctrl+drag a ${t === "box" ? "rectangle" : "freeform loop"} to select many`}
+                        className="flex-1 py-1.5 rounded text-[11px] font-medium transition-colors"
+                        style={{ background: polyEditSelectTool === t ? "rgba(196,123,232,.22)" : "#1e1a17", color: polyEditSelectTool === t ? PURPLE : "#8aa0b4" }}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
                 </>
               )}
 
@@ -785,7 +798,9 @@ export default function MeshSculptClient() {
                 <>
                   <p className="text-[10.5px]" style={{ color: selectionCount > 0 ? PURPLE : "#6a8098" }}>
                     {selectionCount === 0
-                      ? "Click a mesh to select · Shift-click to add"
+                      ? polyEditSelectTool === "click"
+                        ? "Click a mesh to select · Shift-click to add"
+                        : `Ctrl+drag a ${polyEditSelectTool === "box" ? "box" : "loop"} to select · Shift adds · Alt subtracts`
                       : `${selectionCount} ${selectMode}${selectionCount === 1 ? "" : "s"} selected`}
                   </p>
 
@@ -957,18 +972,6 @@ export default function MeshSculptClient() {
               className="flex-1 py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors" title="Ctrl+Z">Undo</button>
             <button onClick={() => viewerHandleRef.current?.redo()}
               className="flex-1 py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors" title="Ctrl+Shift+Z">Redo</button>
-          </div>
-
-          <div className="flex gap-2 mt-2">
-            <button onClick={() => viewerHandleRef.current?.recenterView()}
-              className="flex-1 py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors"
-              title="Frame the selected submesh, or the whole scene if nothing's selected">Recenter View</button>
-            <button onClick={() => viewerHandleRef.current?.toggleProjection()}
-              className="flex-1 py-1.5 rounded text-[11px] font-medium transition-colors"
-              style={{ background: isOrthographic ? "rgba(196,123,232,.22)" : "#1e1a17", color: isOrthographic ? PURPLE : "#8aa0b4" }}
-              title="Switch between Perspective and Orthographic projection">
-              {isOrthographic ? "Orthographic" : "Perspective"}
-            </button>
           </div>
 
           {/* Paint Color Picker */}
@@ -1289,6 +1292,29 @@ export default function MeshSculptClient() {
             </button>
           </div>
 
+          {/* Recenter View — frames the selected submesh, or the whole
+              scene if nothing's selected */}
+          <div className="flex items-center px-1">
+            <button
+              onClick={() => viewerHandleRef.current?.recenterView()}
+              title="Frame the selected submesh, or the whole scene if nothing's selected"
+              className="px-2.5 py-1.5 rounded text-[11px] font-medium transition-colors"
+              style={{ color: "#8aa0b4" }}>
+              Recenter
+            </button>
+          </div>
+
+          {/* Perspective/Orthographic projection toggle */}
+          <div className="flex items-center px-1">
+            <button
+              onClick={() => viewerHandleRef.current?.toggleProjection()}
+              title="Switch between Perspective and Orthographic projection"
+              className="px-2.5 py-1.5 rounded text-[11px] font-medium transition-colors"
+              style={{ background: isOrthographic ? PURPLE : "transparent", color: isOrthographic ? "#fff" : "#8aa0b4" }}>
+              {isOrthographic ? "Orthographic" : "Perspective"}
+            </button>
+          </div>
+
           {/* Divider */}
           <div className="w-px self-stretch bg-[#2a2320] mx-1" />
 
@@ -1377,6 +1403,7 @@ export default function MeshSculptClient() {
             mirrorMode={mirrorMode}
             editMode={editMode}
             selectMode={selectMode}
+            polyEditSelectTool={polyEditSelectTool}
             transformMode={transformMode}
             onModelLoaded={handleModelLoaded}
             onLoadError={setLoadError}

@@ -184,6 +184,18 @@ export default function MeshSculptClient() {
   const [extrudeMsg, setExtrudeMsg] = useState("");
   const [loopPreview, setLoopPreview] = useState<{ edgeCount: number; boundary: boolean; closed: boolean } | null>(null);
 
+  // Pose mode: only populated when the loaded model actually has a
+  // skeleton (e.g. an AccuRIG-exported GLB) — most loads won't.
+  const [bones, setBones] = useState<Array<{ entryId: string; id: string; name: string; depth: number }>>([]);
+  const [selectedBoneId, setSelectedBoneId] = useState<string | null>(null);
+
+  // Rig mode: manually-placed joints (lib/sculpt/rig.ts) — distinct from
+  // `bones` above (an imported skeleton). Starts empty on every mesh;
+  // populated as the user places joints in the viewport.
+  const [joints, setJoints] = useState<Array<{ entryId: string; id: string; name: string; depth: number }>>([]);
+  const [selectedJointId, setSelectedJointId] = useState<string | null>(null);
+  const [editingJointId, setEditingJointId] = useState<string | null>(null);
+
   const viewerHandleRef = useRef<SculptViewerHandle | null>(null);
 
   // Mesh Sculptor no longer keeps its own "browse my assets" list — the
@@ -433,10 +445,121 @@ export default function MeshSculptClient() {
     setSubmeshes(viewerHandleRef.current?.getMeshEntries() ?? []);
   }, []);
 
+  // Combines every entry's bones (usually just one skinned entry, but not
+  // assumed) into one flat list for the Bones panel — each row remembers
+  // which entry it came from, since SculptViewerHandle.selectBone/resetPose
+  // are per-entry.
+  const refreshBones = useCallback(() => {
+    const handle = viewerHandleRef.current;
+    const entries = handle?.getMeshEntries() ?? [];
+    const all: Array<{ entryId: string; id: string; name: string; depth: number }> = [];
+    for (const entry of entries) {
+      for (const bone of handle?.getBones(entry.id) ?? []) all.push({ entryId: entry.id, ...bone });
+    }
+    setBones(all);
+  }, []);
+
+  // Same combining pattern as refreshBones, for Rig mode's manually-
+  // placed joints instead of an imported skeleton.
+  const refreshJoints = useCallback(() => {
+    const handle = viewerHandleRef.current;
+    const entries = handle?.getMeshEntries() ?? [];
+    const all: Array<{ entryId: string; id: string; name: string; depth: number }> = [];
+    for (const entry of entries) {
+      for (const joint of handle?.getJoints(entry.id) ?? []) all.push({ entryId: entry.id, ...joint });
+    }
+    setJoints(all);
+  }, []);
+
   const handleModelLoaded = useCallback((count: number) => {
     setVertexCount(count);
     refreshSubmeshes();
-  }, [refreshSubmeshes]);
+    refreshBones();
+    refreshJoints();
+  }, [refreshSubmeshes, refreshBones, refreshJoints]);
+
+  const handleSelectBone = useCallback((entryId: string, boneId: string | null) => {
+    viewerHandleRef.current?.selectBone(entryId, boneId);
+  }, []);
+
+  const handleSelectJoint = useCallback((entryId: string, jointId: string | null) => {
+    viewerHandleRef.current?.selectJoint(entryId, jointId);
+  }, []);
+
+  const handleRenameJoint = useCallback((entryId: string, jointId: string, name: string) => {
+    viewerHandleRef.current?.renameJoint(entryId, jointId, name);
+    refreshJoints();
+  }, [refreshJoints]);
+
+  const handleDeleteJoint = useCallback((entryId: string, jointId: string) => {
+    viewerHandleRef.current?.deleteJoint(entryId, jointId);
+    refreshJoints();
+  }, [refreshJoints]);
+
+  // A selection change in the viewport can also mean a NEW joint was just
+  // created (click-to-place auto-selects it) — refresh the list either
+  // way rather than needing a separate "a joint was created" event.
+  const handleJointSelectionChange = useCallback((jointId: string | null) => {
+    setSelectedJointId(jointId);
+    refreshJoints();
+  }, [refreshJoints]);
+
+  // "Human" is special-cased to load the real public/human_low_poly.obj
+  // asset instead of buildHumanBase()'s crude placeholder (22 merged
+  // boxes/spheres/cylinders) — every other primitive type is still built
+  // synchronously via loadPrimitive. Mirrors handleLocalFile's existing
+  // OBJ-upload path (OBJLoader.parse → collect+merge child meshes) rather
+  // than inventing a new loading convention, but fetches from the public
+  // folder instead of reading a File, and additionally welds the result
+  // (lib/sculpt/weld.ts) so it's seam-free like every other primitive —
+  // loadGeometry's own import path deliberately doesn't weld, since an
+  // arbitrary uploaded mesh's authored seams might be intentional, but
+  // this one is standing in for a primitive, so it should behave like one.
+  const handleInsertPrimitive = useCallback(async (type: PrimitiveType) => {
+    setSubdivLevel(0);
+    setShowPrimitives(false);
+    if (type !== "human") {
+      viewerHandleRef.current?.loadPrimitive(type);
+      return;
+    }
+    try {
+      const [{ OBJLoader }, BGU, { weldGeometryByPosition }, res] = await Promise.all([
+        import("three/examples/jsm/loaders/OBJLoader.js"),
+        import("three/examples/jsm/utils/BufferGeometryUtils.js"),
+        import("@/lib/sculpt/weld"),
+        fetch("/human_low_poly.obj"),
+      ]);
+      if (!res.ok) throw new Error(`Fetch failed: ${res.status}`);
+      const text = await res.text();
+      const group = new OBJLoader().parse(text);
+      const geos: THREE.BufferGeometry[] = [];
+      group.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.isMesh && m.geometry) geos.push(m.geometry);
+      });
+      if (geos.length === 0) throw new Error("OBJ contains no mesh geometry.");
+      const merged = geos.length === 1 ? geos[0] : BGU.mergeGeometries(geos, false);
+      const welded = weldGeometryByPosition(merged);
+      viewerHandleRef.current?.loadGeometry(welded, "Human");
+    } catch (err) {
+      console.warn("[MeshSculptClient] Failed to load human_low_poly.obj, falling back to placeholder primitive:", err);
+      viewerHandleRef.current?.loadPrimitive("human");
+    }
+  }, []);
+
+  const handleResetPose = useCallback(() => {
+    // Every skinned entry gets reset, not just whichever bone happens to
+    // be selected — "Reset Pose" reads as a whole-character action, not
+    // a per-bone one, matching Transpose's own "reset" behavior.
+    // resetPose(entryId) already walks every bone in that entry's own
+    // skeleton, so this only needs to call it once per distinct entry.
+    const seen = new Set<string>();
+    for (const b of bones) {
+      if (seen.has(b.entryId)) continue;
+      seen.add(b.entryId);
+      viewerHandleRef.current?.resetPose(b.entryId);
+    }
+  }, [bones]);
 
   const handleExtractMask = useCallback(() => {
     const created = viewerHandleRef.current?.extractMask(maskThreshold, maskThickness) ?? 0;
@@ -469,14 +592,21 @@ export default function MeshSculptClient() {
         setMirrorMode((m) => !m);
         return;
       }
-      if (editMode === "poly_edit") {
+      if (editMode === "poly_edit" || editMode === "pose" || editMode === "rig") {
         // Blender-style select-mode/transform-mode shortcuts, scoped to
-        // poly-edit only — no conflict with the sculpt brush shortcuts below
-        // (E/R mean smooth/flatten there) since the two modes are mutually
-        // exclusive and this branch returns before reaching MODE_KEY.
-        if (e.key === "1") setSelectMode("vertex");
-        else if (e.key === "2") setSelectMode("edge");
-        else if (e.key === "3") setSelectMode("face");
+        // poly-edit/pose/rig only — no conflict with the sculpt brush
+        // shortcuts below (E/R mean smooth/flatten there) since these
+        // modes are mutually exclusive with sculpt and this branch
+        // returns before reaching MODE_KEY. Select-mode (1/2/3) is
+        // poly-edit-only — pose/rig have no vertex/edge/face concept.
+        if (editMode === "poly_edit" && e.key === "1") setSelectMode("vertex");
+        else if (editMode === "poly_edit" && e.key === "2") setSelectMode("edge");
+        else if (editMode === "poly_edit" && e.key === "3") setSelectMode("face");
+        else if (editMode === "rig" && selectedJointId && (e.key === "Backspace" || e.key === "Delete")) {
+          e.preventDefault();
+          const j = joints.find((jt) => jt.id === selectedJointId);
+          if (j) handleDeleteJoint(j.entryId, j.id);
+        }
         else if (e.key.toLowerCase() === "w") setTransformMode("translate");
         else if (e.key.toLowerCase() === "e") setTransformMode("rotate");
         else if (e.key.toLowerCase() === "r") setTransformMode("scale");
@@ -498,7 +628,7 @@ export default function MeshSculptClient() {
     window.addEventListener("keydown", onDown);
     window.addEventListener("keyup", onUp);
     return () => { window.removeEventListener("keydown", onDown); window.removeEventListener("keyup", onUp); };
-  }, [editMode, brushMode, handleClearMask]);
+  }, [editMode, brushMode, handleClearMask, selectedJointId, joints, handleDeleteJoint]);
 
   const handleToggleSubmeshVisible = useCallback((id: string, visible: boolean) => {
     viewerHandleRef.current?.setEntryVisible(id, visible);
@@ -509,7 +639,9 @@ export default function MeshSculptClient() {
     const result = viewerHandleRef.current?.deleteEntry(id);
     if (result && !result.ok) { setExtractMsg(result.reason ?? "Couldn't delete."); return; }
     refreshSubmeshes();
-  }, [refreshSubmeshes]);
+    refreshBones();
+    refreshJoints();
+  }, [refreshSubmeshes, refreshBones, refreshJoints]);
 
   const handleSaveSubmesh = useCallback(async (id: string, name: string) => {
     if (!viewerHandleRef.current || !user?.id) return;
@@ -602,21 +734,39 @@ export default function MeshSculptClient() {
               style={{ background: editMode === "poly_edit" ? PURPLE : "#1e1a17", color: editMode === "poly_edit" ? "#fff" : "#8aa0b4" }}>
               Edit
             </button>
+            <button onClick={() => { setEditMode("pose"); setTransformMode("rotate"); }}
+              disabled={bones.length === 0}
+              title={bones.length === 0 ? "Load a rigged model (e.g. an AccuRIG export) to pose it" : "Select and pose bones from the imported rig"}
+              className="flex-1 py-1.5 rounded text-[11px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{ background: editMode === "pose" ? PURPLE : "#1e1a17", color: editMode === "pose" ? "#fff" : "#8aa0b4" }}>
+              Pose
+            </button>
+            <button onClick={() => setEditMode("rig")}
+              disabled={vertexCount == null}
+              title="Place your own joints and use them as pivots to scale/rotate/move a masked region"
+              className="flex-1 py-1.5 rounded text-[11px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{ background: editMode === "rig" ? PURPLE : "#1e1a17", color: editMode === "rig" ? "#fff" : "#8aa0b4" }}>
+              Rig
+            </button>
           </div>
 
-          {editMode === "poly_edit" && (
+          {(editMode === "poly_edit" || editMode === "pose" || editMode === "rig") && (
             <>
-              <p className="text-[10px] text-dim uppercase tracking-wide mb-1.5">Select</p>
-              <div className="flex gap-1 mb-3">
-                {([["vertex", "1"], ["edge", "2"], ["face", "3"]] as [SelectMode, string][]).map(([m, key]) => (
-                  <button key={m} onClick={() => setSelectMode(m)}
-                    title={`${m[0].toUpperCase()}${m.slice(1)} (${key})`}
-                    className="flex-1 py-1.5 rounded text-[11px] font-medium capitalize transition-colors"
-                    style={{ background: selectMode === m ? "rgba(196,123,232,.22)" : "#1e1a17", color: selectMode === m ? PURPLE : "#8aa0b4" }}>
-                    {m}
-                  </button>
-                ))}
-              </div>
+              {editMode === "poly_edit" && (
+                <>
+                  <p className="text-[10px] text-dim uppercase tracking-wide mb-1.5">Select</p>
+                  <div className="flex gap-1 mb-3">
+                    {([["vertex", "1"], ["edge", "2"], ["face", "3"]] as [SelectMode, string][]).map(([m, key]) => (
+                      <button key={m} onClick={() => setSelectMode(m)}
+                        title={`${m[0].toUpperCase()}${m.slice(1)} (${key})`}
+                        className="flex-1 py-1.5 rounded text-[11px] font-medium capitalize transition-colors"
+                        style={{ background: selectMode === m ? "rgba(196,123,232,.22)" : "#1e1a17", color: selectMode === m ? PURPLE : "#8aa0b4" }}>
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
 
               <p className="text-[10px] text-dim uppercase tracking-wide mb-1.5">Transform</p>
               <div className="flex gap-1 mb-2">
@@ -629,40 +779,124 @@ export default function MeshSculptClient() {
                   </button>
                 ))}
               </div>
-              <p className="text-[10.5px]" style={{ color: selectionCount > 0 ? PURPLE : "#6a8098" }}>
-                {selectionCount === 0
-                  ? "Click a mesh to select · Shift-click to add"
-                  : `${selectionCount} ${selectMode}${selectionCount === 1 ? "" : "s"} selected`}
-              </p>
 
-              {(selectMode === "face" || selectMode === "edge") && (
-                <div className="mt-3 pt-3 border-t border-[#2a2320]">
-                  {selectMode === "edge" && (
-                    <p className="text-[10.5px] mb-2" style={{ color: !loopPreview ? "#4a4040" : loopPreview.boundary ? "#6a8098" : "#e0824a" }}>
-                      {loopPreview
-                        ? loopPreview.boundary
-                          ? `${loopPreview.edgeCount} edges in loop${loopPreview.closed ? " (closed)" : ""}`
-                          : "Interior loop — not extrudable yet"
-                        : "Select a boundary edge to preview its loop"}
-                    </p>
-                  )}
-                  <label className="block mb-2">
-                    <div className="flex justify-between mb-1">
-                      <span className="text-[11px] text-dim">Extrude Distance</span>
-                      <span className="text-[11px] text-ink">{extrudeDistance.toFixed(3)}</span>
+              {editMode === "poly_edit" && (
+                <>
+                  <p className="text-[10.5px]" style={{ color: selectionCount > 0 ? PURPLE : "#6a8098" }}>
+                    {selectionCount === 0
+                      ? "Click a mesh to select · Shift-click to add"
+                      : `${selectionCount} ${selectMode}${selectionCount === 1 ? "" : "s"} selected`}
+                  </p>
+
+                  {(selectMode === "face" || selectMode === "edge") && (
+                    <div className="mt-3 pt-3 border-t border-[#2a2320]">
+                      {selectMode === "edge" && (
+                        <p className="text-[10.5px] mb-2" style={{ color: !loopPreview ? "#4a4040" : loopPreview.boundary ? "#6a8098" : "#e0824a" }}>
+                          {loopPreview
+                            ? loopPreview.boundary
+                              ? `${loopPreview.edgeCount} edges in loop${loopPreview.closed ? " (closed)" : ""}`
+                              : "Interior loop — not extrudable yet"
+                            : "Select a boundary edge to preview its loop"}
+                        </p>
+                      )}
+                      <label className="block mb-2">
+                        <div className="flex justify-between mb-1">
+                          <span className="text-[11px] text-dim">Extrude Distance</span>
+                          <span className="text-[11px] text-ink">{extrudeDistance.toFixed(3)}</span>
+                        </div>
+                        <input type="range" min={-2} max={2} step={0.01} value={extrudeDistance}
+                          onChange={(e) => setExtrudeDistance(Number(e.target.value))}
+                          className="w-full accent-[#c47be8]" />
+                      </label>
+                      <button
+                        onClick={handleExtrude}
+                        disabled={selectionCount === 0 || (selectMode === "edge" && loopPreview != null && !loopPreview.boundary)}
+                        className="w-full py-1.5 rounded text-[11px] font-semibold text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                        style={{ background: PURPLE }}>
+                        {selectMode === "face" ? `Extrude Face${selectionCount > 1 ? "s" : ""}` : "Extrude Loop"}
+                      </button>
+                      {extrudeMsg && <p className="text-[10.5px] mt-1.5 text-amber-400">{extrudeMsg}</p>}
                     </div>
-                    <input type="range" min={-2} max={2} step={0.01} value={extrudeDistance}
-                      onChange={(e) => setExtrudeDistance(Number(e.target.value))}
-                      className="w-full accent-[#c47be8]" />
-                  </label>
+                  )}
+                </>
+              )}
+
+              {editMode === "pose" && (
+                <div className="mt-2">
                   <button
-                    onClick={handleExtrude}
-                    disabled={selectionCount === 0 || (selectMode === "edge" && loopPreview != null && !loopPreview.boundary)}
-                    className="w-full py-1.5 rounded text-[11px] font-semibold text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    onClick={handleResetPose}
+                    className="w-full py-1.5 rounded text-[11px] font-semibold text-white transition-colors mb-3"
                     style={{ background: PURPLE }}>
-                    {selectMode === "face" ? `Extrude Face${selectionCount > 1 ? "s" : ""}` : "Extrude Loop"}
+                    Reset Pose
                   </button>
-                  {extrudeMsg && <p className="text-[10.5px] mt-1.5 text-amber-400">{extrudeMsg}</p>}
+                  <p className="text-[10px] text-dim uppercase tracking-wide mb-1.5">Bones</p>
+                  <div className="max-h-60 overflow-y-auto space-y-0.5">
+                    {bones.map((bone) => (
+                      <button
+                        key={bone.id}
+                        onClick={() => handleSelectBone(bone.entryId, bone.id === selectedBoneId ? null : bone.id)}
+                        style={{ paddingLeft: `${8 + bone.depth * 14}px`, background: selectedBoneId === bone.id ? "rgba(196,123,232,.22)" : "transparent", color: selectedBoneId === bone.id ? PURPLE : "#8aa0b4" }}
+                        className="w-full text-left py-1 rounded text-[11px] truncate transition-colors hover:bg-[#1e1a17]">
+                        {bone.name}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[10.5px] mt-2" style={{ color: selectedBoneId ? PURPLE : "#6a8098" }}>
+                    {selectedBoneId ? "Drag the gizmo to pose the selected bone" : "Click a bone (in the list or viewport) to select it"}
+                  </p>
+                </div>
+              )}
+
+              {editMode === "rig" && (
+                <div className="mt-2">
+                  <p className="text-[10.5px] mb-3" style={{ color: "#6a8098" }}>
+                    Click the mesh to place a joint (click again from a
+                    selected joint to chain the next one). To isolate a
+                    region for a joint to scale/rotate/move, paint it with
+                    the Mask brush first (Sculpt mode) — the same mask
+                    Extract/Detach use.
+                  </p>
+                  <p className="text-[10px] text-dim uppercase tracking-wide mb-1.5">Joints</p>
+                  {joints.length === 0 && (
+                    <p className="text-[10.5px]" style={{ color: "#4a4040" }}>No joints yet — click the mesh to place one.</p>
+                  )}
+                  <div className="max-h-60 overflow-y-auto space-y-0.5">
+                    {joints.map((joint) => (
+                      <div key={joint.id} className="flex items-center gap-1" style={{ paddingLeft: `${8 + joint.depth * 14}px` }}>
+                        {editingJointId === joint.id ? (
+                          <input
+                            autoFocus
+                            defaultValue={joint.name}
+                            onBlur={(e) => { handleRenameJoint(joint.entryId, joint.id, e.target.value.trim() || joint.name); setEditingJointId(null); }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                              if (e.key === "Escape") setEditingJointId(null);
+                            }}
+                            className="flex-1 py-1 px-1.5 rounded text-[11px] bg-[#1e1a17] text-ink outline-none"
+                            style={{ border: `1px solid ${PURPLE}` }}
+                          />
+                        ) : (
+                          <button
+                            onClick={() => handleSelectJoint(joint.entryId, joint.id === selectedJointId ? null : joint.id)}
+                            onDoubleClick={() => setEditingJointId(joint.id)}
+                            style={{ background: selectedJointId === joint.id ? "rgba(196,123,232,.22)" : "transparent", color: selectedJointId === joint.id ? PURPLE : "#8aa0b4" }}
+                            className="flex-1 text-left py-1 px-1.5 rounded text-[11px] truncate transition-colors hover:bg-[#1e1a17]"
+                            title="Click to select · Double-click to rename">
+                            {joint.name}
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleDeleteJoint(joint.entryId, joint.id)}
+                          title="Delete joint (children reparent up)"
+                          className="text-dim hover:text-red-400 transition-colors px-1">
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-[10.5px] mt-2" style={{ color: selectedJointId ? PURPLE : "#6a8098" }}>
+                    {selectedJointId ? "Drag the gizmo to reposition the joint, or transform the masked region around it" : "Click a joint (in the list or viewport) to select it"}
+                  </p>
                 </div>
               )}
             </>
@@ -984,11 +1218,7 @@ export default function MeshSculptClient() {
                   <div className="grid grid-cols-4 gap-1">
                     {PRIMITIVES.map(({ type, label, icon }) => (
                       <button key={type}
-                        onClick={() => {
-                          viewerHandleRef.current?.loadPrimitive(type);
-                          setSubdivLevel(0);
-                          setShowPrimitives(false);
-                        }}
+                        onClick={() => { void handleInsertPrimitive(type); }}
                         className="flex flex-col items-center gap-1 p-2 rounded-lg hover:bg-[#1e1a17] transition-colors">
                         <span className="text-[18px] leading-none font-bold" style={{ color: "#8aa0b4" }}>{icon}</span>
                         <span className="text-[9px] text-dim">{label}</span>
@@ -1139,6 +1369,8 @@ export default function MeshSculptClient() {
             onLoadError={setLoadError}
             onSelectionChange={setSelectionCount}
             onLoopPreview={handleLoopPreview}
+            onBoneSelect={setSelectedBoneId}
+            onJointSelect={handleJointSelectionChange}
             paintColor={paintColor}
             handleRef={viewerHandleRef}
           />

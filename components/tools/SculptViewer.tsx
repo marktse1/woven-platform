@@ -20,6 +20,7 @@ import { detectQuads, catmullClarkSubdivide } from "@/lib/sculpt/catmullclark";
 import { buildTopology, walkEdgeLoop, type MeshTopology, type EdgeLoop } from "@/lib/sculpt/topology";
 import { extrudeFaces as extrudeFacesLib, extrudeEdgeLoop as extrudeEdgeLoopLib, findGeometryIssues, type ExtrudeFace } from "@/lib/sculpt/extrude";
 import { buildMirrorData, type MirrorData } from "@/lib/sculpt/mirror";
+import { createBone, nextBoneName, renameBone as renameRigBone, deleteBone as deleteRigBone, type RigBone, type RigSkeleton } from "@/lib/sculpt/rig";
 import * as BufferGeometryUtils from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
 // Patch Three.js raycaster to use BVH acceleration
@@ -56,6 +57,26 @@ type SculptMeshEntry = {
   mask?: Float32Array;
   /** Vertex-color visualization of `mask` (lazily created alongside it) and the dedicated material that displays it — swapped in only while brush mode is "mask", swapped back out (via applyViewToGroup) otherwise, so the tint never leaks into any other view mode or export. */
   maskMat?: THREE.MeshStandardMaterial;
+  /** Present only if `mesh` is a real THREE.SkinnedMesh loaded from an
+   * externally-rigged GLB (e.g. AccuRIG) — confirmed directly (round-trip
+   * tested via GLTFExporter/GLTFLoader) that this codebase's existing
+   * import loop does NOT strip skinIndex/skinWeight/skeleton, so this is
+   * just a convenience reference to `(mesh as THREE.SkinnedMesh).skeleton`
+   * for the Pose-mode UI, not a new copy of anything. Undefined for plain
+   * (non-skinned) entries — sculpting/masking/etc. are entirely unaffected
+   * either way. */
+  skeleton?: THREE.Skeleton;
+  /** Snapshot of every bone's imported bind-pose local transform, keyed by
+   * bone.uuid (stable per-bone identity; names aren't guaranteed unique).
+   * Captured once at load time, before any posing edits — lets Reset Pose
+   * restore the original pose exactly rather than accumulating drift. */
+  bindPose?: Map<string, { position: THREE.Vector3; quaternion: THREE.Quaternion }>;
+  /** Manually-placed joint markers for Rig mode (lib/sculpt/rig.ts) —
+   * deliberately NOT the same thing as `skeleton` above: no skin weights,
+   * no scene-graph objects, just position markers used as pivots for
+   * mask-weighted region transforms. Lazily created on first joint
+   * placement, same "absent until used" convention as mask/topology/mirror. */
+  rig?: RigSkeleton;
 };
 
 // ── ZBrush-style extraction mask painting/visualization ──────────────────────
@@ -143,7 +164,7 @@ type PolyEditHit = {
   worldPoint: THREE.Vector3;
 };
 
-export type EditMode = "sculpt" | "poly_edit";
+export type EditMode = "sculpt" | "poly_edit" | "pose" | "rig";
 export type SelectMode = "vertex" | "edge" | "face";
 export type TransformMode = "translate" | "rotate" | "scale";
 /** Brush-radius vertex highlight density — "all" gets visually noisy on
@@ -358,6 +379,27 @@ export type SculptViewerHandle = {
   deleteEntry: (id: string) => { ok: boolean; reason?: string };
   /** Exports just one entry as its own .glb — hides every other entry for the duration of the export, then restores visibility. */
   exportEntryGlb: (id: string) => Promise<Uint8Array>;
+  /** Bones for a given entry's skeleton (empty if it has none — most
+   * entries won't, this is only populated for a real imported rig, e.g.
+   * an AccuRIG-exported GLB), depth-indented for the Pose-mode Bones list. */
+  getBones: (entryId: string) => Array<{ id: string; name: string; depth: number }>;
+  /** Attaches the pose gizmo to a bone by id (its THREE.Object3D uuid), or
+   * detaches it if boneId is null. */
+  selectBone: (entryId: string, boneId: string | null) => void;
+  /** Restores every bone in an entry's skeleton to its originally-imported
+   * bind pose (a no-op if the entry has no skeleton). */
+  resetPose: (entryId: string) => void;
+  /** Manually-placed Rig-mode joints for a given entry (empty until the
+   * user places one — most entries won't have any), depth-indented for
+   * the Rig-mode Bones list. Distinct from getBones above — these are
+   * plain pivot markers, not an imported skeleton. */
+  getJoints: (entryId: string) => Array<{ id: string; name: string; depth: number }>;
+  /** Attaches the rig gizmo to a joint by id, or detaches it if jointId is null. */
+  selectJoint: (entryId: string, jointId: string | null) => void;
+  renameJoint: (entryId: string, jointId: string, name: string) => void;
+  /** Removes a joint; its own children reparent to its parent (never
+   * deleted or orphaned) — mirrors lib/sculpt/rig.ts's deleteBone. */
+  deleteJoint: (entryId: string, jointId: string) => void;
 };
 
 export type ViewMode = "combined" | "clay" | "wireframe" | "albedo" | "ao";
@@ -509,6 +551,12 @@ type Props = {
    * ref during render (reading ref.current at render time isn't allowed
    * under this project's stricter React Compiler lint rules). */
   onLoopPreview?: (info: { edgeCount: number; boundary: boolean; closed: boolean } | null) => void;
+  /** Fired whenever pose-mode's selected bone changes (viewport click, or
+   * cleared on mode exit) — same "event, not polled ref" reasoning as
+   * onSelectionChange, so the Bones list panel can highlight the active row. */
+  onBoneSelect?: (boneId: string | null) => void;
+  /** Same as onBoneSelect, for Rig mode's manually-placed joints. */
+  onJointSelect?: (jointId: string | null) => void;
   handleRef?: React.RefObject<SculptViewerHandle | null>;
 };
 
@@ -534,6 +582,8 @@ export default function SculptViewer({
   onLoadError,
   onSelectionChange,
   onLoopPreview,
+  onBoneSelect,
+  onJointSelect,
   handleRef,
 }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null);
@@ -623,10 +673,14 @@ export default function SculptViewer({
   const onLoadErrorRef = useRef(onLoadError);
   const onSelectionChangeRef = useRef(onSelectionChange);
   const onLoopPreviewRef = useRef(onLoopPreview);
+  const onBoneSelectRef = useRef(onBoneSelect);
+  const onJointSelectRef = useRef(onJointSelect);
   useEffect(() => { onModelLoadedRef.current = onModelLoaded; }, [onModelLoaded]);
   useEffect(() => { onLoadErrorRef.current = onLoadError; }, [onLoadError]);
   useEffect(() => { onSelectionChangeRef.current = onSelectionChange; }, [onSelectionChange]);
   useEffect(() => { onLoopPreviewRef.current = onLoopPreview; }, [onLoopPreview]);
+  useEffect(() => { onBoneSelectRef.current = onBoneSelect; }, [onBoneSelect]);
+  useEffect(() => { onJointSelectRef.current = onJointSelect; }, [onJointSelect]);
 
   // ── poly-edit mode: selection state + transform gizmo ─────────────────────
   const editModeRef = useRef<EditMode>(editMode);
@@ -655,6 +709,50 @@ export default function SculptViewer({
   // face(s) after an extrude) rather than resolving it from a pointer hit.
   const setPolyEditSelectionRef = useRef<(entry: SculptMeshEntry, keys: string[]) => void>(() => {});
 
+  // ── pose mode: bone selection + rotate/translate gizmo ────────────────────
+  // A second, independent TransformControls instance — unlike poly-edit's
+  // gizmo (which needs a synthetic pivot since raw vertex indices aren't
+  // Object3Ds), this attaches DIRECTLY to the selected THREE.Bone, since a
+  // Bone already is a real Object3D in the scene graph. Dragging it mutates
+  // bone.position/quaternion via TransformControls' own standard attach()
+  // behavior — Three's renderer already calls skeleton.update() for any
+  // visible SkinnedMesh every frame (confirmed directly in
+  // WebGLObjects.js), so the mesh deforms live with no extra code here.
+  const poseTransformControlsRef = useRef<TransformControls | null>(null);
+  const poseTransformHelperRef = useRef<THREE.Object3D | null>(null);
+  const boneHandlesRef = useRef<THREE.Points | null>(null);
+  const boneLinksRef = useRef<THREE.LineSegments | null>(null);
+  const selectedBoneRef = useRef<THREE.Bone | null>(null);
+  const selectedBoneEntryRef = useRef<SculptMeshEntry | null>(null);
+  const updateBoneHandlesRef = useRef<() => void>(() => {});
+  const selectBoneRef = useRef<(entry: SculptMeshEntry | null, bone: THREE.Bone | null) => void>(() => {});
+  const resetPoseRef = useRef<(entry: SculptMeshEntry) => void>(() => {});
+  // Assigned in the scene-init effect (where boneHandleIndex lives) so the
+  // separate pointer-events effect below can resolve a click without a
+  // real raycast (bone handles are small points, not intersectable geometry).
+  const getBoneHitFromEventRef = useRef<(e: PointerEvent) => { entry: SculptMeshEntry; bone: THREE.Bone } | null>(() => null);
+
+  // ── rig mode: manual joint placement + mask-weighted pivot transform ──────
+  // Unlike Pose mode's gizmo (attaches directly to a real THREE.Bone), a
+  // RigBone is plain data, not a scene-graph object — this reuses
+  // poly-edit's OWN pattern instead (synthetic pivot Object3D + manual
+  // per-vertex copy), not Pose mode's. Its own TransformControls instance
+  // (not literally shared with poly-edit's) since poly-edit's
+  // beginGizmoDrag/applyGizmoDrag already carry real complexity
+  // (mirror-mode handling) that mask-weighted-blend logic shouldn't be
+  // mode-branched into.
+  const rigGizmoPivotRef = useRef<THREE.Object3D | null>(null);
+  const rigTransformControlsRef = useRef<TransformControls | null>(null);
+  const rigTransformHelperRef = useRef<THREE.Object3D | null>(null);
+  const jointHandlesRef = useRef<THREE.Points | null>(null);
+  const jointLinksRef = useRef<THREE.LineSegments | null>(null);
+  const selectedJointRef = useRef<RigBone | null>(null);
+  const selectedJointEntryRef = useRef<SculptMeshEntry | null>(null);
+  const updateJointHandlesRef = useRef<() => void>(() => {});
+  const selectJointRef = useRef<(entry: SculptMeshEntry | null, bone: RigBone | null) => void>(() => {});
+  const createJointAtRef = useRef<(entry: SculptMeshEntry, worldPos: THREE.Vector3) => void>(() => {});
+  const getJointHitFromEventRef = useRef<(e: PointerEvent) => { entry: SculptMeshEntry; bone: RigBone } | null>(() => null);
+
   useEffect(() => {
     editModeRef.current = editMode;
     if (editMode === "poly_edit") {
@@ -666,6 +764,20 @@ export default function SculptViewer({
     } else {
       clearPolyEditSelectionRef.current();
     }
+    if (editMode === "pose") {
+      updateBoneHandlesRef.current();
+    } else {
+      selectBoneRef.current(null, null);
+      if (boneHandlesRef.current) boneHandlesRef.current.visible = false;
+      if (boneLinksRef.current) boneLinksRef.current.visible = false;
+    }
+    if (editMode === "rig") {
+      updateJointHandlesRef.current();
+    } else {
+      selectJointRef.current(null, null);
+      if (jointHandlesRef.current) jointHandlesRef.current.visible = false;
+      if (jointLinksRef.current) jointLinksRef.current.visible = false;
+    }
   }, [editMode]);
   useEffect(() => {
     selectModeRef.current = selectMode;
@@ -676,6 +788,14 @@ export default function SculptViewer({
   useEffect(() => {
     transformModeRef.current = transformMode;
     transformControlsRef.current?.setMode(transformMode);
+    // Pose mode reuses the same translate/rotate/scale toggle poly-edit
+    // already exposes, rather than adding a parallel UI control — rotate
+    // is the primary posing gesture, translate/scale still available.
+    poseTransformControlsRef.current?.setMode(transformMode);
+    // Rig mode's pivot transform reuses it too — scale is the primary
+    // gesture there (per the reported use case), translate/rotate also
+    // available without a third parallel toggle.
+    rigTransformControlsRef.current?.setMode(transformMode);
   }, [transformMode]);
 
   // Material / view-mode refs
@@ -911,6 +1031,359 @@ export default function SculptViewer({
     transformControlsRef.current = transformControls;
     transformHelperRef.current = transformHelper;
 
+    // Pose-mode bone handles (small dots, one per bone across every
+    // skinned entry) + parent-child link lines, same visual convention as
+    // the poly-edit highlight overlays above (depthTest:false,
+    // renderOrder 999, purple accent so it reads as the same tool family).
+    const boneHandleGeo = new THREE.BufferGeometry();
+    boneHandleGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(0), 3));
+    const boneHandleMat = new THREE.PointsMaterial({
+      color: 0xc47be8, size: 8, sizeAttenuation: false, depthTest: false, transparent: true, opacity: 0.9,
+    });
+    const boneHandles = new THREE.Points(boneHandleGeo, boneHandleMat);
+    boneHandles.visible = false;
+    boneHandles.renderOrder = 999;
+    scene.add(boneHandles);
+    boneHandlesRef.current = boneHandles;
+
+    const boneLinkGeo = new THREE.BufferGeometry();
+    boneLinkGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(0), 3));
+    const boneLinkMat = new THREE.LineBasicMaterial({ color: 0xc47be8, depthTest: false, transparent: true, opacity: 0.6 });
+    const boneLinks = new THREE.LineSegments(boneLinkGeo, boneLinkMat);
+    boneLinks.visible = false;
+    boneLinks.renderOrder = 998;
+    scene.add(boneLinks);
+    boneLinksRef.current = boneLinks;
+
+    // Pose gizmo — attaches directly to the selected THREE.Bone (a real
+    // Object3D), unlike the poly-edit gizmo above which needs a synthetic
+    // pivot since raw vertex indices aren't objects. No manual per-vertex
+    // copying needed here: TransformControls' own attach() already writes
+    // straight to bone.position/quaternion.
+    const poseTransformControls = new TransformControls(camera, renderer.domElement);
+    poseTransformControls.setMode(transformModeRef.current);
+    poseTransformControls.enabled = false;
+    const poseTransformHelper = poseTransformControls.getHelper();
+    poseTransformHelper.visible = false;
+    scene.add(poseTransformHelper);
+    poseTransformControlsRef.current = poseTransformControls;
+    poseTransformHelperRef.current = poseTransformHelper;
+
+    poseTransformControls.addEventListener("dragging-changed", (event) => {
+      controls.enabled = !event.value;
+    });
+    poseTransformControls.addEventListener("objectChange", () => {
+      // Keep the handle dots/links following the bone live as it's dragged
+      // — cheap (bone counts are small), simplest way to keep the overlay
+      // from visibly lagging the actual pose.
+      updateBoneHandlesRef.current();
+    });
+
+    // World position of every bone across every skinned entry, in the same
+    // order as boneHandles' position buffer — lets pointer picking below
+    // map a clicked screen point back to (entry, bone) without a raycast
+    // (bone handles are tiny points, not real geometry to intersect).
+    let boneHandleIndex: { entry: SculptMeshEntry; bone: THREE.Bone }[] = [];
+
+    function updateBoneHandles() {
+      const handles = boneHandlesRef.current;
+      const links = boneLinksRef.current;
+      if (!handles || !links) return;
+      boneHandleIndex = [];
+      const positions: number[] = [];
+      const linkPositions: number[] = [];
+      const wp = new THREE.Vector3();
+      const parentWp = new THREE.Vector3();
+      for (const entry of meshEntriesRef.current) {
+        if (!entry.skeleton) continue;
+        for (const bone of entry.skeleton.bones) {
+          bone.getWorldPosition(wp);
+          boneHandleIndex.push({ entry, bone });
+          positions.push(wp.x, wp.y, wp.z);
+          const parent = bone.parent as THREE.Bone | null;
+          if (parent?.isBone) {
+            parent.getWorldPosition(parentWp);
+            linkPositions.push(parentWp.x, parentWp.y, parentWp.z, wp.x, wp.y, wp.z);
+          }
+        }
+      }
+      handles.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
+      handles.geometry.attributes.position.needsUpdate = true;
+      handles.geometry.computeBoundingSphere();
+      handles.visible = editModeRef.current === "pose" && positions.length > 0;
+
+      links.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(linkPositions), 3));
+      links.geometry.attributes.position.needsUpdate = true;
+      links.geometry.computeBoundingSphere();
+      links.visible = editModeRef.current === "pose" && linkPositions.length > 0;
+    }
+    updateBoneHandlesRef.current = updateBoneHandles;
+
+    function selectBone(entry: SculptMeshEntry | null, bone: THREE.Bone | null) {
+      selectedBoneEntryRef.current = entry;
+      selectedBoneRef.current = bone;
+      const tc = poseTransformControlsRef.current;
+      const helper = poseTransformHelperRef.current;
+      if (!tc) return;
+      if (!entry || !bone) {
+        tc.enabled = false;
+        if (helper) helper.visible = false;
+        tc.detach();
+      } else {
+        tc.attach(bone);
+        tc.enabled = true;
+        if (helper) helper.visible = true;
+      }
+      onBoneSelectRef.current?.(bone?.uuid ?? null);
+    }
+    selectBoneRef.current = selectBone;
+
+    function resetPose(entry: SculptMeshEntry) {
+      if (!entry.skeleton || !entry.bindPose) return;
+      for (const bone of entry.skeleton.bones) {
+        const orig = entry.bindPose.get(bone.uuid);
+        if (!orig) continue;
+        bone.position.copy(orig.position);
+        bone.quaternion.copy(orig.quaternion);
+      }
+      updateBoneHandles();
+    }
+    resetPoseRef.current = resetPose;
+
+    // Screen-space nearest-handle picking, same technique projectToScreen
+    // (below, for mesh vertices) uses, just for a world position directly
+    // since a Bone isn't a mesh vertex index.
+    function getBoneHitFromEvent(e: PointerEvent): { entry: SculptMeshEntry; bone: THREE.Bone } | null {
+      if (boneHandleIndex.length === 0) return null;
+      const rect = renderer.domElement.getBoundingClientRect();
+      let best: { entry: SculptMeshEntry; bone: THREE.Bone } | null = null;
+      let bestDist = 24; // px — generous enough for a small handle dot
+      const wp = new THREE.Vector3();
+      for (const { entry, bone } of boneHandleIndex) {
+        bone.getWorldPosition(wp);
+        wp.project(camera);
+        const sx = rect.left + (wp.x * 0.5 + 0.5) * rect.width;
+        const sy = rect.top + (-wp.y * 0.5 + 0.5) * rect.height;
+        const d = Math.hypot(sx - e.clientX, sy - e.clientY);
+        if (d < bestDist) { bestDist = d; best = { entry, bone }; }
+      }
+      return best;
+    }
+    getBoneHitFromEventRef.current = getBoneHitFromEvent;
+
+    // Rig-mode joint handles + links — same visual convention as Pose
+    // mode's bone handles, just plotting entry.rig?.bones (plain data)
+    // instead of entry.skeleton?.bones (real THREE.Bone objects).
+    const jointHandleGeo = new THREE.BufferGeometry();
+    jointHandleGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(0), 3));
+    const jointHandleMat = new THREE.PointsMaterial({
+      color: 0xc47be8, size: 8, sizeAttenuation: false, depthTest: false, transparent: true, opacity: 0.9,
+    });
+    const jointHandles = new THREE.Points(jointHandleGeo, jointHandleMat);
+    jointHandles.visible = false;
+    jointHandles.renderOrder = 999;
+    scene.add(jointHandles);
+    jointHandlesRef.current = jointHandles;
+
+    const jointLinkGeo = new THREE.BufferGeometry();
+    jointLinkGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(0), 3));
+    const jointLinkMat = new THREE.LineBasicMaterial({ color: 0xc47be8, depthTest: false, transparent: true, opacity: 0.6 });
+    const jointLinks = new THREE.LineSegments(jointLinkGeo, jointLinkMat);
+    jointLinks.visible = false;
+    jointLinks.renderOrder = 998;
+    scene.add(jointLinks);
+    jointLinksRef.current = jointLinks;
+
+    // Rig gizmo — synthetic pivot (poly-edit's own pattern; a RigBone is
+    // plain data, not a scene-graph object to .attach() to directly the
+    // way Pose mode's real THREE.Bone allows).
+    const rigGizmoPivot = new THREE.Object3D();
+    scene.add(rigGizmoPivot);
+    rigGizmoPivotRef.current = rigGizmoPivot;
+
+    const rigTransformControls = new TransformControls(camera, renderer.domElement);
+    rigTransformControls.setMode(transformModeRef.current);
+    rigTransformControls.enabled = false;
+    const rigTransformHelper = rigTransformControls.getHelper();
+    rigTransformHelper.visible = false;
+    scene.add(rigTransformHelper);
+    rigTransformControlsRef.current = rigTransformControls;
+    rigTransformHelperRef.current = rigTransformHelper;
+
+    // World position of every joint across every entry with a `rig`, in
+    // the same order as jointHandles' position buffer — same "resolve a
+    // click without a real raycast" reasoning as boneHandleIndex above
+    // (joint handles are small points, not intersectable geometry).
+    let jointHandleIndex: { entry: SculptMeshEntry; bone: RigBone }[] = [];
+
+    function updateJointHandles() {
+      const handles = jointHandlesRef.current;
+      const links = jointLinksRef.current;
+      if (!handles || !links) return;
+      jointHandleIndex = [];
+      const positions: number[] = [];
+      const linkPositions: number[] = [];
+      for (const entry of meshEntriesRef.current) {
+        if (!entry.rig) continue;
+        for (const bone of entry.rig.bones) {
+          jointHandleIndex.push({ entry, bone });
+          positions.push(bone.position[0], bone.position[1], bone.position[2]);
+          if (bone.parentId) {
+            const parent = entry.rig.bones.find((b) => b.id === bone.parentId);
+            if (parent) linkPositions.push(parent.position[0], parent.position[1], parent.position[2], bone.position[0], bone.position[1], bone.position[2]);
+          }
+        }
+      }
+      handles.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
+      handles.geometry.attributes.position.needsUpdate = true;
+      handles.geometry.computeBoundingSphere();
+      handles.visible = editModeRef.current === "rig" && positions.length > 0;
+
+      links.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(linkPositions), 3));
+      links.geometry.attributes.position.needsUpdate = true;
+      links.geometry.computeBoundingSphere();
+      links.visible = editModeRef.current === "rig" && linkPositions.length > 0;
+    }
+    updateJointHandlesRef.current = updateJointHandles;
+
+    function selectJoint(entry: SculptMeshEntry | null, bone: RigBone | null) {
+      selectedJointEntryRef.current = entry;
+      selectedJointRef.current = bone;
+      if (entry?.rig) entry.rig.selectedBoneId = bone?.id ?? null;
+      const tc = rigTransformControlsRef.current;
+      const pivot = rigGizmoPivotRef.current;
+      const helper = rigTransformHelperRef.current;
+      if (!tc || !pivot) return;
+      if (!entry || !bone) {
+        tc.enabled = false;
+        if (helper) helper.visible = false;
+        tc.detach();
+      } else {
+        pivot.position.set(bone.position[0], bone.position[1], bone.position[2]);
+        pivot.quaternion.identity();
+        pivot.scale.set(1, 1, 1);
+        pivot.updateMatrixWorld(true);
+        tc.attach(pivot);
+        tc.enabled = true;
+        if (helper) helper.visible = true;
+      }
+      onJointSelectRef.current?.(bone?.id ?? null);
+    }
+    selectJointRef.current = selectJoint;
+
+    // Click-to-chain joint placement — no joint selected -> new root at
+    // the raycast hit point; a joint selected -> new joint parented to
+    // it, which becomes selected, so repeated clicks build a hierarchy
+    // in one continuous gesture (same interaction shape as Maya's joint
+    // tool / Blender's bone-extrude).
+    function createJointAt(entry: SculptMeshEntry, worldPos: THREE.Vector3) {
+      if (!entry.rig) entry.rig = { bones: [], selectedBoneId: null };
+      const parentId = selectedJointEntryRef.current === entry ? (selectedJointRef.current?.id ?? null) : null;
+      const bone = createBone(nextBoneName(entry.rig), parentId, [worldPos.x, worldPos.y, worldPos.z]);
+      entry.rig.bones.push(bone);
+      updateJointHandles();
+      selectJoint(entry, bone);
+    }
+    createJointAtRef.current = createJointAt;
+
+    function getJointHitFromEvent(e: PointerEvent): { entry: SculptMeshEntry; bone: RigBone } | null {
+      if (jointHandleIndex.length === 0) return null;
+      const rect = renderer.domElement.getBoundingClientRect();
+      let best: { entry: SculptMeshEntry; bone: RigBone } | null = null;
+      let bestDist = 24; // px — generous enough for a small handle dot
+      const wp = new THREE.Vector3();
+      for (const { entry, bone } of jointHandleIndex) {
+        wp.set(bone.position[0], bone.position[1], bone.position[2]);
+        wp.project(camera);
+        const sx = rect.left + (wp.x * 0.5 + 0.5) * rect.width;
+        const sy = rect.top + (-wp.y * 0.5 + 0.5) * rect.height;
+        const d = Math.hypot(sx - e.clientX, sy - e.clientY);
+        if (d < bestDist) { bestDist = d; best = { entry, bone }; }
+      }
+      return best;
+    }
+    getJointHitFromEventRef.current = getJointHitFromEvent;
+
+    // Mask-weighted pivot transform — the actual "isolate + scale" tool.
+    // Dragging the rig gizmo does two independent things every frame:
+    // (1) keeps the joint's OWN stored position in sync with the pivot
+    // (a real move in translate mode; a no-op in rotate/scale, whose
+    // pivot position never changes) — a joint marker is meant to be
+    // repositionable via its own gizmo, not just at creation time; (2) if
+    // the entry has a painted mask, blends each masked vertex between its
+    // original world position and the fully-pivot-transformed one by
+    // its OWN mask weight (lerp, not a hard threshold) — mask=1 moves
+    // fully, mask=0.5 moves halfway, giving a soft ZBrush-Transpose-style
+    // falloff at the mask boundary for free, since the mask is already a
+    // continuous 0..1 field. Reuses SculptUndoStack (same as poly-edit's
+    // own gizmo drag) since this writes real geometry, unlike Pose mode.
+    let rigDragEntry: SculptMeshEntry | null = null;
+    let rigDragBone: RigBone | null = null;
+    let rigDragStartOffsets: Map<number, THREE.Vector3> | null = null;
+    let rigDragStartWorld: Map<number, THREE.Vector3> | null = null;
+    const _rigWp = new THREE.Vector3();
+    const _rigBlend = new THREE.Vector3();
+
+    function beginRigDrag() {
+      const entry = selectedJointEntryRef.current;
+      const bone = selectedJointRef.current;
+      const pivot = rigGizmoPivotRef.current;
+      if (!entry || !bone || !pivot) return;
+      undoRef.current.push(meshEntriesRef.current.map((e) => e.mesh));
+      rigDragEntry = entry;
+      rigDragBone = bone;
+      rigDragStartOffsets = new Map();
+      rigDragStartWorld = new Map();
+      resizeMaskToGeometry(entry); // guard against a mask left stale by subdivide/etc since it was painted
+      const mask = entry.mask;
+      if (mask) {
+        const pivotInv = pivot.matrixWorld.clone().invert();
+        const positions = entry.mesh.geometry.attributes.position as THREE.BufferAttribute;
+        for (let i = 0; i < positions.count; i++) {
+          if (!(mask[i] > 0)) continue;
+          _rigWp.fromBufferAttribute(positions, i).applyMatrix4(entry.mesh.matrixWorld);
+          rigDragStartWorld.set(i, _rigWp.clone());
+          rigDragStartOffsets.set(i, _rigWp.clone().applyMatrix4(pivotInv));
+        }
+      }
+    }
+
+    function applyRigDrag() {
+      const pivot = rigGizmoPivotRef.current;
+      if (!pivot || !rigDragBone) return;
+      rigDragBone.position = [pivot.position.x, pivot.position.y, pivot.position.z];
+      updateJointHandles();
+
+      if (!rigDragEntry || !rigDragStartOffsets || !rigDragStartWorld) return;
+      const mask = rigDragEntry.mask;
+      if (!mask) return;
+      const positions = rigDragEntry.mesh.geometry.attributes.position as THREE.BufferAttribute;
+      const invMesh = rigDragEntry.mesh.matrixWorld.clone().invert();
+      for (const [idx, offset] of rigDragStartOffsets) {
+        const original = rigDragStartWorld.get(idx)!;
+        _rigWp.copy(offset).applyMatrix4(pivot.matrixWorld);
+        _rigBlend.copy(original).lerp(_rigWp, mask[idx]);
+        _rigBlend.applyMatrix4(invMesh);
+        positions.setXYZ(idx, _rigBlend.x, _rigBlend.y, _rigBlend.z);
+      }
+      positions.needsUpdate = true;
+    }
+
+    function endRigDrag() {
+      rigDragEntry?.mesh.geometry.computeVertexNormals();
+      rigDragEntry = null;
+      rigDragBone = null;
+      rigDragStartOffsets = null;
+      rigDragStartWorld = null;
+    }
+
+    rigTransformControls.addEventListener("dragging-changed", (event) => {
+      controls.enabled = !event.value;
+      if (event.value) beginRigDrag();
+      else endRigDrag();
+    });
+    rigTransformControls.addEventListener("objectChange", applyRigDrag);
+
     // Per-vertex offsets (in the pivot's local space at drag start) —
     // recomputed fresh at the start of every drag, so it doesn't matter that
     // the pivot's own rotation/scale keep accumulating across drags (the
@@ -1061,6 +1534,8 @@ export default function SculptViewer({
     undoRef.current.clear();
     topoUndoRef.current.clear();
     clearPolyEditSelectionRef.current();
+    selectBoneRef.current(null, null);
+    selectJointRef.current(null, null);
 
     if (!glbData) return;
 
@@ -1136,7 +1611,22 @@ export default function SculptViewer({
         } catch { /* canvas context unavailable */ }
         const quadIndices = detectQuads(mesh.geometry);
         const entryName = mesh.name || (meshEntriesRef.current.length === 0 ? "Original" : `Mesh ${meshEntriesRef.current.length + 1}`);
-        meshEntriesRef.current.push({ id: crypto.randomUUID(), name: entryName, mesh, seams, baseEdgeLen, quadIndices, ...paintEntry });
+        // Rigged import (e.g. AccuRIG): confirmed directly that nothing
+        // above strips skinIndex/skinWeight/skeleton — GLTFLoader's own
+        // SkinnedMesh survives this loop untouched. Just keep a
+        // convenience reference for Pose mode, and snapshot the bind pose
+        // (before any posing edits) so Reset Pose has something to
+        // restore to.
+        let skeletonEntry: Partial<SculptMeshEntry> = {};
+        const skinned = mesh as THREE.SkinnedMesh;
+        if (skinned.isSkinnedMesh && skinned.skeleton) {
+          const bindPose = new Map<string, { position: THREE.Vector3; quaternion: THREE.Quaternion }>();
+          for (const bone of skinned.skeleton.bones) {
+            bindPose.set(bone.uuid, { position: bone.position.clone(), quaternion: bone.quaternion.clone() });
+          }
+          skeletonEntry = { skeleton: skinned.skeleton, bindPose };
+        }
+        meshEntriesRef.current.push({ id: crypto.randomUUID(), name: entryName, mesh, seams, baseEdgeLen, quadIndices, ...paintEntry, ...skeletonEntry });
         totalVerts += mesh.geometry.attributes.position.count;
 
         // Wireframe overlay — excluded from GLB export, hidden by default
@@ -1176,6 +1666,11 @@ export default function SculptViewer({
 
       // Apply whichever view mode is currently active
       applyViewToGroup(group, scene, viewModeRef.current, clayColorRef.current);
+
+      // Refresh pose-mode bone handles in case a new GLB loaded while
+      // already in pose mode (a no-op, correctly hidden, if it's not).
+      updateBoneHandlesRef.current();
+      updateJointHandlesRef.current();
 
       onModelLoadedRef.current?.(totalVerts);
     }, (err) => {
@@ -1675,6 +2170,10 @@ export default function SculptViewer({
     // orbit-camera drag (mousedown, drag, mouseup) doesn't also register as
     // a selection click — only a near-stationary down/up counts as a click.
     let polyEditDownPos: { x: number; y: number } | null = null;
+    // Same click-vs-drag tracking, for pose-mode bone selection.
+    let poseDownPos: { x: number; y: number } | null = null;
+    // Same, for rig-mode joint placement/selection.
+    let rigDownPos: { x: number; y: number } | null = null;
 
     function onPointerDown(e: PointerEvent) {
       // Widened for Ctrl+drag on macOS trackpads: "Secondary click -> Click
@@ -1686,6 +2185,16 @@ export default function SculptViewer({
       if (editModeRef.current === "poly_edit") {
         if (transformControlsRef.current?.dragging) return;
         polyEditDownPos = { x: e.clientX, y: e.clientY };
+        return;
+      }
+      if (editModeRef.current === "pose") {
+        if (poseTransformControlsRef.current?.dragging) return;
+        poseDownPos = { x: e.clientX, y: e.clientY };
+        return;
+      }
+      if (editModeRef.current === "rig") {
+        if (rigTransformControlsRef.current?.dragging) return;
+        rigDownPos = { x: e.clientX, y: e.clientY };
         return;
       }
       const hit = getHitFromEvent(e);
@@ -1740,6 +2249,8 @@ export default function SculptViewer({
 
     function onPointerMove(e: PointerEvent) {
       if (editModeRef.current === "poly_edit") return; // no hover preview in poly-edit this pass
+      if (editModeRef.current === "pose") return; // no hover preview in pose mode either
+      if (editModeRef.current === "rig") return; // no hover preview in rig mode either
 
       if (boxSelectActiveRef.current) {
         const start = boxSelectStartRef.current;
@@ -1787,6 +2298,35 @@ export default function SculptViewer({
         if (transformControlsRef.current?.dragging) return;
         if (!down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return;
         applyPolyEditSelection(getElementHitFromEvent(e), e.shiftKey);
+        return;
+      }
+      if (editModeRef.current === "pose") {
+        const down = poseDownPos;
+        poseDownPos = null;
+        if (poseTransformControlsRef.current?.dragging) return;
+        if (!down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return;
+        const hit = getBoneHitFromEventRef.current(e);
+        selectBoneRef.current(hit?.entry ?? null, hit?.bone ?? null);
+        return;
+      }
+      if (editModeRef.current === "rig") {
+        const down = rigDownPos;
+        rigDownPos = null;
+        if (rigTransformControlsRef.current?.dragging) return;
+        if (!down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return;
+        // Clicking an existing joint handle selects it; otherwise a mesh
+        // hit creates a new one there (chained to the selected joint, or
+        // a new root if none selected).
+        const jointHit = getJointHitFromEventRef.current(e);
+        if (jointHit) {
+          selectJointRef.current(jointHit.entry, jointHit.bone);
+          return;
+        }
+        const nearest = raycastMeshes(e);
+        if (nearest?.object) {
+          const entry = meshEntriesRef.current.find((en) => en.mesh === nearest.object);
+          if (entry) createJointAtRef.current(entry, nearest.point);
+        }
         return;
       }
       if (orbitDragActiveRef.current) {
@@ -2606,6 +3146,64 @@ export default function SculptViewer({
     if (entry) entry.mesh.visible = visible;
   }, []);
 
+  const getBones = useCallback((entryId: string): Array<{ id: string; name: string; depth: number }> => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    if (!entry?.skeleton) return [];
+    return entry.skeleton.bones.map((bone) => {
+      let depth = 0;
+      let p = bone.parent as THREE.Bone | null;
+      while (p?.isBone) { depth++; p = p.parent as THREE.Bone | null; }
+      return { id: bone.uuid, name: bone.name || "Bone", depth };
+    });
+  }, []);
+
+  const selectBoneById = useCallback((entryId: string, boneId: string | null) => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    if (!entry?.skeleton || !boneId) { selectBoneRef.current(null, null); return; }
+    const bone = entry.skeleton.bones.find((b) => b.uuid === boneId) ?? null;
+    selectBoneRef.current(bone ? entry : null, bone);
+  }, []);
+
+  const resetPose = useCallback((entryId: string) => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    if (entry) resetPoseRef.current(entry);
+  }, []);
+
+  const getJoints = useCallback((entryId: string): Array<{ id: string; name: string; depth: number }> => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    if (!entry?.rig) return [];
+    const rig = entry.rig;
+    return rig.bones.map((bone) => {
+      let depth = 0;
+      let parentId = bone.parentId;
+      while (parentId !== null) {
+        depth++;
+        parentId = rig.bones.find((b) => b.id === parentId)?.parentId ?? null;
+      }
+      return { id: bone.id, name: bone.name, depth };
+    });
+  }, []);
+
+  const selectJointById = useCallback((entryId: string, jointId: string | null) => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    if (!entry?.rig || !jointId) { selectJointRef.current(null, null); return; }
+    const bone = entry.rig.bones.find((b) => b.id === jointId) ?? null;
+    selectJointRef.current(bone ? entry : null, bone);
+  }, []);
+
+  const renameJoint = useCallback((entryId: string, jointId: string, name: string) => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    if (entry?.rig) renameRigBone(entry.rig, jointId, name);
+  }, []);
+
+  const deleteJoint = useCallback((entryId: string, jointId: string) => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    if (!entry?.rig) return;
+    deleteRigBone(entry.rig, jointId);
+    if (selectedJointRef.current?.id === jointId) selectJointRef.current(null, null);
+    updateJointHandlesRef.current();
+  }, []);
+
   const deleteEntry = useCallback((id: string): { ok: boolean; reason?: string } => {
     if (meshEntriesRef.current.length <= 1) {
       return { ok: false, reason: "Can't delete the last remaining mesh — use Clear instead." };
@@ -2614,6 +3212,8 @@ export default function SculptViewer({
     if (idx === -1) return { ok: false, reason: "Not found." };
     const [entry] = meshEntriesRef.current.splice(idx, 1);
     if (selectedEntryRef.current === entry) selectedEntryRef.current = null;
+    if (selectedBoneEntryRef.current === entry) selectBoneRef.current(null, null);
+    if (selectedJointEntryRef.current === entry) selectJointRef.current(null, null);
 
     modelRef.current?.remove(entry.mesh);
     entry.mesh.geometry.boundsTree = undefined;
@@ -2627,6 +3227,8 @@ export default function SculptViewer({
     wire?.geometry.dispose();
     originalMaterialsRef.current.delete(entry.mesh.uuid);
 
+    updateBoneHandlesRef.current();
+    updateJointHandlesRef.current();
     const totalVerts = meshEntriesRef.current.reduce((s, e) => s + e.mesh.geometry.attributes.position.count, 0);
     onModelLoadedRef.current?.(totalVerts);
     return { ok: true };
@@ -2654,9 +3256,11 @@ export default function SculptViewer({
         exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene,
         extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance,
         extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb,
+        getBones, selectBone: selectBoneById, resetPose,
+        getJoints, selectJoint: selectJointById, renameJoint, deleteJoint,
       };
     }
-  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance, extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb]);
+  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance, extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb, getBones, selectBoneById, resetPose, getJoints, selectJointById, renameJoint, deleteJoint]);
 
   return <div ref={mountRef} className="w-full h-full" style={{ touchAction: "none" }} />;
 }

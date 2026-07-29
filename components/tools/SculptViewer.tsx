@@ -2744,42 +2744,18 @@ export default function SculptViewer({
     // Nothing in this viewport relies on a native context menu.
     function onContextMenu(e: MouseEvent) { e.preventDefault(); }
 
-    // Trackpad two-finger swipe arrives as a `wheel` event with a nonzero
-    // deltaX (a real mouse wheel never reports one) — OrbitControls' own
-    // wheel handler (verified from its source) only ever reads deltaY, so
-    // a swipe's horizontal component is silently dropped and the whole
-    // gesture just zooms. Intercepting deltaX-bearing wheel events and
-    // calling pan() — OrbitControls' own public method, so no hand-rolled
-    // pan math needed — gives two-finger-swipe panning. Attached with
-    // { capture: true } on `mount` (an ancestor of OrbitControls' own
-    // listener target, renderer.domElement) so this always runs first,
-    // regardless of registration order, letting stopPropagation() reliably
-    // keep OrbitControls from also zooming on the same event; deltaX === 0
-    // (a real mouse wheel, or a perfectly vertical swipe — genuinely
-    // ambiguous either way) is left untouched to zoom exactly as before.
-    function onWheel(e: WheelEvent) {
-      const controls = controlsRef.current;
-      if (!controls || !controls.enabled) return;
-      if (e.deltaX === 0) return;
-      e.preventDefault();
-      e.stopPropagation();
-      controls.pan(e.deltaX, e.deltaY);
-    }
-
     const el = mount;
     el.addEventListener("pointerdown", onPointerDown);
     el.addEventListener("pointermove", onPointerMove);
     el.addEventListener("pointerup", onPointerUp);
     el.addEventListener("pointerleave", onPointerLeave);
     el.addEventListener("contextmenu", onContextMenu);
-    el.addEventListener("wheel", onWheel, { capture: true, passive: false });
     return () => {
       el.removeEventListener("pointerdown", onPointerDown);
       el.removeEventListener("pointermove", onPointerMove);
       el.removeEventListener("pointerup", onPointerUp);
       el.removeEventListener("pointerleave", onPointerLeave);
       el.removeEventListener("contextmenu", onContextMenu);
-      el.removeEventListener("wheel", onWheel, { capture: true });
       if (boxSelectOverlayRef.current) {
         boxSelectOverlayRef.current.remove();
         boxSelectOverlayRef.current = null;

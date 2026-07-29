@@ -681,9 +681,17 @@ export default function SculptViewer({
   const polyEditRegionStartRef = useRef<{ x: number; y: number } | null>(null);
   const polyEditRegionPathRef = useRef<Array<{ x: number; y: number }>>([]);
   const lassoOverlayRef = useRef<SVGSVGElement | null>(null);
-  /** Ctrl+drag starting in empty space (raycast miss): orbit as normal, then
-   * snap to the nearest orthographic view on release if Ctrl is still held. */
+  /** Plain (no-modifier) drag starting in empty space (raycast miss):
+   * OrbitControls handles it as a normal orbit rotate on its own. */
   const orbitDragActiveRef = useRef(false);
+  /** Shift+drag starting in empty space: OrbitControls hardcodes any
+   * ROTATE-mapped button as PAN the instant Shift (or Ctrl/Cmd) is held,
+   * with no way to override that through mouseButtons — so this drag is
+   * driven manually instead (disable OrbitControls, rotate by hand using
+   * its own spherical-math formula), then snaps to the nearest
+   * orthographic view on release. */
+  const shiftRotateActiveRef = useRef(false);
+  const shiftRotateLastRef = useRef<{ x: number; y: number } | null>(null);
   const dynTopoRef = useRef(false);
   useEffect(() => { dynTopoRef.current = dynTopo; }, [dynTopo]);
   const smoothSubdivideRef = useRef(true);
@@ -1000,16 +1008,16 @@ export default function SculptViewer({
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
-    // Default RIGHT=PAN silently breaks Ctrl+drag orbiting: macOS remaps
-    // Control+click to a synthetic button-2 (right-click) event before it
-    // reaches the browser (see the matching comment in onPointerDown
-    // below), and since this app deliberately leaves OrbitControls enabled
-    // for empty-space drags, it would see that button-2 event and pan the
-    // target instead of rotating — real, cumulative camera-target drift,
-    // not just a missed ortho-snap. Routing RIGHT to ROTATE too (same as
-    // LEFT) fixes that; MIDDLE takes over panning (it was DOLLY by
-    // default, redundant with scroll-wheel zoom).
-    controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
+    // RIGHT drags pan (matches this file's earlier convention of leaving
+    // Ctrl free for box/mask-select, ZBrush-style, rather than overloading
+    // it onto camera navigation). Note OrbitControls itself (see its own
+    // pointerdown handler) hardcodes "any button configured as ROTATE
+    // becomes PAN the instant Ctrl/Cmd/Shift is held" — independent of
+    // this config and NOT overridable through it — which is why Shift-
+    // triggered ortho-snap can't just be "a rotate with a modifier key"
+    // and is instead driven manually below (see the shiftRotateActiveRef
+    // block in onPointerDown/onPointerMove/onPointerUp).
+    controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
     controlsRef.current = controls;
 
     scene.add(new THREE.HemisphereLight(0xbcd4ff, 0x1a2230, 1.4));
@@ -2409,9 +2417,15 @@ export default function SculptViewer({
         // default click-to-select — same Ctrl+drag convention Mask mode's
         // box-select already uses, so this isn't a new modifier meaning.
         if (e.ctrlKey && polyEditSelectToolRef.current !== "click") {
+          // Must own the drag exclusively, same as the shared sculpt/mask
+          // stroke path does — without disabling OrbitControls here, its
+          // own separate pointer listener keeps rotating the camera on the
+          // very same drag at the same time this reads it as a selection.
           polyEditRegionActiveRef.current = true;
           polyEditRegionStartRef.current = { x: e.clientX, y: e.clientY };
           polyEditRegionPathRef.current = [{ x: e.clientX, y: e.clientY }];
+          controlsRef.current!.enabled = false;
+          mount.setPointerCapture(e.pointerId);
           if (polyEditSelectToolRef.current === "box") updateBoxOverlay(e.clientX, e.clientY, e.clientX, e.clientY);
           else updateLassoOverlay(polyEditRegionPathRef.current);
           return;
@@ -2431,10 +2445,17 @@ export default function SculptViewer({
       }
       const hit = getHitFromEvent(e);
       if (!hit) {
+        if (e.shiftKey) {
+          // See shiftRotateActiveRef's declaration for why this can't just
+          // be "a normal OrbitControls rotate with Shift held."
+          shiftRotateActiveRef.current = true;
+          shiftRotateLastRef.current = { x: e.clientX, y: e.clientY };
+          controlsRef.current!.enabled = false;
+          mount.setPointerCapture(e.pointerId);
+          return;
+        }
         // Raycast missed everything — OrbitControls handles this drag as a
-        // normal orbit rotate on its own; just remember Ctrl might turn it
-        // into an ortho-snap on release (checked there, not here, since
-        // Ctrl could be pressed/released mid-drag).
+        // normal orbit rotate on its own.
         orbitDragActiveRef.current = true;
         return;
       }
@@ -2501,6 +2522,30 @@ export default function SculptViewer({
         return;
       }
 
+      if (shiftRotateActiveRef.current) {
+        const last = shiftRotateLastRef.current;
+        const camera = cameraRef.current;
+        const controls = controlsRef.current;
+        if (last && camera && controls) {
+          const dx = e.clientX - last.x;
+          const dy = e.clientY - last.y;
+          const height = renderer!.domElement.clientHeight;
+          const offset = camera.position.clone().sub(controls.target);
+          const spherical = new THREE.Spherical().setFromVector3(offset);
+          const twoPI = Math.PI * 2;
+          // Same formula OrbitControls' own _handleMouseMoveRotate uses —
+          // "yes, height" for both axes is intentional (its own comment),
+          // not a copy-paste slip.
+          spherical.theta -= (twoPI * dx / height) * controls.rotateSpeed;
+          spherical.phi -= (twoPI * dy / height) * controls.rotateSpeed;
+          spherical.phi = THREE.MathUtils.clamp(spherical.phi, 0.02, Math.PI - 0.02);
+          camera.position.copy(controls.target).add(new THREE.Vector3().setFromSpherical(spherical));
+          camera.lookAt(controls.target);
+          shiftRotateLastRef.current = { x: e.clientX, y: e.clientY };
+        }
+        return;
+      }
+
       const hit = getHitFromEvent(e);
       updateIndicator(hit);
       updateHighlightPoints(hit);
@@ -2561,6 +2606,8 @@ export default function SculptViewer({
           }
           polyEditRegionStartRef.current = null;
           polyEditRegionPathRef.current = [];
+          controlsRef.current!.enabled = true;
+          mount.releasePointerCapture(e.pointerId);
           return;
         }
         const down = polyEditDownPos;
@@ -2599,9 +2646,20 @@ export default function SculptViewer({
         }
         return;
       }
+      if (shiftRotateActiveRef.current) {
+        shiftRotateActiveRef.current = false;
+        shiftRotateLastRef.current = null;
+        controlsRef.current!.enabled = true;
+        mount.releasePointerCapture(e.pointerId);
+        // Committed to "this is a snap-seeking rotate" the moment the drag
+        // started with Shift held — snap regardless of whether Shift is
+        // still down at this exact instant.
+        maybeSnapToOrthoView();
+        return;
+      }
+
       if (orbitDragActiveRef.current) {
         orbitDragActiveRef.current = false;
-        if (e.ctrlKey || e.shiftKey) maybeSnapToOrthoView();
       }
 
       const wasBoxSelect = boxSelectActiveRef.current;
@@ -2686,18 +2744,42 @@ export default function SculptViewer({
     // Nothing in this viewport relies on a native context menu.
     function onContextMenu(e: MouseEvent) { e.preventDefault(); }
 
+    // Trackpad two-finger swipe arrives as a `wheel` event with a nonzero
+    // deltaX (a real mouse wheel never reports one) — OrbitControls' own
+    // wheel handler (verified from its source) only ever reads deltaY, so
+    // a swipe's horizontal component is silently dropped and the whole
+    // gesture just zooms. Intercepting deltaX-bearing wheel events and
+    // calling pan() — OrbitControls' own public method, so no hand-rolled
+    // pan math needed — gives two-finger-swipe panning. Attached with
+    // { capture: true } on `mount` (an ancestor of OrbitControls' own
+    // listener target, renderer.domElement) so this always runs first,
+    // regardless of registration order, letting stopPropagation() reliably
+    // keep OrbitControls from also zooming on the same event; deltaX === 0
+    // (a real mouse wheel, or a perfectly vertical swipe — genuinely
+    // ambiguous either way) is left untouched to zoom exactly as before.
+    function onWheel(e: WheelEvent) {
+      const controls = controlsRef.current;
+      if (!controls || !controls.enabled) return;
+      if (e.deltaX === 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      controls.pan(e.deltaX, e.deltaY);
+    }
+
     const el = mount;
     el.addEventListener("pointerdown", onPointerDown);
     el.addEventListener("pointermove", onPointerMove);
     el.addEventListener("pointerup", onPointerUp);
     el.addEventListener("pointerleave", onPointerLeave);
     el.addEventListener("contextmenu", onContextMenu);
+    el.addEventListener("wheel", onWheel, { capture: true, passive: false });
     return () => {
       el.removeEventListener("pointerdown", onPointerDown);
       el.removeEventListener("pointermove", onPointerMove);
       el.removeEventListener("pointerup", onPointerUp);
       el.removeEventListener("pointerleave", onPointerLeave);
       el.removeEventListener("contextmenu", onContextMenu);
+      el.removeEventListener("wheel", onWheel, { capture: true });
       if (boxSelectOverlayRef.current) {
         boxSelectOverlayRef.current.remove();
         boxSelectOverlayRef.current = null;

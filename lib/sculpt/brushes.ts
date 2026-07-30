@@ -435,24 +435,19 @@ export function applyMaskDab(
 
 const _boxWp = new THREE.Vector3();
 const _boxNdc = new THREE.Vector3();
-const _boxWn = new THREE.Vector3();
-const _boxToCam = new THREE.Vector3();
-const _boxCamPos = new THREE.Vector3();
-const _boxNormalMat = new THREE.Matrix3();
 
 /**
  * Every vertex whose screen-space projection satisfies `inRegion(ndcX,
- * ndcY)` AND faces toward the camera — shared core for any drag-region
- * select (box, lasso, ...): pass a rectangle test for one, a
- * point-in-polygon test for the other. The front-facing check is a
- * simple normal/view-direction dot product, not a real occlusion/raycast
- * test — a region drawn over a visible bump can also gather a
- * simultaneously front-facing patch on a concave far side of the same
- * mesh. Accepted tradeoff for the common case (roughly convex panels
- * like vehicle doors/wheels); a real occlusion test would need a BVH
- * raycast per candidate vertex. Returns raw (non seam-expanded) vertex
- * indices — callers decide whether/how to expand through seams, since
- * mask-painting and poly-edit selection need that at different points.
+ * ndcY)` and lies within the camera's near/far range — shared core for
+ * any drag-region select (box, lasso, ...): pass a rectangle test for
+ * one, a point-in-polygon test for the other. Deliberately "select
+ * through": no facing/occlusion test at all, so a region drawn around a
+ * visible feature also grabs vertices on the far side of the mesh that
+ * project into the same screen-space area — a real occlusion test would
+ * need a BVH raycast per candidate vertex, and isn't what's wanted here.
+ * Returns raw (non seam-expanded) vertex indices — callers decide
+ * whether/how to expand through seams, since mask-painting and poly-edit
+ * selection need that at different points.
  */
 export function gatherVerticesInRegion(
   mesh: THREE.Mesh,
@@ -460,11 +455,8 @@ export function gatherVerticesInRegion(
   inRegion: (ndcX: number, ndcY: number) => boolean,
 ): number[] {
   const positions = mesh.geometry.attributes.position as THREE.BufferAttribute;
-  const normals = mesh.geometry.attributes.normal as THREE.BufferAttribute | undefined;
   const matWorld = mesh.matrixWorld;
-  _boxNormalMat.getNormalMatrix(matWorld);
   camera.updateMatrixWorld();
-  _boxCamPos.setFromMatrixPosition(camera.matrixWorld);
 
   const gathered: number[] = [];
   for (let i = 0; i < positions.count; i++) {
@@ -472,11 +464,6 @@ export function gatherVerticesInRegion(
     _boxNdc.copy(_boxWp).project(camera);
     if (_boxNdc.z < -1 || _boxNdc.z > 1) continue;
     if (!inRegion(_boxNdc.x, _boxNdc.y)) continue;
-    if (normals) {
-      _boxWn.fromBufferAttribute(normals, i).applyMatrix3(_boxNormalMat).normalize();
-      _boxToCam.copy(_boxCamPos).sub(_boxWp).normalize();
-      if (_boxWn.dot(_boxToCam) <= 0) continue; // back-facing — skip
-    }
     gathered.push(i);
   }
   return gathered;
@@ -499,8 +486,9 @@ export function pointInPolygon(x: number, y: number, path: Array<{ x: number; y:
 
 /**
  * Box-select masking: every vertex whose screen projection falls inside
- * [ndcMin, ndcMax] AND faces toward the camera gets masked (or erased),
- * binary — no radial falloff, unlike the freehand dab above.
+ * [ndcMin, ndcMax] gets masked (or erased), front or back of the mesh
+ * (see gatherVerticesInRegion), binary — no radial falloff, unlike the
+ * freehand dab above.
  */
 export function applyMaskBox(
   mask: Float32Array,

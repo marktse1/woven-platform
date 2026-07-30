@@ -161,6 +161,7 @@ export default function MeshSculptClient() {
   const [maskThreshold, setMaskThreshold] = useState(0.5);
   const [maskThickness, setMaskThickness] = useState(0.1);
   const [extractMsg, setExtractMsg] = useState("");
+  const [conformMsg, setConformMsg] = useState("");
   const [submeshes, setSubmeshes] = useState<Array<{ id: string; name: string; visible: boolean; vertexCount: number }>>([]);
   const [submeshSaving, setSubmeshSaving] = useState<string | null>(null);
 
@@ -330,6 +331,37 @@ export default function MeshSculptClient() {
       setLoadError(e instanceof Error ? e.message : "Failed to load file.");
     } finally { setLoadingAsset(false); }
   }, [user?.id, notifyAssetsChanged, uploadAndMaybeCompress]);
+
+  // "Conform to Reference" — OBJ-only (the realistic export format for a
+  // ZBrush subdivision level), deliberately a separate, dedicated file
+  // picker rather than reusing handleLocalFile's drop-zone path, since that
+  // path always *replaces* the whole mesh — the far more common action —
+  // and folding an implicit "replace vs. conform" choice into it would slow
+  // down and risk that common case. Reuses the exact same OBJLoader-parsing
+  // logic handleLocalFile's .obj branch already uses.
+  const conformFileInputRef = useRef<HTMLInputElement | null>(null);
+  const handleConformFile = useCallback(async (file: File) => {
+    setConformMsg("");
+    setLoadError("");
+    try {
+      const { OBJLoader } = await import("three/examples/jsm/loaders/OBJLoader.js");
+      const BGU = await import("three/examples/jsm/utils/BufferGeometryUtils.js");
+      const text = await file.text();
+      const group = new OBJLoader().parse(text);
+      const geos: THREE.BufferGeometry[] = [];
+      group.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.isMesh && m.geometry) geos.push(m.geometry);
+      });
+      if (geos.length === 0) throw new Error("OBJ contains no mesh geometry.");
+      const merged = geos.length === 1 ? geos[0] : BGU.mergeGeometries(geos, false);
+      viewerHandleRef.current?.conformToReference(merged);
+      setConformMsg(`Conformed to ${file.name}.`);
+      setTimeout(() => setConformMsg(""), 3000);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "Failed to conform to reference.");
+    }
+  }, []);
 
   const clearWorkspace = useCallback(() => {
     viewerHandleRef.current?.clearScene();
@@ -1086,6 +1118,25 @@ export default function MeshSculptClient() {
               title="Globally redistribute triangles to even edge density">
               Remesh
             </button>
+            <input
+              ref={conformFileInputRef}
+              type="file"
+              accept=".obj"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) void handleConformFile(file);
+                e.target.value = "";
+              }}
+            />
+            <button
+              onClick={() => conformFileInputRef.current?.click()}
+              disabled={vertexCount == null}
+              className="w-full py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed mt-1"
+              title="Wrap the current mesh onto the surface of a reference OBJ (e.g. a ZBrush export at a different subdivision level) — position-only, doesn't need matching topology">
+              Conform to Reference…
+            </button>
+            {conformMsg && <p className="text-[10px] mt-1 text-green-400">{conformMsg}</p>}
             {(vertexCount ?? 0) > 1_000_000 && (
               <p className="text-[10px] text-amber-400 mt-1">Approaching limit — save before subdividing further</p>
             )}

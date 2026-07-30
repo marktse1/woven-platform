@@ -21,6 +21,7 @@ import { buildTopology, walkEdgeLoop, type MeshTopology, type EdgeLoop } from "@
 import { extrudeFaces as extrudeFacesLib, extrudeEdgeLoop as extrudeEdgeLoopLib, findGeometryIssues, type ExtrudeFace } from "@/lib/sculpt/extrude";
 import { buildMirrorData, type MirrorData } from "@/lib/sculpt/mirror";
 import { createBone, nextBoneName, renameBone as renameRigBone, deleteBone as deleteRigBone, type RigBone, type RigSkeleton } from "@/lib/sculpt/rig";
+import { conformToReference as conformMeshToReference } from "@/lib/sculpt/conform";
 import * as BufferGeometryUtils from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
 // Patch Three.js raycaster to use BVH acceleration
@@ -433,6 +434,9 @@ export type SculptViewerHandle = {
   /** Re-frames the camera on the currently-selected mesh/submesh, or the
    * whole scene if nothing's selected. */
   recenterView: () => void;
+  /** Wraps the selected entry (or every entry, if none selected) onto the
+   * surface of `referenceGeometry` — see lib/sculpt/conform.ts. */
+  conformToReference: (referenceGeometry: THREE.BufferGeometry) => void;
   /** Switches between Perspective and Orthographic camera projection,
    * matching apparent size at the moment of the switch. */
   toggleProjection: () => void;
@@ -3120,6 +3124,30 @@ export default function SculptViewer({
     onModelLoadedRef.current?.(totalVerts);
   }, []);
 
+  // "Conform to Reference" — the practical stand-in for a literal
+  // ZBrush-style per-subdivision-level Import, which needs an exact
+  // vertex-count/order match this codebase has no way to guarantee against
+  // an externally-authored OBJ (see lib/sculpt/conform.ts's own header for
+  // the full reasoning). Applies to the selected entry if one is selected,
+  // otherwise every entry — same convention recenterView already uses.
+  // Position-only change (topology/vertex count untouched), so this is
+  // treated like a giant brush stroke: pushes an undo snapshot rather than
+  // clearing it, rebuilds only the BVH (stale after the position change),
+  // and deliberately doesn't touch seams (still valid — every vertex in a
+  // seam group is moved to the exact same target together, so they still
+  // coincide) or the wireframe overlay (topology-driven, unaffected).
+  const conformToReference = useCallback((referenceGeometry: THREE.BufferGeometry) => {
+    const entries = meshEntriesRef.current;
+    if (entries.length === 0) return;
+    const targets = selectedEntryRef.current ? [selectedEntryRef.current] : entries;
+    undoRef.current.push(entries.map((e) => e.mesh));
+    for (const entry of targets) {
+      conformMeshToReference(entry.mesh, entry.seams, referenceGeometry);
+      entry.mesh.geometry.boundsTree = new MeshBVH(entry.mesh.geometry);
+    }
+    onModelLoadedRef.current?.(entries.reduce((s, e) => s + e.mesh.geometry.attributes.position.count, 0));
+  }, []);
+
   const loadPrimitive = useCallback((type: PrimitiveType) => {
     const scene   = sceneRef.current;
     const camera  = cameraRef.current;
@@ -3591,11 +3619,11 @@ export default function SculptViewer({
         exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene,
         extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance,
         extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb,
-        getBones, selectBone: selectBoneById, resetPose, recenterView, toggleProjection,
+        getBones, selectBone: selectBoneById, resetPose, recenterView, toggleProjection, conformToReference,
         getJoints, selectJoint: selectJointById, renameJoint, deleteJoint,
       };
     }
-  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance, extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb, getBones, selectBoneById, resetPose, recenterView, toggleProjection, getJoints, selectJointById, renameJoint, deleteJoint]);
+  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance, extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb, getBones, selectBoneById, resetPose, recenterView, toggleProjection, conformToReference, getJoints, selectJointById, renameJoint, deleteJoint]);
 
   return <div ref={mountRef} className="w-full h-full" style={{ touchAction: "none" }} />;
 }

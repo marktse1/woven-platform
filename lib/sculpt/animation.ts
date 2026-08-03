@@ -31,11 +31,31 @@ export type BoneChannel = {
 export type AnimationClipData = {
   id: string;
   name: string;
-  /** Seconds. Derived from the latest key across all channels — see
-   * recomputeDuration. */
+  /** Seconds — the canonical stored unit (matches glTF/three.js
+   * KeyframeTrack). Explicitly user-set via setClipLength, NOT derived
+   * from the latest keyframe — the timeline has a fixed, author-chosen
+   * length you place keyframes within, the standard DCC-tool model
+   * (Maya's Time Slider, etc.), not one that grows to fit whatever you
+   * happened to key. */
   duration: number;
+  /** Frames-per-second used only to convert `duration`/key times to/from
+   * the frame numbers the timeline UI displays — user-selectable among
+   * 24/30/60. Purely a display/authoring convenience; every stored time
+   * value stays in seconds regardless of this setting. */
+  frameRate: number;
   channels: BoneChannel[];
 };
+
+export const DEFAULT_FRAME_RATE = 30;
+export const DEFAULT_FRAME_COUNT = 48;
+
+export function frameToTime(frame: number, frameRate: number): number {
+  return frame / frameRate;
+}
+
+export function timeToFrame(time: number, frameRate: number): number {
+  return Math.round(time * frameRate);
+}
 
 export type IKChain = {
   id: string;
@@ -73,12 +93,36 @@ export function createClip(state: PoseAnimationState, name?: string): AnimationC
   const clip: AnimationClipData = {
     id: crypto.randomUUID(),
     name: name ?? nextClipName(state),
-    duration: 0,
+    duration: frameToTime(DEFAULT_FRAME_COUNT, DEFAULT_FRAME_RATE),
+    frameRate: DEFAULT_FRAME_RATE,
     channels: [],
   };
   state.clips.push(clip);
   if (state.activeClipId === null) state.activeClipId = clip.id;
   return clip;
+}
+
+/** Explicitly sets a clip's total length and frame rate — the timeline's
+ * length is author-chosen, not implicitly derived from keyframes (see
+ * AnimationClipData.duration). Doesn't delete any keys that fall outside
+ * the new (possibly shorter) range — they're just not reachable via the
+ * shortened timeline until the length is extended again. */
+export function setClipLength(clip: AnimationClipData, frameCount: number, frameRate: number): void {
+  clip.frameRate = frameRate;
+  clip.duration = frameToTime(frameCount, frameRate);
+}
+
+/** Sorted, de-duplicated union of every channel's key times — a
+ * whole-pose insert keys every channel at the same time, so this is
+ * exactly "the frames that have a keyframe marker" for the timeline UI. */
+export function getKeyframeTimes(clip: AnimationClipData): number[] {
+  const EPS = 1 / 120;
+  const times = Array.from(new Set(clip.channels.flatMap((ch) => ch.keys.map((k) => k.time)))).sort((a, b) => a - b);
+  const out: number[] = [];
+  for (const t of times) {
+    if (out.length === 0 || t - out[out.length - 1] >= EPS) out.push(t);
+  }
+  return out;
 }
 
 export function findClip(state: PoseAnimationState, id: string): AnimationClipData | undefined {
@@ -97,6 +141,7 @@ export function duplicateClip(state: PoseAnimationState, id: string): AnimationC
     id: crypto.randomUUID(),
     name: nextClipName(state),
     duration: src.duration,
+    frameRate: src.frameRate,
     channels: src.channels.map((ch) => ({ ...ch, keys: ch.keys.map((k) => ({ ...k })) })),
   };
   state.clips.push(copy);
@@ -111,14 +156,6 @@ export function deleteClip(state: PoseAnimationState, id: string): void {
   if (state.activeClipId === id) {
     state.activeClipId = state.clips[0]?.id ?? null;
   }
-}
-
-function recomputeDuration(clip: AnimationClipData): void {
-  let max = 0;
-  for (const ch of clip.channels) {
-    for (const k of ch.keys) if (k.time > max) max = k.time;
-  }
-  clip.duration = max;
 }
 
 function findOrCreateChannel(clip: AnimationClipData, boneName: string, property: BoneProperty): BoneChannel {
@@ -146,13 +183,16 @@ function insertKey(channel: BoneChannel, key: BoneCurveKey): void {
 /** One whole-pose snapshot: every posed bone's current transform, keyed
  * into `clip` at `time` in one call — the standard animation-authoring
  * workflow (pose the character, insert a keyframe), not a per-bone
- * insert. Flat (0) tangents on new keys until the curve editor reshapes
- * them. */
+ * insert. `time` is clamped to [0, clip.duration] — the clip's length is
+ * fixed/author-chosen (see AnimationClipData.duration), not something a
+ * keyframe insert grows. Flat (0) tangents on new keys until the curve
+ * editor reshapes them. */
 export function insertWholePoseKeyframe(
   clip: AnimationClipData,
   time: number,
   bones: Array<{ boneName: string; position: [number, number, number]; quaternion: [number, number, number, number] }>,
 ): void {
+  const t = Math.max(0, Math.min(time, clip.duration));
   for (const b of bones) {
     const values: Array<[BoneProperty, number]> = [
       ["position.x", b.position[0]], ["position.y", b.position[1]], ["position.z", b.position[2]],
@@ -161,10 +201,9 @@ export function insertWholePoseKeyframe(
     ];
     for (const [property, value] of values) {
       const channel = findOrCreateChannel(clip, b.boneName, property);
-      insertKey(channel, { time, value, inTangent: 0, outTangent: 0 });
+      insertKey(channel, { time: t, value, inTangent: 0, outTangent: 0 });
     }
   }
-  recomputeDuration(clip);
 }
 
 /** Linearly samples a channel at `time`, clamping to the first/last key
@@ -197,5 +236,4 @@ export function removeKeyframeAtTime(clip: AnimationClipData, time: number): voi
     ch.keys = ch.keys.filter((k) => Math.abs(k.time - time) >= EPS);
   }
   clip.channels = clip.channels.filter((ch) => ch.keys.length > 0);
-  recomputeDuration(clip);
 }

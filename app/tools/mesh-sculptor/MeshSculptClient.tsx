@@ -206,6 +206,11 @@ export default function MeshSculptClient() {
   const [poseTime, setPoseTimeState] = useState(0);
   const [poseDuration, setPoseDuration] = useState(0);
   const [posePlaying, setPosePlayingState] = useState(false);
+  const [poseFrameRate, setPoseFrameRate] = useState(30);
+  /** Frame numbers (not seconds) with a keyframe marker on the active
+   * clip — refreshed alongside poseClips, not an onPoseTimeChange event
+   * (keyframe placement doesn't change every frame during playback). */
+  const [poseKeyframeFrames, setPoseKeyframeFrames] = useState<number[]>([]);
 
   // Rig mode: manually-placed joints (lib/sculpt/rig.ts) — distinct from
   // `bones` above (an imported skeleton). Starts empty on every mesh;
@@ -528,10 +533,11 @@ export default function MeshSculptClient() {
   const refreshPoseClips = useCallback(() => {
     const handle = viewerHandleRef.current;
     const entryId = primaryPoseEntryId();
-    if (!handle || !entryId) { setPoseClips([]); setActiveClipId(null); return; }
+    if (!handle || !entryId) { setPoseClips([]); setActiveClipId(null); setPoseKeyframeFrames([]); return; }
     setPoseClips(handle.getClips(entryId));
     setActiveClipId(handle.getActiveClipId(entryId));
-  }, [primaryPoseEntryId]);
+    setPoseKeyframeFrames(handle.getKeyframeTimes(entryId).map((t) => Math.round(t * poseFrameRate)));
+  }, [primaryPoseEntryId, poseFrameRate]);
 
   // Re-derive whenever `bones` changes (a new skinned entry loaded, or an
   // existing one's bones refreshed) rather than trying to call this
@@ -550,10 +556,11 @@ export default function MeshSculptClient() {
   // SculptViewer.tsx's onPoseTimeChange — fired every frame during
   // playback plus once on any scrub/keyframe/clip-switch, so this is
   // the sole source of truth for time/duration/playing (never polled).
-  const handlePoseTimeChange = useCallback((_entryId: string, time: number, duration: number, playing: boolean) => {
+  const handlePoseTimeChange = useCallback((_entryId: string, time: number, duration: number, playing: boolean, frameRate: number) => {
     setPoseTimeState(time);
     setPoseDuration(duration);
     setPosePlayingState(playing);
+    setPoseFrameRate(frameRate);
   }, []);
 
   const handleInsertKeyframe = useCallback(() => {
@@ -575,10 +582,33 @@ export default function MeshSculptClient() {
     if (entryId) viewerHandleRef.current?.setPoseTime(entryId, time);
   }, [primaryPoseEntryId]);
 
+  // The timeline UI is frame-based (per the user's "Maya-style, set the
+  // frame count, keyframes are markers on the timeline" direction) —
+  // seconds stay the canonical stored unit, frames are just this
+  // conversion layer for scrubbing/display.
+  const handleScrubFrame = useCallback((frame: number) => {
+    handleScrub(frame / poseFrameRate);
+  }, [handleScrub, poseFrameRate]);
+
   const handleTogglePlay = useCallback(() => {
     const entryId = primaryPoseEntryId();
     if (entryId) viewerHandleRef.current?.setPosePlaying(entryId, !posePlaying);
   }, [primaryPoseEntryId, posePlaying]);
+
+  const handleSetFrameCount = useCallback((frameCount: number) => {
+    const entryId = primaryPoseEntryId();
+    if (!entryId || !Number.isFinite(frameCount) || frameCount < 1) return;
+    viewerHandleRef.current?.setClipLength(entryId, Math.round(frameCount), poseFrameRate);
+    refreshPoseClips();
+  }, [primaryPoseEntryId, poseFrameRate, refreshPoseClips]);
+
+  const handleSetFrameRate = useCallback((fps: number) => {
+    const entryId = primaryPoseEntryId();
+    if (!entryId) return;
+    const currentFrameCount = Math.round(poseDuration * poseFrameRate);
+    viewerHandleRef.current?.setClipLength(entryId, currentFrameCount, fps);
+    refreshPoseClips();
+  }, [primaryPoseEntryId, poseDuration, poseFrameRate, refreshPoseClips]);
 
   const handleCreateClip = useCallback(() => {
     const entryId = primaryPoseEntryId();
@@ -1627,36 +1657,81 @@ export default function MeshSculptClient() {
             playback controls. Clip/rig management (New Clip, clip list,
             Bones, Reset Pose) stays in the sidebar's Pose panel, matching
             Maya's own split between the Time Slider and Trax Editor. */}
-        {editMode === "pose" && (
-          <div className="flex items-center gap-3 px-4 py-2 border-t border-[#2a2320] bg-[#100e0c] flex-shrink-0">
-            <button onClick={handleTogglePlay} disabled={!activeClipId}
-              className="px-3 py-1.5 rounded text-[11px] font-semibold text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              style={{ background: PURPLE }}>
-              {posePlaying ? "Pause" : "Play"}
-            </button>
-            <input
-              type="range" min={0} max={Math.max(poseDuration, 0.001)} step={0.001}
-              value={Math.min(poseTime, poseDuration)}
-              onChange={(e) => handleScrub(parseFloat(e.target.value))}
-              disabled={!activeClipId}
-              className="flex-1"
-            />
-            <span className="text-[11px] tabular-nums w-16 text-right" style={{ color: "#8aa0b4" }}>
-              {poseTime.toFixed(2)}s
-            </span>
-            <div className="w-px self-stretch bg-[#2a2320]" />
-            <button onClick={handleInsertKeyframe} disabled={bones.length === 0}
-              className="px-3 py-1.5 rounded text-[11px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              style={{ background: "#1e1a17", color: PURPLE, border: `1px solid ${PURPLE}` }}>
-              Add Keyframe
-            </button>
-            <button onClick={handleRemoveKeyframe} disabled={!activeClipId}
-              className="px-3 py-1.5 rounded text-[11px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              style={{ background: "#1e1a17", color: "#8aa0b4" }}>
-              Remove Keyframe
-            </button>
-          </div>
-        )}
+        {editMode === "pose" && (() => {
+          const totalFrames = Math.max(1, Math.round(poseDuration * poseFrameRate));
+          const currentFrame = Math.round(Math.min(poseTime, poseDuration) * poseFrameRate);
+          return (
+            <div className="border-t border-[#2a2320] bg-[#100e0c] flex-shrink-0">
+              {/* Row 1: playback + frame length/rate + keyframe actions */}
+              <div className="flex items-center gap-3 px-4 pt-2">
+                <button onClick={handleTogglePlay} disabled={!activeClipId}
+                  className="px-3 py-1.5 rounded text-[11px] font-semibold text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ background: PURPLE }}>
+                  {posePlaying ? "Pause" : "Play"}
+                </button>
+                <span className="text-[11px] tabular-nums" style={{ color: "#8aa0b4" }}>
+                  Frame {currentFrame} / {totalFrames}
+                </span>
+                <div className="flex items-center gap-1">
+                  <span className="text-[10.5px]" style={{ color: "#6a8098" }}>Length</span>
+                  <input
+                    type="number" min={1} disabled={!activeClipId}
+                    value={totalFrames}
+                    onChange={(e) => handleSetFrameCount(parseInt(e.target.value, 10))}
+                    className="w-14 py-1 px-1.5 rounded text-[11px] bg-[#1e1a17] text-ink outline-none disabled:opacity-40"
+                    style={{ border: "1px solid #3a3530" }}
+                  />
+                  <span className="text-[10.5px]" style={{ color: "#6a8098" }}>frames</span>
+                </div>
+                <div className="flex items-center gap-0.5">
+                  {[24, 30, 60].map((fps) => (
+                    <button key={fps} onClick={() => handleSetFrameRate(fps)} disabled={!activeClipId}
+                      className="px-2 py-1 rounded text-[10.5px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      style={{ background: poseFrameRate === fps ? PURPLE : "transparent", color: poseFrameRate === fps ? "#fff" : "#8aa0b4" }}>
+                      {fps}
+                    </button>
+                  ))}
+                  <span className="text-[10.5px]" style={{ color: "#6a8098" }}>fps</span>
+                </div>
+                <div className="flex-1" />
+                <button onClick={handleInsertKeyframe} disabled={bones.length === 0}
+                  className="px-3 py-1.5 rounded text-[11px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ background: "#1e1a17", color: PURPLE, border: `1px solid ${PURPLE}` }}>
+                  Add Keyframe
+                </button>
+                <button onClick={handleRemoveKeyframe} disabled={!activeClipId}
+                  className="px-3 py-1.5 rounded text-[11px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ background: "#1e1a17", color: "#8aa0b4" }}>
+                  Remove Keyframe
+                </button>
+              </div>
+
+              {/* Row 2: frame scrubber with keyframe markers */}
+              <div className="relative px-4 pb-2 pt-3">
+                <input
+                  type="range" min={0} max={totalFrames} step={1}
+                  value={currentFrame}
+                  onChange={(e) => handleScrubFrame(parseInt(e.target.value, 10))}
+                  disabled={!activeClipId}
+                  className="w-full relative z-10"
+                />
+                <div className="absolute left-4 right-4 top-0 h-0 pointer-events-none">
+                  {poseKeyframeFrames.map((frame) => (
+                    <div key={frame}
+                      title={`Keyframe at frame ${frame}`}
+                      className="absolute w-1.5 h-1.5 rotate-45"
+                      style={{
+                        left: `calc(${(frame / totalFrames) * 100}% - 3px)`,
+                        top: "2px",
+                        background: PURPLE,
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
       </section>
     </main>
   );

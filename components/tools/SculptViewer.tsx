@@ -22,7 +22,7 @@ import { extrudeFaces as extrudeFacesLib, extrudeEdgeLoop as extrudeEdgeLoopLib,
 import { buildMirrorData, type MirrorData } from "@/lib/sculpt/mirror";
 import { createBone, nextBoneName, renameBone as renameRigBone, deleteBone as deleteRigBone, type RigBone, type RigSkeleton } from "@/lib/sculpt/rig";
 import { conformToReference as conformMeshToReference } from "@/lib/sculpt/conform";
-import { createPoseAnimationState, createClip, findClip, renameClip as renameClipData, duplicateClip as duplicateClipData, deleteClip as deleteClipData, insertWholePoseKeyframe, removeKeyframeAtTime, sampleChannelLinear, type PoseAnimationState, type AnimationClipData } from "@/lib/sculpt/animation";
+import { createPoseAnimationState, createClip, findClip, renameClip as renameClipData, duplicateClip as duplicateClipData, deleteClip as deleteClipData, insertWholePoseKeyframe, removeKeyframeAtTime, sampleChannelLinear, getKeyframeTimes as getKeyframeTimesData, setClipLength as setClipLengthData, DEFAULT_FRAME_RATE, type PoseAnimationState, type AnimationClipData } from "@/lib/sculpt/animation";
 import * as BufferGeometryUtils from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
 // Patch Three.js raycaster to use BVH acceleration
@@ -468,6 +468,12 @@ export type SculptViewerHandle = {
   insertKeyframe: (entryId: string, time: number) => void;
   /** Removes every channel's key at `time` from the active clip. */
   removeKeyframe: (entryId: string, time: number) => void;
+  /** Every distinct time (seconds) that has a keyframe in the active
+   * clip — for rendering marker ticks on the frame-based timeline. */
+  getKeyframeTimes: (entryId: string) => number[];
+  /** Explicitly sets the active clip's total length/frame rate — the
+   * timeline's length is author-chosen, not derived from keyframes. */
+  setClipLength: (entryId: string, frameCount: number, frameRate: number) => void;
   /** Scrubs the active clip to `time` (clamped to [0, duration]) without
    * starting playback — the timeline slider's drag handler. */
   setPoseTime: (entryId: string, time: number) => void;
@@ -670,7 +676,7 @@ type Props = {
    * insertKeyframe) — same "event, not polled ref" reasoning as
    * onBoneSelect, so the timeline UI can show a live playhead/duration
    * without polling a ref during render. */
-  onPoseTimeChange?: (entryId: string, time: number, duration: number, playing: boolean) => void;
+  onPoseTimeChange?: (entryId: string, time: number, duration: number, playing: boolean, frameRate: number) => void;
   handleRef?: React.RefObject<SculptViewerHandle | null>;
 };
 
@@ -1454,7 +1460,7 @@ export default function SculptViewer({
       entry.poseAction = undefined;
       const clip = activeClipForMixer(entry);
       if (!clip || clip.channels.length === 0) {
-        onPoseTimeChangeRef.current?.(entry.id, 0, 0, false);
+        onPoseTimeChangeRef.current?.(entry.id, 0, 0, false, clip?.frameRate ?? DEFAULT_FRAME_RATE);
         return;
       }
       const threeClip = buildThreeClip(clip);
@@ -1469,7 +1475,7 @@ export default function SculptViewer({
       entry.poseAction = action;
       entry.poseTime = time;
       updateBoneHandles();
-      onPoseTimeChangeRef.current?.(entry.id, time, clip.duration, entry.posePlaying ?? false);
+      onPoseTimeChangeRef.current?.(entry.id, time, clip.duration, entry.posePlaying ?? false, clip.frameRate);
     }
     rebuildPoseMixerRef.current = rebuildPoseMixer;
 
@@ -1484,7 +1490,7 @@ export default function SculptViewer({
       entry.poseMixer.update(0);
       entry.poseTime = clamped;
       updateBoneHandles();
-      onPoseTimeChangeRef.current?.(entry.id, clamped, clip?.duration ?? 0, entry.posePlaying ?? false);
+      onPoseTimeChangeRef.current?.(entry.id, clamped, clip?.duration ?? 0, entry.posePlaying ?? false, clip?.frameRate ?? DEFAULT_FRAME_RATE);
     }
     setPoseTimeRef.current = setPoseTime;
 
@@ -1492,7 +1498,7 @@ export default function SculptViewer({
       entry.posePlaying = playing;
       if (entry.poseAction) entry.poseAction.paused = !playing;
       const clip = activeClipForMixer(entry);
-      onPoseTimeChangeRef.current?.(entry.id, entry.poseTime ?? 0, clip?.duration ?? 0, playing);
+      onPoseTimeChangeRef.current?.(entry.id, entry.poseTime ?? 0, clip?.duration ?? 0, playing, clip?.frameRate ?? DEFAULT_FRAME_RATE);
     }
     setPosePlayingRef.current = setPosePlaying;
 
@@ -1894,7 +1900,7 @@ export default function SculptViewer({
           entry.poseTime = entry.poseAction.time;
           bonesDirty = true;
           const clip = entry.poseAnimation?.activeClipId ? findClip(entry.poseAnimation, entry.poseAnimation.activeClipId) : undefined;
-          onPoseTimeChangeRef.current?.(entry.id, entry.poseTime, clip?.duration ?? 0, true);
+          onPoseTimeChangeRef.current?.(entry.id, entry.poseTime, clip?.duration ?? 0, true, clip?.frameRate ?? DEFAULT_FRAME_RATE);
         }
       }
       if (bonesDirty) updateBoneHandlesRef.current();
@@ -3901,6 +3907,23 @@ export default function SculptViewer({
     rebuildPoseMixerRef.current(entry);
   }, []);
 
+  const getKeyframeTimes = useCallback((entryId: string): number[] => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    if (!entry) return [];
+    const clip = activeClipFor(entry);
+    return clip ? getKeyframeTimesData(clip) : [];
+  }, []);
+
+  const setClipLength = useCallback((entryId: string, frameCount: number, frameRate: number) => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    if (!entry) return;
+    const clip = activeClipFor(entry);
+    if (!clip) return;
+    setClipLengthData(clip, frameCount, frameRate);
+    entry.poseTime = Math.min(entry.poseTime ?? 0, clip.duration);
+    rebuildPoseMixerRef.current(entry);
+  }, []);
+
   // Frames the currently-selected mesh/submesh (selectedEntryRef, already
   // tracked for poly-edit and other per-entry tools) if one is selected,
   // otherwise the whole scene — so this doubles as "look at my selection"
@@ -4009,10 +4032,10 @@ export default function SculptViewer({
         getJoints, selectJoint: selectJointById, renameJoint, deleteJoint,
         getClips, getActiveClipId, setActiveClip, createAnimationClip, renameAnimationClip,
         duplicateAnimationClip, deleteAnimationClip, insertKeyframe, removeKeyframe,
-        setPoseTime, setPosePlaying,
+        setPoseTime, setPosePlaying, getKeyframeTimes, setClipLength,
       };
     }
-  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance, extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb, getBones, selectBoneById, resetPose, resetBone, recenterView, toggleProjection, conformToReference, getJoints, selectJointById, renameJoint, deleteJoint, getClips, getActiveClipId, setActiveClip, createAnimationClip, renameAnimationClip, duplicateAnimationClip, deleteAnimationClip, insertKeyframe, removeKeyframe, setPoseTime, setPosePlaying]);
+  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance, extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb, getBones, selectBoneById, resetPose, resetBone, recenterView, toggleProjection, conformToReference, getJoints, selectJointById, renameJoint, deleteJoint, getClips, getActiveClipId, setActiveClip, createAnimationClip, renameAnimationClip, duplicateAnimationClip, deleteAnimationClip, insertKeyframe, removeKeyframe, setPoseTime, setPosePlaying, getKeyframeTimes, setClipLength]);
 
   return <div ref={mountRef} className="w-full h-full" style={{ touchAction: "none" }} />;
 }

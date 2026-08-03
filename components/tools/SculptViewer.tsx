@@ -22,7 +22,7 @@ import { extrudeFaces as extrudeFacesLib, extrudeEdgeLoop as extrudeEdgeLoopLib,
 import { buildMirrorData, type MirrorData } from "@/lib/sculpt/mirror";
 import { createBone, nextBoneName, renameBone as renameRigBone, deleteBone as deleteRigBone, type RigBone, type RigSkeleton } from "@/lib/sculpt/rig";
 import { conformToReference as conformMeshToReference } from "@/lib/sculpt/conform";
-import { createPoseAnimationState, createClip, findClip, renameClip as renameClipData, duplicateClip as duplicateClipData, deleteClip as deleteClipData, insertWholePoseKeyframe, removeKeyframeAtTime, sampleChannelLinear, getKeyframeTimes as getKeyframeTimesData, setClipLength as setClipLengthData, DEFAULT_FRAME_RATE, type PoseAnimationState, type AnimationClipData } from "@/lib/sculpt/animation";
+import { createPoseAnimationState, createClip, findClip, renameClip as renameClipData, duplicateClip as duplicateClipData, deleteClip as deleteClipData, insertWholePoseKeyframe, removeKeyframeAtTime, sampleChannelLinear, getKeyframeTimes as getKeyframeTimesData, setClipLength as setClipLengthData, detectBipedControls, DEFAULT_FRAME_RATE, type PoseAnimationState, type AnimationClipData } from "@/lib/sculpt/animation";
 import * as BufferGeometryUtils from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
 // Patch Three.js raycaster to use BVH acceleration
@@ -451,6 +451,14 @@ export type SculptViewerHandle = {
   /** Pose-mode animation clips for an entry (empty until the first
    * keyframe/explicit New Clip — see lib/sculpt/animation.ts). */
   getClips: (entryId: string) => Array<{ id: string; name: string; duration: number }>;
+  /** Auto-detected leg/arm IK chains for an entry (empty if its skeleton
+   * matched neither known biped naming convention). effectorBoneId is a
+   * THREE.Bone uuid (matching getBones/selectBone), already resolved
+   * from the chain's stored bone name. */
+  getIKChains: (entryId: string) => Array<{ id: string; name: string; effectorBoneId: string }>;
+  /** The auto-detected hip/pelvis/root bone's id (THREE.Bone uuid), for
+   * a one-click "select the hip control" shortcut — null if none found. */
+  getHipBoneId: (entryId: string) => string | null;
   getActiveClipId: (entryId: string) => string | null;
   setActiveClip: (entryId: string, clipId: string | null) => void;
   /** Creates a new empty clip (lazily creating the entry's PoseAnimationState
@@ -2045,7 +2053,15 @@ export default function SculptViewer({
           for (const bone of skinned.skeleton.bones) {
             bindPose.set(bone.uuid, { position: bone.position.clone(), quaternion: bone.quaternion.clone() });
           }
-          skeletonEntry = { skeleton: skinned.skeleton, bindPose };
+          // Auto-detect leg/arm IK chains + a hip/COG control from bone
+          // naming — a skeleton matching neither known convention just
+          // gets none of these, no crash, manual posing is unaffected.
+          const boneNames = skinned.skeleton.bones.map((b) => b.name);
+          const { ikChains, hipBoneName } = detectBipedControls(boneNames);
+          const poseAnimation = createPoseAnimationState();
+          poseAnimation.ikChains = ikChains;
+          poseAnimation.hipBoneName = hipBoneName;
+          skeletonEntry = { skeleton: skinned.skeleton, bindPose, poseAnimation };
         }
         meshEntriesRef.current.push({ id: crypto.randomUUID(), name: entryName, mesh, seams, baseEdgeLen, quadIndices, ...paintEntry, ...skeletonEntry });
         totalVerts += mesh.geometry.attributes.position.count;
@@ -3854,6 +3870,24 @@ export default function SculptViewer({
     return entry?.poseAnimation?.clips.map((c) => ({ id: c.id, name: c.name, duration: c.duration })) ?? [];
   }, []);
 
+  const getIKChains = useCallback((entryId: string): Array<{ id: string; name: string; effectorBoneId: string }> => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    if (!entry?.skeleton || !entry.poseAnimation) return [];
+    const out: Array<{ id: string; name: string; effectorBoneId: string }> = [];
+    for (const chain of entry.poseAnimation.ikChains) {
+      const bone = entry.skeleton.bones.find((b) => b.name === chain.effectorBone);
+      if (bone) out.push({ id: chain.id, name: chain.name, effectorBoneId: bone.uuid });
+    }
+    return out;
+  }, []);
+
+  const getHipBoneId = useCallback((entryId: string): string | null => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    const hipName = entry?.poseAnimation?.hipBoneName;
+    if (!entry?.skeleton || !hipName) return null;
+    return entry.skeleton.bones.find((b) => b.name === hipName)?.uuid ?? null;
+  }, []);
+
   const getActiveClipId = useCallback((entryId: string): string | null => {
     const entry = meshEntriesRef.current.find((e) => e.id === entryId);
     return entry?.poseAnimation?.activeClipId ?? null;
@@ -4055,10 +4089,10 @@ export default function SculptViewer({
         getJoints, selectJoint: selectJointById, renameJoint, deleteJoint,
         getClips, getActiveClipId, setActiveClip, createAnimationClip, renameAnimationClip,
         duplicateAnimationClip, deleteAnimationClip, insertKeyframe, removeKeyframe,
-        setPoseTime, setPosePlaying, getKeyframeTimes, setClipLength,
+        setPoseTime, setPosePlaying, getKeyframeTimes, setClipLength, getIKChains, getHipBoneId,
       };
     }
-  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance, extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb, getBones, selectBoneById, resetPose, resetBone, recenterView, toggleProjection, conformToReference, getJoints, selectJointById, renameJoint, deleteJoint, getClips, getActiveClipId, setActiveClip, createAnimationClip, renameAnimationClip, duplicateAnimationClip, deleteAnimationClip, insertKeyframe, removeKeyframe, setPoseTime, setPosePlaying, getKeyframeTimes, setClipLength]);
+  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance, extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb, getBones, selectBoneById, resetPose, resetBone, recenterView, toggleProjection, conformToReference, getJoints, selectJointById, renameJoint, deleteJoint, getClips, getActiveClipId, setActiveClip, createAnimationClip, renameAnimationClip, duplicateAnimationClip, deleteAnimationClip, insertKeyframe, removeKeyframe, setPoseTime, setPosePlaying, getKeyframeTimes, setClipLength, getIKChains, getHipBoneId]);
 
   return <div ref={mountRef} className="w-full h-full" style={{ touchAction: "none" }} />;
 }

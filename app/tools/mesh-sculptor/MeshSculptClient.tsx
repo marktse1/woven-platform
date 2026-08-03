@@ -192,6 +192,11 @@ export default function MeshSculptClient() {
   // Pose mode: only populated when the loaded model actually has a
   // skeleton (e.g. an AccuRIG-exported GLB) — most loads won't.
   const [bones, setBones] = useState<Array<{ entryId: string; id: string; name: string; depth: number }>>([]);
+  // Auto-detected biped controls (hip/COG + leg/arm IK chain effectors) —
+  // a one-click shortcut to select these bones without hunting through
+  // the raw Bones list. Empty for any skeleton matching neither known
+  // naming convention; that's fine, manual bone selection still works.
+  const [detectedControls, setDetectedControls] = useState<Array<{ entryId: string; id: string; label: string }>>([]);
   const [selectedBoneId, setSelectedBoneId] = useState<string | null>(null);
   const [isOrthographic, setIsOrthographic] = useState(false);
 
@@ -522,6 +527,22 @@ export default function MeshSculptClient() {
     setBones(all);
   }, []);
 
+  // Same combining pattern as refreshBones, for the auto-detected biped
+  // controls (hip + IK chain effectors) instead of the raw bone list.
+  const refreshDetectedControls = useCallback(() => {
+    const handle = viewerHandleRef.current;
+    const entries = handle?.getMeshEntries() ?? [];
+    const all: Array<{ entryId: string; id: string; label: string }> = [];
+    for (const entry of entries) {
+      const hipBoneId = handle?.getHipBoneId(entry.id);
+      if (hipBoneId) all.push({ entryId: entry.id, id: hipBoneId, label: "Hip" });
+      for (const chain of handle?.getIKChains(entry.id) ?? []) {
+        all.push({ entryId: entry.id, id: chain.effectorBoneId, label: chain.name });
+      }
+    }
+    setDetectedControls(all);
+  }, []);
+
   // Same combining pattern as refreshBones, for Rig mode's manually-
   // placed joints instead of an imported skeleton.
   const refreshJoints = useCallback(() => {
@@ -559,8 +580,9 @@ export default function MeshSculptClient() {
     setVertexCount(count);
     refreshSubmeshes();
     refreshBones();
+    refreshDetectedControls();
     refreshJoints();
-  }, [refreshSubmeshes, refreshBones, refreshJoints]);
+  }, [refreshSubmeshes, refreshBones, refreshDetectedControls, refreshJoints]);
 
   // SculptViewer.tsx's onPoseTimeChange — fired every frame during
   // playback plus once on any scrub/keyframe/clip-switch, so this is
@@ -1061,6 +1083,24 @@ export default function MeshSculptClient() {
                       </div>
                     )}
                   </div>
+
+                  {detectedControls.length > 0 && (
+                    <div className="pb-3 mb-3 border-b border-[#2a2320]">
+                      <p className="text-[10px] text-dim uppercase tracking-wide mb-1.5">Controls</p>
+                      <div className="flex flex-wrap gap-1">
+                        {detectedControls.map((c) => (
+                          <button
+                            key={c.id}
+                            onClick={() => handleSelectBone(c.entryId, c.id === selectedBoneId ? null : c.id)}
+                            title={c.label === "Hip" ? "Hip/COG control — a direct FK handle on the root/pelvis bone" : `Auto-detected IK chain effector — dragging this bone directly for now; a real IK target handle is a follow-up`}
+                            style={{ background: selectedBoneId === c.id ? "rgba(196,123,232,.22)" : "#1e1a17", color: selectedBoneId === c.id ? PURPLE : "#8aa0b4", border: `1px solid ${selectedBoneId === c.id ? PURPLE : "#3a3530"}` }}
+                            className="px-2 py-1 rounded text-[10.5px] font-medium transition-colors">
+                            {c.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   <p className="text-[10px] text-dim uppercase tracking-wide mb-1.5">Bones</p>
                   <div className="max-h-60 overflow-y-auto space-y-0.5">

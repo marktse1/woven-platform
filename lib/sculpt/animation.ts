@@ -72,10 +72,74 @@ export type PoseAnimationState = {
   clips: AnimationClipData[];
   activeClipId: string | null;
   ikChains: IKChain[];
+  /** The detected root/pelvis bone, if any — a plain FK handle (COG/hip
+   * control), NOT an IKChain: it's not solved, just a direct control on
+   * that one bone, standard in every biped rig. Null if detection found
+   * nothing that looks like a hip/pelvis/root bone. */
+  hipBoneName: string | null;
 };
 
 export function createPoseAnimationState(): PoseAnimationState {
-  return { clips: [], activeClipId: null, ikChains: [] };
+  return { clips: [], activeClipId: null, ikChains: [], hipBoneName: null };
+}
+
+// ── biped control auto-detection ──────────────────────────────────────────
+// Recognizes the two skeleton naming conventions actually present in this
+// project's asset library — UE-Mannequin-style (thigh_l, upperarm_l, ...)
+// and Mixamo-style (UpLeg.L_02, Arm.L_014, ...) — not a universal bone-name
+// parser. A skeleton matching neither just gets no detected controls; that's
+// fine, manual bone selection/posing still works regardless.
+
+function norm(name: string): string {
+  return name.toLowerCase();
+}
+
+/** True if `name` carries a left/right side marker for `side` — covers
+ * both conventions' suffix styles (`_l`, `.L_02`, `.L`). */
+function hasSide(name: string, side: "l" | "r"): boolean {
+  const n = norm(name);
+  return n.includes(`.${side}_`) || n.includes(`.${side}`) || n.includes(`_${side}_`) || n.endsWith(`_${side}`);
+}
+
+function findSideBone(names: string[], side: "l" | "r", include: string, exclude?: string): string | undefined {
+  return names.find((n) => {
+    const ln = norm(n);
+    if (!hasSide(n, side)) return false;
+    if (!ln.includes(include)) return false;
+    if (exclude && ln.includes(exclude)) return false;
+    return true;
+  });
+}
+
+/** Auto-detects leg/arm IK chains and a hip/COG control from a skeleton's
+ * bone names, run once at GLB import time. */
+export function detectBipedControls(boneNames: string[]): { ikChains: IKChain[]; hipBoneName: string | null } {
+  const hipBoneName =
+    boneNames.find((n) => norm(n).includes("pelvis")) ??
+    boneNames.find((n) => norm(n).includes("hip")) ??
+    boneNames.find((n) => norm(n) === "root") ??
+    null;
+
+  const ikChains: IKChain[] = [];
+  for (const side of ["l", "r"] as const) {
+    const sideLabel = side === "l" ? "Left" : "Right";
+
+    const thigh = findSideBone(boneNames, side, "thigh") ?? findSideBone(boneNames, side, "upleg");
+    const calf = findSideBone(boneNames, side, "calf") ?? findSideBone(boneNames, side, "leg", "upleg");
+    const foot = findSideBone(boneNames, side, "foot");
+    if (thigh && calf && foot) {
+      ikChains.push({ id: crypto.randomUUID(), name: `${sideLabel} Leg IK`, effectorBone: foot, links: [thigh, calf], targetPosition: [0, 0, 0] });
+    }
+
+    const upperArm = findSideBone(boneNames, side, "upperarm") ?? findSideBone(boneNames, side, "arm", "forearm");
+    const lowerArm = findSideBone(boneNames, side, "lowerarm") ?? findSideBone(boneNames, side, "forearm");
+    const hand = findSideBone(boneNames, side, "hand");
+    if (upperArm && lowerArm && hand) {
+      ikChains.push({ id: crypto.randomUUID(), name: `${sideLabel} Arm IK`, effectorBone: hand, links: [upperArm, lowerArm], targetPosition: [0, 0, 0] });
+    }
+  }
+
+  return { ikChains, hipBoneName };
 }
 
 /** A reasonable default name for the next clip — "Clip", "Clip.002",

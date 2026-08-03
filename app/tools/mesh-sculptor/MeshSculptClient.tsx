@@ -975,9 +975,9 @@ export default function MeshSculptClient() {
                       </button>
                     </div>
                     {poseClips.length === 0 ? (
-                      <p className="text-[10.5px]" style={{ color: "#4a4040" }}>No clips yet — pose the character and press Add Keyframe.</p>
+                      <p className="text-[10.5px]" style={{ color: "#4a4040" }}>No clips yet — pose the character and press Add Keyframe (bottom of viewport).</p>
                     ) : (
-                      <div className="space-y-0.5 mb-2">
+                      <div className="space-y-0.5">
                         {poseClips.map((clip) => (
                           <button key={clip.id} onClick={() => handleSelectClip(clip.id)}
                             style={{ background: activeClipId === clip.id ? "rgba(196,123,232,.22)" : "transparent", color: activeClipId === clip.id ? PURPLE : "#8aa0b4" }}
@@ -985,39 +985,6 @@ export default function MeshSculptClient() {
                             {clip.name} <span className="opacity-60">({clip.duration.toFixed(2)}s)</span>
                           </button>
                         ))}
-                      </div>
-                    )}
-
-                    {activeClipId && (
-                      <div className="mt-2">
-                        <div className="flex items-center gap-2 mb-1.5">
-                          <button onClick={handleTogglePlay}
-                            className="px-2 py-1 rounded text-[11px] font-semibold text-white transition-colors"
-                            style={{ background: PURPLE }}>
-                            {posePlaying ? "Pause" : "Play"}
-                          </button>
-                          <input
-                            type="range" min={0} max={Math.max(poseDuration, 0.001)} step={0.001}
-                            value={Math.min(poseTime, poseDuration)}
-                            onChange={(e) => handleScrub(parseFloat(e.target.value))}
-                            className="flex-1"
-                          />
-                          <span className="text-[10.5px] tabular-nums" style={{ color: "#8aa0b4" }}>
-                            {poseTime.toFixed(2)}s
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <button onClick={handleInsertKeyframe}
-                            className="flex-1 py-1 rounded text-[11px] font-medium transition-colors"
-                            style={{ background: "#1e1a17", color: PURPLE, border: `1px solid ${PURPLE}` }}>
-                            Add Keyframe
-                          </button>
-                          <button onClick={handleRemoveKeyframe}
-                            className="flex-1 py-1 rounded text-[11px] font-medium transition-colors"
-                            style={{ background: "#1e1a17", color: "#8aa0b4" }}>
-                            Remove Keyframe
-                          </button>
-                        </div>
                       </div>
                     )}
                   </div>
@@ -1654,6 +1621,42 @@ export default function MeshSculptClient() {
             handleRef={viewerHandleRef}
           />
         </div>
+
+        {/* TIME SLIDER — Maya-style: a full-viewport-width bar below the
+            canvas (not the sidebar), holding just the frame-scoped
+            playback controls. Clip/rig management (New Clip, clip list,
+            Bones, Reset Pose) stays in the sidebar's Pose panel, matching
+            Maya's own split between the Time Slider and Trax Editor. */}
+        {editMode === "pose" && (
+          <div className="flex items-center gap-3 px-4 py-2 border-t border-[#2a2320] bg-[#100e0c] flex-shrink-0">
+            <button onClick={handleTogglePlay} disabled={!activeClipId}
+              className="px-3 py-1.5 rounded text-[11px] font-semibold text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{ background: PURPLE }}>
+              {posePlaying ? "Pause" : "Play"}
+            </button>
+            <input
+              type="range" min={0} max={Math.max(poseDuration, 0.001)} step={0.001}
+              value={Math.min(poseTime, poseDuration)}
+              onChange={(e) => handleScrub(parseFloat(e.target.value))}
+              disabled={!activeClipId}
+              className="flex-1"
+            />
+            <span className="text-[11px] tabular-nums w-16 text-right" style={{ color: "#8aa0b4" }}>
+              {poseTime.toFixed(2)}s
+            </span>
+            <div className="w-px self-stretch bg-[#2a2320]" />
+            <button onClick={handleInsertKeyframe} disabled={bones.length === 0}
+              className="px-3 py-1.5 rounded text-[11px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{ background: "#1e1a17", color: PURPLE, border: `1px solid ${PURPLE}` }}>
+              Add Keyframe
+            </button>
+            <button onClick={handleRemoveKeyframe} disabled={!activeClipId}
+              className="px-3 py-1.5 rounded text-[11px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{ background: "#1e1a17", color: "#8aa0b4" }}>
+              Remove Keyframe
+            </button>
+          </div>
+        )}
       </section>
     </main>
   );

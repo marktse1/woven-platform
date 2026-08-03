@@ -5,7 +5,7 @@ import * as THREE from "three";
 import type { SeamData } from "./seams";
 import type { MirrorData } from "./mirror";
 
-export type BrushMode = "clay_buildup" | "push" | "smooth" | "flatten" | "move" | "pinch" | "paint" | "mask";
+export type BrushMode = "clay_buildup" | "push" | "smooth" | "flatten" | "move" | "pinch" | "slice" | "paint" | "mask";
 
 export type BrushHit = {
   point: THREE.Vector3;   // world-space hit point
@@ -381,6 +381,36 @@ export function applyBrush(params: BrushParams): void {
         const radialY = toHitY - alongNormal * mny;
         const radialZ = toHitZ - alongNormal * mnz;
         positions.setXYZ(idx, vx - radialX * t, vy - radialY * t, vz - radialZ * t);
+      }
+    }
+  } else if (mode === "slice") {
+    // Carves inward along the surface normal — structurally like
+    // clay_buildup (single shared localNormal direction) but subtracting
+    // instead of adding, with the raw per-vertex falloff cubed so it stays
+    // narrow (Pinch-style tight contraction) instead of clay_buildup's
+    // broad taper. A single dab reads as a defined notch; dragged in a
+    // stroke, overlapping notches read as a slash/gouge along the path.
+    const allIdx = expandSeams(gathered.map((g) => g.idx), seams);
+    const foMap = new Map<number, number>();
+    for (const { idx, fo } of gathered) {
+      const sharp = fo * fo * fo;
+      const group = seams.groups[seams.vertToGroup[idx]];
+      for (const j of group) {
+        const prev = foMap.get(j);
+        if (prev === undefined || sharp > prev) foMap.set(j, sharp);
+      }
+    }
+    for (const idx of allIdx) {
+      const fo = foMap.get(idx) ?? 0;
+      const disp = strength * fo * radius * 0.1;
+      positions.setXYZ(idx, positions.getX(idx) - localNormal.x * disp, positions.getY(idx) - localNormal.y * disp, positions.getZ(idx) - localNormal.z * disp);
+    }
+    if (mirror) {
+      const mFoMap = mirrorFalloffMap(foMap, mirror, seams);
+      const mnx = -localNormal.x, mny = localNormal.y, mnz = localNormal.z;
+      for (const [idx, fo] of mFoMap) {
+        const disp = strength * fo * radius * 0.1;
+        positions.setXYZ(idx, positions.getX(idx) - mnx * disp, positions.getY(idx) - mny * disp, positions.getZ(idx) - mnz * disp);
       }
     }
   }

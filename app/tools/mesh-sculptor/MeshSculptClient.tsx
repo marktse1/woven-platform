@@ -29,7 +29,7 @@ const SculptViewer = dynamic(() => import("@/components/tools/SculptViewer"), {
 function BrushIcon({ mode, active }: { mode: BrushMode; active: boolean }) {
   const s = active ? "#ffffff" : "#8aa0b4";
   const w = "1.6";
-  const ICON_PNGS: Partial<Record<BrushMode, string>> = { clay_buildup: "/claybuildup.png", push: "/inflate.png", flatten: "/flatten.png", move: "/move.png", pinch: "/pinch.png", smooth: "/smooth.png", paint: "/paint.png", mask: "/mask.png" };
+  const ICON_PNGS: Partial<Record<BrushMode, string>> = { clay_buildup: "/claybuildup.png", push: "/inflate.png", flatten: "/flatten.png", move: "/move.png", pinch: "/pinch.png", slice: "/slice.png", smooth: "/smooth.png", paint: "/paint.png", mask: "/mask.png" };
   const png = ICON_PNGS[mode];
   if (png) return (
     <Image src={png} alt={mode} width={64} height={64}
@@ -99,13 +99,14 @@ const BRUSH_MODES: BrushDef[] = [
   { mode: "smooth",       label: "Smooth",  desc: "Blend vertices toward local average",                shortcut: "E" },
   { mode: "flatten",      label: "Flatten", desc: "Project vertices to local tangent plane",            shortcut: "R" },
   { mode: "pinch",        label: "Pinch",   desc: "Pull vertices toward the brush's center line, sharpening ridges and creases", shortcut: "N", invertHint: "Alt = spread apart" },
+  { mode: "slice",        label: "Slice",   desc: "Carve a narrow gouge into the surface along the brush's normal", shortcut: "G" },
   { mode: "move",         label: "Move",    desc: "Drag a cluster of vertices freely in any direction", shortcut: "T" },
   { mode: "paint",        label: "Paint",   desc: "Paint color onto UV albedo texture without changing geometry", shortcut: "P" },
   { mode: "mask",         label: "Mask",    desc: "Paint a region to Extract or Detach as a new, separate submesh", shortcut: "K", invertHint: "Alt = erase" },
 ];
 
 const MODE_KEY: Record<string, BrushMode> = {
-  c: "clay_buildup", q: "push", e: "smooth", r: "flatten", n: "pinch", t: "move", p: "paint", k: "mask",
+  c: "clay_buildup", q: "push", e: "smooth", r: "flatten", n: "pinch", g: "slice", t: "move", p: "paint", k: "mask",
 };
 
 // "wireframe" is no longer a selectable view mode here — it's superseded by
@@ -1050,11 +1051,13 @@ export default function MeshSculptClient() {
 
               <p className="text-[10px] text-dim uppercase tracking-wide mb-1.5">Transform</p>
               <div className="flex gap-1 mb-2">
-                {([["translate", "Move", "W"], ["rotate", "Rotate", "E"], ["scale", "Scale", "R"]] as [TransformMode, string, string][]).map(([m, label, key]) => (
+                {([["translate", "Move", "W", "/Transform.png"], ["rotate", "Rotate", "E", "/rotate.png"], ["scale", "Scale", "R", "/scale.png"]] as [TransformMode, string, string, string][]).map(([m, label, key, icon]) => (
                   <button key={m} onClick={() => setTransformMode(m)}
                     title={`${label} (${key})`}
-                    className="flex-1 py-1.5 rounded text-[11px] font-medium transition-colors"
+                    className="flex-1 flex flex-col items-center gap-0.5 py-1.5 rounded text-[10px] font-medium transition-colors"
                     style={{ background: transformMode === m ? "rgba(196,123,232,.22)" : "#1e1a17", color: transformMode === m ? PURPLE : "#8aa0b4" }}>
+                    <Image src={icon} alt={label} width={22} height={22}
+                      style={{ filter: transformMode === m ? "brightness(1.2) drop-shadow(0 0 6px rgba(196,123,232,0.6))" : "brightness(0.9) saturate(0.6)", transition: "filter 0.15s" }} />
                     {label}
                   </button>
                 ))}
@@ -1250,87 +1253,31 @@ export default function MeshSculptClient() {
             pushes the sidebar taller than its fixed height instead of
             scrolling internally. */}
         <div className="px-4 py-3 border-b border-[#2a2320] flex-1 min-h-0 overflow-y-auto">
-          <div className="mb-4">
-            <p className="text-[10.5px] leading-relaxed" style={{ color: "#6a8098" }}>
-              <span className="font-semibold" style={{ color: PURPLE }}>{activeDef.label}</span>
-              {" — "}{activeDef.desc}
-            </p>
-            {activeDef.invertHint && (
-              <p className="text-[10px] mt-1" style={{ color: altHeld ? PURPLE : "#4a4040" }}>
-                {activeDef.invertHint}{altHeld ? " · active" : ""}
-              </p>
-            )}
-            <p className="text-[10px] mt-1" style={{ color: shiftHeld ? PURPLE : "#4a4040" }}>
-              Shift = smooth{shiftHeld ? " · active" : ""}
-            </p>
-          </div>
-
-          {[
-            { key: "brushRadius",      label: "Radius",       min: 0.02, max: 2,    step: 0.01, val: brushRadius,      set: setBrushRadius,      fmt: (v: number) => v.toFixed(2) },
-            { key: "brushInnerRadius", label: "Inner Radius", min: 0,    max: 0.95, step: 0.01, val: brushInnerRadius, set: setBrushInnerRadius, fmt: (v: number) => Math.round(v * 100) + "%" },
-            { key: "brushStrength",    label: "Strength",     min: 0.01, max: 1,    step: 0.01, val: brushStrength,    set: setBrushStrength,    fmt: (v: number) => Math.round(v * 100) + "%" },
-          ].map(({ key, label, min, max, step, val, set, fmt }) => (
-            <label key={key} className="block mb-3">
-              <div className="flex justify-between mb-1">
-                <span className="text-[11px] text-dim">{label}</span>
-                <span className="text-[11px] text-ink">{fmt(val)}</span>
+          {/* Everything below except Undo/Redo is sculpt-brush-specific
+              (radius/strength, subdivision, mask extract, etc.) — none of
+              it means anything in poly_edit/pose/rig, so it's gated to
+              editMode === "sculpt" rather than showing regardless. */}
+          {editMode === "sculpt" && (
+            <>
+              <div className="mb-4">
+                <p className="text-[10.5px] leading-relaxed" style={{ color: "#6a8098" }}>
+                  <span className="font-semibold" style={{ color: PURPLE }}>{activeDef.label}</span>
+                  {" — "}{activeDef.desc}
+                </p>
+                {activeDef.invertHint && (
+                  <p className="text-[10px] mt-1" style={{ color: altHeld ? PURPLE : "#4a4040" }}>
+                    {activeDef.invertHint}{altHeld ? " · active" : ""}
+                  </p>
+                )}
+                <p className="text-[10px] mt-1" style={{ color: shiftHeld ? PURPLE : "#4a4040" }}>
+                  Shift = smooth{shiftHeld ? " · active" : ""}
+                </p>
               </div>
-              <input type="range" min={min} max={max} step={step} value={val}
-                onChange={(e) => set(Number(e.target.value))}
-                className="w-full accent-[#c47be8]" />
-            </label>
-          ))}
 
-          {/* Brush-radius vertex highlight density — "all" gets visually
-              noisy on dense/subdivided meshes */}
-          <label className="block mb-4">
-            <div className="text-[11px] text-dim mb-1">Highlight</div>
-            <div className="flex gap-1">
-              {([["center", "Center"], ["all", "All"], ["none", "None"]] as [HighlightMode, string][]).map(([m, label]) => (
-                <button key={m} onClick={() => setHighlightMode(m)}
-                  className="flex-1 py-1.5 rounded text-[11px] font-medium transition-colors"
-                  style={{ background: highlightMode === m ? "rgba(196,123,232,.22)" : "#1e1a17", color: highlightMode === m ? PURPLE : "#8aa0b4" }}>
-                  {label}
-                </button>
-              ))}
-            </div>
-          </label>
-
-          <div className="flex gap-2 mt-4">
-            <button onClick={() => viewerHandleRef.current?.undo()}
-              className="flex-1 py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors" title="Ctrl+Z">Undo</button>
-            <button onClick={() => viewerHandleRef.current?.redo()}
-              className="flex-1 py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors" title="Ctrl+Shift+Z">Redo</button>
-          </div>
-
-          {/* Paint Color Picker */}
-          {brushMode === "paint" && (
-            <div className="mt-4 pt-4 border-t border-[#2a2320]">
-              <p className="text-[11px] text-dim mb-2">Paint Color</p>
-              <div className="flex items-center gap-3">
-                <input
-                  type="color"
-                  value={paintColor}
-                  onChange={(e) => setPaintColor(e.target.value)}
-                  className="w-8 h-8 rounded cursor-pointer border-0 bg-transparent p-0"
-                  style={{ appearance: "none", WebkitAppearance: "none" }}
-                />
-                <span className="text-[11px] text-ink font-mono">{paintColor}</span>
-              </div>
-            </div>
-          )}
-
-          {/* Mask + Extract/Detach — paint a region, then either pull a
-              thickened shell out of it (Extract, source untouched) or pull
-              the already-3D triangles themselves out of it (Detach, source
-              IS mutated — e.g. removing a vehicle door/wheel while keeping
-              the shared UV map). See Submeshes list below. */}
-          {brushMode === "mask" && (
-            <div className="mt-4 pt-4 border-t border-[#2a2320]">
-              <p className="text-[11px] text-dim mb-2">Extract / Detach</p>
               {[
-                { key: "maskThreshold", label: "Threshold", min: 0.05, max: 0.95, step: 0.01, val: maskThreshold, set: setMaskThreshold, fmt: (v: number) => Math.round(v * 100) + "%" },
-                { key: "maskThickness", label: "Thickness (Extract only)",  min: -0.5, max: 0.5,  step: 0.005, val: maskThickness, set: setMaskThickness, fmt: (v: number) => v.toFixed(3) },
+                { key: "brushRadius",      label: "Radius",       min: 0.02, max: 2,    step: 0.01, val: brushRadius,      set: setBrushRadius,      fmt: (v: number) => v.toFixed(2) },
+                { key: "brushInnerRadius", label: "Inner Radius", min: 0,    max: 0.95, step: 0.01, val: brushInnerRadius, set: setBrushInnerRadius, fmt: (v: number) => Math.round(v * 100) + "%" },
+                { key: "brushStrength",    label: "Strength",     min: 0.01, max: 1,    step: 0.01, val: brushStrength,    set: setBrushStrength,    fmt: (v: number) => Math.round(v * 100) + "%" },
               ].map(({ key, label, min, max, step, val, set, fmt }) => (
                 <label key={key} className="block mb-3">
                   <div className="flex justify-between mb-1">
@@ -1342,101 +1289,169 @@ export default function MeshSculptClient() {
                     className="w-full accent-[#c47be8]" />
                 </label>
               ))}
-              <div className="flex gap-2">
-                <button onClick={handleExtractMask}
-                  className="flex-1 py-1.5 rounded-md text-white text-[11px] font-medium transition-colors"
-                  style={{ background: PURPLE }}>
-                  Extract
-                </button>
-                <button onClick={handleDetachMask}
-                  className="flex-1 py-1.5 rounded-md text-white text-[11px] font-medium transition-colors"
-                  style={{ background: "#c48b20" }}>
-                  Detach
-                </button>
-              </div>
-              <button onClick={handleClearMask}
-                className="w-full mt-2 py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors">
-                Clear Mask
-              </button>
-              <p className="text-[10px] text-amber-400 mt-1.5">Detach removes the masked triangles from this mesh — unlike Extract, it edits the mesh you&apos;re on.</p>
-              {extractMsg && <p className="text-[11px] mt-1.5 text-green-400">{extractMsg}</p>}
-            </div>
+
+              {/* Brush-radius vertex highlight density — "all" gets visually
+                  noisy on dense/subdivided meshes */}
+              <label className="block mb-4">
+                <div className="text-[11px] text-dim mb-1">Highlight</div>
+                <div className="flex gap-1">
+                  {([["center", "Center"], ["all", "All"], ["none", "None"]] as [HighlightMode, string][]).map(([m, label]) => (
+                    <button key={m} onClick={() => setHighlightMode(m)}
+                      className="flex-1 py-1.5 rounded text-[11px] font-medium transition-colors"
+                      style={{ background: highlightMode === m ? "rgba(196,123,232,.22)" : "#1e1a17", color: highlightMode === m ? PURPLE : "#8aa0b4" }}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </label>
+            </>
           )}
 
-          {/* Subdivision */}
-          <div className="mt-4 pt-4 border-t border-[#2a2320]">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-[11px] text-dim">Subdivision</span>
-              <span className="text-[11px] text-ink">Level {subdivLevel}</span>
-            </div>
-            <div className="flex gap-1 mb-1">
-              <button
-                onClick={() => setSmoothSubdivide(true)}
-                title="Catmull-Clark — rounds the shape as it densifies"
-                className="flex-1 py-1 rounded text-[10.5px] font-medium transition-colors"
-                style={{ background: smoothSubdivide ? "rgba(196,123,232,.22)" : "#1e1a17", color: smoothSubdivide ? PURPLE : "#8aa0b4" }}>
-                Smooth
-              </button>
-              <button
-                onClick={() => setSmoothSubdivide(false)}
-                title="Simple — adds density without changing the shape"
-                className="flex-1 py-1 rounded text-[10.5px] font-medium transition-colors"
-                style={{ background: !smoothSubdivide ? "rgba(196,123,232,.22)" : "#1e1a17", color: !smoothSubdivide ? PURPLE : "#8aa0b4" }}>
-                Simple
-              </button>
-            </div>
-            <div className="flex gap-1">
-              <button
-                onClick={() => {
-                  const ok = viewerHandleRef.current?.subdivideDown();
-                  if (ok) setSubdivLevel((l) => Math.max(0, l - 1));
-                }}
-                disabled={subdivLevel === 0}
-                className="flex-1 py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                title="Step back to previous subdivision level">
-                ▼ Down
-              </button>
-              <button
-                onClick={() => {
-                  viewerHandleRef.current?.subdivide();
-                  setSubdivLevel((l) => l + 1);
-                }}
-                disabled={vertexCount == null || (vertexCount * 4 > 1_000_000)}
-                className="flex-1 py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                title={smoothSubdivide ? "Catmull-Clark subdivision — each level ≈ 4× triangle count" : "Simple subdivision — adds density without rounding the shape"}>
-                ▲ Up
-              </button>
-            </div>
-            <button
-              onClick={() => viewerHandleRef.current?.remesh()}
-              disabled={vertexCount == null}
-              className="w-full py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed mt-1"
-              title="Globally redistribute triangles to even edge density">
-              Remesh
-            </button>
-            <input
-              ref={conformFileInputRef}
-              type="file"
-              accept=".obj"
-              className="hidden"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) void handleConformFile(file);
-                e.target.value = "";
-              }}
-            />
-            <button
-              onClick={() => conformFileInputRef.current?.click()}
-              disabled={vertexCount == null}
-              className="w-full py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed mt-1"
-              title="Wrap the current mesh onto the surface of a reference OBJ (e.g. a ZBrush export at a different subdivision level) — position-only, doesn't need matching topology">
-              Conform to Reference…
-            </button>
-            {conformMsg && <p className="text-[10px] mt-1 text-green-400">{conformMsg}</p>}
-            {(vertexCount ?? 0) > 1_000_000 && (
-              <p className="text-[10px] text-amber-400 mt-1">Approaching limit — save before subdividing further</p>
-            )}
+          <div className="flex gap-2 mt-4">
+            <button onClick={() => viewerHandleRef.current?.undo()}
+              className="flex-1 py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors" title="Ctrl+Z">Undo</button>
+            <button onClick={() => viewerHandleRef.current?.redo()}
+              className="flex-1 py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors" title="Ctrl+Shift+Z">Redo</button>
           </div>
+
+          {editMode === "sculpt" && (
+            <>
+              {/* Paint Color Picker */}
+              {brushMode === "paint" && (
+                <div className="mt-4 pt-4 border-t border-[#2a2320]">
+                  <p className="text-[11px] text-dim mb-2">Paint Color</p>
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="color"
+                      value={paintColor}
+                      onChange={(e) => setPaintColor(e.target.value)}
+                      className="w-8 h-8 rounded cursor-pointer border-0 bg-transparent p-0"
+                      style={{ appearance: "none", WebkitAppearance: "none" }}
+                    />
+                    <span className="text-[11px] text-ink font-mono">{paintColor}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Mask + Extract/Detach — paint a region, then either pull a
+                  thickened shell out of it (Extract, source untouched) or pull
+                  the already-3D triangles themselves out of it (Detach, source
+                  IS mutated — e.g. removing a vehicle door/wheel while keeping
+                  the shared UV map). See Submeshes list below. */}
+              {brushMode === "mask" && (
+                <div className="mt-4 pt-4 border-t border-[#2a2320]">
+                  <p className="text-[11px] text-dim mb-2">Extract / Detach</p>
+                  {[
+                    { key: "maskThreshold", label: "Threshold", min: 0.05, max: 0.95, step: 0.01, val: maskThreshold, set: setMaskThreshold, fmt: (v: number) => Math.round(v * 100) + "%" },
+                    { key: "maskThickness", label: "Thickness (Extract only)",  min: -0.5, max: 0.5,  step: 0.005, val: maskThickness, set: setMaskThickness, fmt: (v: number) => v.toFixed(3) },
+                  ].map(({ key, label, min, max, step, val, set, fmt }) => (
+                    <label key={key} className="block mb-3">
+                      <div className="flex justify-between mb-1">
+                        <span className="text-[11px] text-dim">{label}</span>
+                        <span className="text-[11px] text-ink">{fmt(val)}</span>
+                      </div>
+                      <input type="range" min={min} max={max} step={step} value={val}
+                        onChange={(e) => set(Number(e.target.value))}
+                        className="w-full accent-[#c47be8]" />
+                    </label>
+                  ))}
+                  <div className="flex gap-2">
+                    <button onClick={handleExtractMask}
+                      className="flex-1 py-1.5 rounded-md text-white text-[11px] font-medium transition-colors"
+                      style={{ background: PURPLE }}>
+                      Extract
+                    </button>
+                    <button onClick={handleDetachMask}
+                      className="flex-1 py-1.5 rounded-md text-white text-[11px] font-medium transition-colors"
+                      style={{ background: "#c48b20" }}>
+                      Detach
+                    </button>
+                  </div>
+                  <button onClick={handleClearMask}
+                    className="w-full mt-2 py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors">
+                    Clear Mask
+                  </button>
+                  <p className="text-[10px] text-amber-400 mt-1.5">Detach removes the masked triangles from this mesh — unlike Extract, it edits the mesh you&apos;re on.</p>
+                  {extractMsg && <p className="text-[11px] mt-1.5 text-green-400">{extractMsg}</p>}
+                </div>
+              )}
+
+              {/* Subdivision */}
+              <div className="mt-4 pt-4 border-t border-[#2a2320]">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] text-dim">Subdivision</span>
+                  <span className="text-[11px] text-ink">Level {subdivLevel}</span>
+                </div>
+                <div className="flex gap-1 mb-1">
+                  <button
+                    onClick={() => setSmoothSubdivide(true)}
+                    title="Catmull-Clark — rounds the shape as it densifies"
+                    className="flex-1 py-1 rounded text-[10.5px] font-medium transition-colors"
+                    style={{ background: smoothSubdivide ? "rgba(196,123,232,.22)" : "#1e1a17", color: smoothSubdivide ? PURPLE : "#8aa0b4" }}>
+                    Smooth
+                  </button>
+                  <button
+                    onClick={() => setSmoothSubdivide(false)}
+                    title="Simple — adds density without changing the shape"
+                    className="flex-1 py-1 rounded text-[10.5px] font-medium transition-colors"
+                    style={{ background: !smoothSubdivide ? "rgba(196,123,232,.22)" : "#1e1a17", color: !smoothSubdivide ? PURPLE : "#8aa0b4" }}>
+                    Simple
+                  </button>
+                </div>
+                <div className="flex gap-1">
+                  <button
+                    onClick={() => {
+                      const ok = viewerHandleRef.current?.subdivideDown();
+                      if (ok) setSubdivLevel((l) => Math.max(0, l - 1));
+                    }}
+                    disabled={subdivLevel === 0}
+                    className="flex-1 py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    title="Step back to previous subdivision level">
+                    ▼ Down
+                  </button>
+                  <button
+                    onClick={() => {
+                      viewerHandleRef.current?.subdivide();
+                      setSubdivLevel((l) => l + 1);
+                    }}
+                    disabled={vertexCount == null || (vertexCount * 4 > 1_000_000)}
+                    className="flex-1 py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    title={smoothSubdivide ? "Catmull-Clark subdivision — each level ≈ 4× triangle count" : "Simple subdivision — adds density without rounding the shape"}>
+                    ▲ Up
+                  </button>
+                </div>
+                <button
+                  onClick={() => viewerHandleRef.current?.remesh()}
+                  disabled={vertexCount == null}
+                  className="w-full py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed mt-1"
+                  title="Globally redistribute triangles to even edge density">
+                  Remesh
+                </button>
+                <input
+                  ref={conformFileInputRef}
+                  type="file"
+                  accept=".obj"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) void handleConformFile(file);
+                    e.target.value = "";
+                  }}
+                />
+                <button
+                  onClick={() => conformFileInputRef.current?.click()}
+                  disabled={vertexCount == null}
+                  className="w-full py-1.5 rounded bg-[#1e1a17] text-[11px] text-dim hover:text-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed mt-1"
+                  title="Wrap the current mesh onto the surface of a reference OBJ (e.g. an export at a different subdivision level) — position-only, doesn't need matching topology">
+                  Conform to Reference…
+                </button>
+                {conformMsg && <p className="text-[10px] mt-1 text-green-400">{conformMsg}</p>}
+                {(vertexCount ?? 0) > 1_000_000 && (
+                  <p className="text-[10px] text-amber-400 mt-1">Approaching limit — save before subdividing further</p>
+                )}
+              </div>
+            </>
+          )}
 
           {/* Submeshes — every mesh currently in the scene (the original
               load plus anything Extract/Detach has pulled out of it). Each

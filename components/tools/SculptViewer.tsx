@@ -455,6 +455,10 @@ export type SculptViewerHandle = {
 
 export type ViewMode = "combined" | "clay" | "wireframe" | "albedo" | "ao";
 export type PrimitiveType = "sphere" | "box" | "cylinder" | "cone" | "torus" | "capsule" | "plane" | "human";
+// "off": hidden. "on": depth-tested — the mesh occludes bones normally
+// (pair with xrayEnabled to see through). "onTop": always visible,
+// ignores mesh depth — matches the existing Pose/Rig edit-mode look.
+export type BoneViewerMode = "off" | "on" | "onTop";
 
 // ── MatCap clay texture generator (CPU / canvas) ──────────────────────────────
 // Generates a 256×256 sphere image on a canvas using view-space lighting.
@@ -584,6 +588,13 @@ type Props = {
    * whichever view is active (combined/clay/albedo/ao), not just the
    * dedicated "wireframe" view mode. */
   wireframeOverlay?: boolean;
+  /** Makes every mesh material translucent, independent of view mode —
+   * pairs with boneViewerMode to see bones through the mesh. */
+  xrayEnabled?: boolean;
+  /** Shows the loaded skeleton/rig joints outside of Pose/Rig edit mode.
+   * "off": hidden. "on": occluded normally by the mesh (pair with
+   * xrayEnabled). "onTop": always visible, ignoring mesh depth. */
+  boneViewerMode?: BoneViewerMode;
   /** Ground reference grid. Defaults to visible (existing behavior). */
   showGrid?: boolean;
   /** Brush-radius vertex highlight density. Defaults to "all" (existing behavior). */
@@ -627,6 +638,8 @@ export default function SculptViewer({
   dynTopo = false,
   smoothSubdivide = true,
   wireframeOverlay = false,
+  xrayEnabled = false,
+  boneViewerMode = "off",
   showGrid = true,
   highlightMode = "all",
   mirrorMode = false,
@@ -712,6 +725,8 @@ export default function SculptViewer({
       if (o.name === "__wire") o.visible = viewModeRef.current === "wireframe" || wireframeOverlay;
     });
   }, [wireframeOverlay]);
+
+  const boneViewerModeRef = useRef<BoneViewerMode>("off");
 
   useEffect(() => {
     if (gridRef.current) gridRef.current.visible = showGrid;
@@ -829,6 +844,12 @@ export default function SculptViewer({
   const getJointHitFromEventRef = useRef<(e: PointerEvent) => { entry: SculptMeshEntry; bone: RigBone } | null>(() => null);
 
   useEffect(() => {
+    boneViewerModeRef.current = boneViewerMode;
+    updateBoneHandlesRef.current();
+    updateJointHandlesRef.current();
+  }, [boneViewerMode]);
+
+  useEffect(() => {
     editModeRef.current = editMode;
     if (editMode === "poly_edit") {
       // Lazily build adjacency the first time poly-edit is entered for each
@@ -885,6 +906,12 @@ export default function SculptViewer({
   const clayColorRef = useRef(clayColor);
   useEffect(() => { viewModeRef.current = viewMode; }, [viewMode]);
   useEffect(() => { clayColorRef.current = clayColor; }, [clayColor]);
+  // X-Ray: per-material captured baseline (transparent/opacity/depthWrite),
+  // keyed by material object identity so it survives clay's persistent
+  // singleton material and correctly no-ops for albedo/ao's fresh-every-call
+  // instances (their captured baseline is just the trivial default).
+  const xrayBaselineRef = useRef(new WeakMap<THREE.Material, { transparent: boolean; opacity: number; depthWrite: boolean }>());
+  const xrayEnabledRef = useRef(false);
   const paintColorRef = useRef(paintColor);
   useEffect(() => { paintColorRef.current = paintColor; }, [paintColor]);
 
@@ -903,6 +930,48 @@ export default function SculptViewer({
     }
     return clayMatRef.current!;
   }
+
+  const XRAY_OPACITY = 0.3;
+
+  /** Makes every mesh material in `group` translucent (or restores it),
+   * independent of which view-mode material is currently assigned — called
+   * both on its own (toggle) and from the tail of applyViewToGroup so it
+   * survives view-mode switches and entry rebuilds without needing a
+   * separate call at each of those sites. */
+  function applyXrayToGroup(group: THREE.Group, enabled: boolean) {
+    const baselines = xrayBaselineRef.current;
+    group.traverse((o) => {
+      if (o.name === "__wire") return;
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      const mats = Array.isArray(m.material) ? m.material : [m.material];
+      for (const mat of mats) {
+        if (!mat) continue;
+        if (enabled) {
+          if (!baselines.has(mat)) {
+            baselines.set(mat, { transparent: mat.transparent, opacity: mat.opacity, depthWrite: mat.depthWrite });
+          }
+          mat.transparent = true;
+          mat.opacity = XRAY_OPACITY;
+          mat.depthWrite = false;
+        } else {
+          const base = baselines.get(mat);
+          if (base) {
+            mat.transparent = base.transparent;
+            mat.opacity = base.opacity;
+            mat.depthWrite = base.depthWrite;
+          }
+        }
+        mat.needsUpdate = true;
+      }
+    });
+  }
+
+  useEffect(() => {
+    xrayEnabledRef.current = xrayEnabled;
+    const group = modelRef.current;
+    if (group) applyXrayToGroup(group, xrayEnabled);
+  }, [xrayEnabled]);
 
   function applyViewToGroup(group: THREE.Group, scene: THREE.Scene, vm: ViewMode, cc: string) {
     channelMatsRef.current.forEach(m => m.dispose());
@@ -944,6 +1013,7 @@ export default function SculptViewer({
     } else {
       scene.background = new THREE.Color("#1a1614");
     }
+    applyXrayToGroup(group, xrayEnabledRef.current);
   }
 
   // ── view mode / clay color change ─────────────────────────────────────────
@@ -1183,6 +1253,16 @@ export default function SculptViewer({
       const handles = boneHandlesRef.current;
       const links = boneLinksRef.current;
       if (!handles || !links) return;
+      const inPoseMode = editModeRef.current === "pose";
+      // Pose mode's own editing gizmo always needs handles fully visible
+      // and unoccluded, regardless of the Bone Viewer toggle — that
+      // existing behavior is untouched. Outside Pose mode, the toggle's
+      // "on" state lets the mesh occlude bones normally (depthTest:true,
+      // pair with X-Ray to see through); "onTop" matches the always-on-top
+      // look Pose mode already has.
+      const depthTest = !inPoseMode && boneViewerModeRef.current === "on";
+      boneHandleMat.depthTest = depthTest;
+      boneLinkMat.depthTest = depthTest;
       boneHandleIndex = [];
       const positions: number[] = [];
       const linkPositions: number[] = [];
@@ -1204,12 +1284,12 @@ export default function SculptViewer({
       handles.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
       handles.geometry.attributes.position.needsUpdate = true;
       handles.geometry.computeBoundingSphere();
-      handles.visible = editModeRef.current === "pose" && positions.length > 0;
+      handles.visible = (inPoseMode || boneViewerModeRef.current !== "off") && positions.length > 0;
 
       links.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(linkPositions), 3));
       links.geometry.attributes.position.needsUpdate = true;
       links.geometry.computeBoundingSphere();
-      links.visible = editModeRef.current === "pose" && linkPositions.length > 0;
+      links.visible = (inPoseMode || boneViewerModeRef.current !== "off") && linkPositions.length > 0;
     }
     updateBoneHandlesRef.current = updateBoneHandles;
 
@@ -1314,6 +1394,10 @@ export default function SculptViewer({
       const handles = jointHandlesRef.current;
       const links = jointLinksRef.current;
       if (!handles || !links) return;
+      const inRigMode = editModeRef.current === "rig";
+      const depthTest = !inRigMode && boneViewerModeRef.current === "on";
+      jointHandleMat.depthTest = depthTest;
+      jointLinkMat.depthTest = depthTest;
       jointHandleIndex = [];
       const positions: number[] = [];
       const linkPositions: number[] = [];
@@ -1331,12 +1415,12 @@ export default function SculptViewer({
       handles.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
       handles.geometry.attributes.position.needsUpdate = true;
       handles.geometry.computeBoundingSphere();
-      handles.visible = editModeRef.current === "rig" && positions.length > 0;
+      handles.visible = (inRigMode || boneViewerModeRef.current !== "off") && positions.length > 0;
 
       links.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(linkPositions), 3));
       links.geometry.attributes.position.needsUpdate = true;
       links.geometry.computeBoundingSphere();
-      links.visible = editModeRef.current === "rig" && linkPositions.length > 0;
+      links.visible = (inRigMode || boneViewerModeRef.current !== "off") && linkPositions.length > 0;
     }
     updateJointHandlesRef.current = updateJointHandles;
 

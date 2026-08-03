@@ -12,7 +12,7 @@ import {
   signedAssetUrl,
   type AssetRow,
 } from "@/lib/assets";
-import type { SculptViewerHandle, ViewMode, PrimitiveType, EditMode, SelectMode, PolyEditSelectTool, TransformMode, HighlightMode } from "@/components/tools/SculptViewer";
+import type { SculptViewerHandle, ViewMode, PrimitiveType, EditMode, SelectMode, PolyEditSelectTool, TransformMode, HighlightMode, BoneViewerMode } from "@/components/tools/SculptViewer";
 import type { BrushMode } from "@/lib/sculpt/brushes";
 import type * as THREE from "three";
 
@@ -176,6 +176,8 @@ export default function MeshSculptClient() {
   const [highlightMode, setHighlightMode] = useState<HighlightMode>("all");
   const [smoothSubdivide, setSmoothSubdivide] = useState(true);
   const [mirrorMode, setMirrorMode] = useState(false);
+  const [xrayEnabled, setXrayEnabled] = useState(false);
+  const [boneViewerMode, setBoneViewerMode] = useState<BoneViewerMode>("off");
   const [compressKtx2, setCompressKtx2] = useState(true);
 
   const [editMode, setEditMode] = useState<EditMode>("sculpt");
@@ -1384,6 +1386,31 @@ export default function MeshSculptClient() {
             ))}
           </div>
 
+          {/* X-Ray toggle — makes the mesh translucent so interior
+              structure (bones, when Bone Viewer is on) is visible through it */}
+          <div className="flex items-center px-1">
+            <button
+              onClick={() => setXrayEnabled((x) => !x)}
+              title="Make the mesh translucent, so bones (with Bone Viewer on) are visible through it"
+              className="px-2.5 py-1.5 rounded text-[11px] font-medium transition-colors"
+              style={{ background: xrayEnabled ? PURPLE : "transparent", color: xrayEnabled ? "#fff" : "#8aa0b4" }}>
+              X-Ray
+            </button>
+          </div>
+
+          {/* Bone Viewer — 3-state cycle: Off / On (occluded by the mesh,
+              pair with X-Ray) / On Top (always visible, ignores mesh depth).
+              Shows the imported skeleton (if any) without entering Pose mode. */}
+          <div className="flex items-center px-1">
+            <button
+              onClick={() => setBoneViewerMode((m) => m === "off" ? "on" : m === "on" ? "onTop" : "off")}
+              title="Show the mesh's skeleton (if rigged), independent of Pose mode. Cycles Off / On / On Top"
+              className="px-2.5 py-1.5 rounded text-[11px] font-medium transition-colors"
+              style={{ background: boneViewerMode !== "off" ? PURPLE : "transparent", color: boneViewerMode !== "off" ? "#fff" : "#8aa0b4" }}>
+              {boneViewerMode === "off" ? "Bones" : boneViewerMode === "on" ? "Bones: On" : "Bones: Top"}
+            </button>
+          </div>
+
           {viewMode === "clay" && (
             <div className="flex items-center gap-1.5 ml-1 pl-2 border-l border-[#2a2320]">
               {CLAY_PRESETS.map((p) => (
@@ -1449,6 +1476,8 @@ export default function MeshSculptClient() {
             clayColor={clayColor}
             dynTopo={dynTopo}
             wireframeOverlay={showWireframe}
+            xrayEnabled={xrayEnabled}
+            boneViewerMode={boneViewerMode}
             showGrid={showGrid}
             highlightMode={highlightMode}
             smoothSubdivide={smoothSubdivide}

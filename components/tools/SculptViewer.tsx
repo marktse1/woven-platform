@@ -107,6 +107,14 @@ type SculptMeshEntry = {
    * target, added directly to the scene so its matrixWorld updates
    * normally every frame. */
   ikTargetBones?: Map<string, THREE.Bone>;
+  /** chain.id -> its synthetic pole-vector bone, for every 2-link chain
+   * (every leg/arm chain this project's convention produces). Same
+   * free-floating-bone technique as ikTargetBones, but these chains are
+   * NOT solved by ikSolver/CCDIKSolver at all — CCD has no pole-vector
+   * concept, so 2-link chains are excluded from the CCDIKSolver `iks`
+   * array at import time and solved analytically instead (solveTwoBoneIK)
+   * using this bone's live position as the bend-direction reference. */
+  ikPoleBones?: Map<string, THREE.Bone>;
 };
 
 // ── ZBrush-style extraction mask painting/visualization ──────────────────────
@@ -366,6 +374,121 @@ const WIRE_OPACITY = 0.85;
 
 function wireColorFor(vm: ViewMode): number {
   return vm === "clay" ? WIRE_COLOR_CLAY : WIRE_COLOR_DEFAULT;
+}
+
+/** True for the synthetic, unskinned drag-aid bones injected into a
+ * skeleton at import time (__ikTarget_<chainId>, __ikPole_<chainId>) —
+ * they're authoring handles, not part of the actual performance, so every
+ * bone list/keyframe capture shown to the user or written into a clip
+ * excludes them. */
+function isSyntheticIKBone(name: string): boolean {
+  return name.startsWith("__ikTarget_") || name.startsWith("__ikPole_");
+}
+
+/**
+ * Analytic two-bone IK with pole-vector bend control — the standard
+ * closed-form technique for exactly this case (root→mid→effector, 2
+ * links), the same one Unity's TwoBoneIKConstraint / Unreal's Two Bone IK
+ * node use. Used instead of CCDIKSolver for every 2-link chain, since CCD
+ * has no pole-vector concept at all. Bone lengths are read fresh from the
+ * bones' CURRENT world positions every call (rotating a bone never
+ * changes its child's distance from it, so this is always self-
+ * consistent — no separate bind-length bookkeeping needed).
+ *
+ * Sets root.quaternion and mid.quaternion (both LOCAL, relative to their
+ * respective current parent orientation) directly; does not touch
+ * effector's own rotation, matching how CCDIKSolver also only rotates the
+ * link bones — effector's world position simply follows via normal FK
+ * once root/mid are updated.
+ */
+function solveTwoBoneIK(
+  root: THREE.Bone,
+  mid: THREE.Bone,
+  effector: THREE.Bone,
+  targetWorldPos: THREE.Vector3,
+  poleWorldPos: THREE.Vector3,
+): void {
+  root.updateWorldMatrix(true, true);
+
+  const rootPos = new THREE.Vector3();
+  root.getWorldPosition(rootPos);
+  const midPos = new THREE.Vector3();
+  mid.getWorldPosition(midPos);
+  const effectorPos = new THREE.Vector3();
+  effector.getWorldPosition(effectorPos);
+
+  const len1 = rootPos.distanceTo(midPos);
+  const len2 = midPos.distanceTo(effectorPos);
+  if (len1 < 1e-6 || len2 < 1e-6) return; // degenerate rig proportions
+
+  // Reach: clamp the target distance to what the chain can actually
+  // achieve so it stretches/compresses gracefully at its limits instead
+  // of producing an invalid (NaN) triangle.
+  const toTargetVec = targetWorldPos.clone().sub(rootPos);
+  const targetDist = toTargetVec.length();
+  const minReach = Math.abs(len1 - len2) + 1e-4;
+  const maxReach = len1 + len2 - 1e-4;
+  const d = THREE.MathUtils.clamp(targetDist, minReach, maxReach);
+  const ta = targetDist > 1e-6 ? toTargetVec.normalize() : new THREE.Vector3(0, 0, 1);
+
+  // Law of cosines: `a` = how far along the root→target axis the mid
+  // joint sits, `h` = its perpendicular offset from that axis.
+  const a = (len1 * len1 - len2 * len2 + d * d) / (2 * d);
+  const h = Math.sqrt(Math.max(0, len1 * len1 - a * a));
+
+  // The perpendicular DIRECTION (which way `h` points) is the actual
+  // pole-vector contribution — project the pole onto the plane
+  // perpendicular to the root→target axis.
+  const toPoleVec = poleWorldPos.clone().sub(rootPos);
+  const perp = toPoleVec.clone().sub(ta.clone().multiplyScalar(toPoleVec.dot(ta)));
+  if (perp.lengthSq() < 1e-8) {
+    // Pole colinear with the root→target axis — bend direction is
+    // mathematically undefined from the pole alone. Fall back to the
+    // CURRENT mid-joint's own perpendicular component so dragging the
+    // pole through this alignment holds the last valid bend direction
+    // instead of popping/flipping.
+    const curToMid = midPos.clone().sub(rootPos);
+    perp.copy(curToMid).sub(ta.clone().multiplyScalar(curToMid.dot(ta)));
+    if (perp.lengthSq() < 1e-8) {
+      perp.crossVectors(ta, new THREE.Vector3(0, 1, 0));
+      if (perp.lengthSq() < 1e-8) perp.crossVectors(ta, new THREE.Vector3(0, 0, 1));
+    }
+  }
+  perp.normalize();
+
+  const newMidPos = rootPos.clone().addScaledVector(ta, a).addScaledVector(perp, h);
+  const newEffectorPos = rootPos.clone().addScaledVector(ta, d);
+
+  // Step 1: aim root's world direction (root→mid) at the solved mid
+  // position, via a world-space delta rotation converted back to root's
+  // local space (relative to ITS current parent orientation).
+  const curRootDir = midPos.clone().sub(rootPos).normalize();
+  const newRootDir = newMidPos.clone().sub(rootPos).normalize();
+  const rootDelta = new THREE.Quaternion().setFromUnitVectors(curRootDir, newRootDir);
+  const rootWorldQuat = new THREE.Quaternion();
+  root.getWorldQuaternion(rootWorldQuat);
+  const newRootWorldQuat = rootDelta.multiply(rootWorldQuat);
+  const rootParentWorldQuat = new THREE.Quaternion();
+  if (root.parent) root.parent.getWorldQuaternion(rootParentWorldQuat);
+  root.quaternion.copy(rootParentWorldQuat.clone().invert().multiply(newRootWorldQuat));
+  root.updateMatrixWorld(true);
+
+  // Step 2: same technique for mid's world direction (mid→effector) —
+  // re-read effector's world position now that root's update has already
+  // moved mid (and, via mid's still-unchanged local rotation, effector)
+  // into their new positions under the new root orientation.
+  const curEffectorPos = new THREE.Vector3();
+  effector.getWorldPosition(curEffectorPos);
+  const curMidDir = curEffectorPos.clone().sub(newMidPos).normalize();
+  const newMidDir = newEffectorPos.clone().sub(newMidPos).normalize();
+  const midDelta = new THREE.Quaternion().setFromUnitVectors(curMidDir, newMidDir);
+  const midWorldQuat = new THREE.Quaternion();
+  mid.getWorldQuaternion(midWorldQuat);
+  const newMidWorldQuat = midDelta.multiply(midWorldQuat);
+  const midParentWorldQuat = new THREE.Quaternion();
+  if (mid.parent) mid.parent.getWorldQuaternion(midParentWorldQuat);
+  mid.quaternion.copy(midParentWorldQuat.clone().invert().multiply(newMidWorldQuat));
+  mid.updateMatrixWorld(true);
 }
 
 type SculptCamera = THREE.PerspectiveCamera | THREE.OrthographicCamera;
@@ -957,6 +1080,13 @@ export default function SculptViewer({
   // IK-specific handling at all.
   const ikTransformControlsRef = useRef<TransformControls | null>(null);
   const ikTransformHelperRef = useRef<THREE.Object3D | null>(null);
+  // Second gizmo for the pole-vector bend-direction handle — shown
+  // alongside the target gizmo (not instead of it) whenever the selected
+  // chain has a pole bone, so both are draggable at once, same as
+  // Maya/Unity show target + pole together rather than making the user
+  // switch between them.
+  const ikPoleTransformControlsRef = useRef<TransformControls | null>(null);
+  const ikPoleTransformHelperRef = useRef<THREE.Object3D | null>(null);
   const selectedIKChainIdRef = useRef<string | null>(null);
   const selectedIKEntryRef = useRef<SculptMeshEntry | null>(null);
   const selectIKChainRef = useRef<(entry: SculptMeshEntry | null, chainId: string | null) => void>(() => {});
@@ -1625,7 +1755,8 @@ export default function SculptViewer({
     rigTransformHelperRef.current = rigTransformHelper;
 
     // IK target gizmo — translate-only (a target position is all
-    // CCDIKSolver reads), attaches to a chain's synthetic target bone.
+    // CCDIKSolver/solveTwoBoneIK read), attaches to a chain's synthetic
+    // target bone.
     const ikTransformControls = new TransformControls(camera, renderer.domElement);
     ikTransformControls.setMode("translate");
     ikTransformControls.enabled = false;
@@ -1634,6 +1765,44 @@ export default function SculptViewer({
     scene.add(ikTransformHelper);
     ikTransformControlsRef.current = ikTransformControls;
     ikTransformHelperRef.current = ikTransformHelper;
+
+    // Pole-vector gizmo — same idea, smaller (setSize) so it reads as a
+    // secondary handle when both it and the target gizmo are visible on
+    // the same chain at once.
+    const ikPoleTransformControls = new TransformControls(camera, renderer.domElement);
+    ikPoleTransformControls.setMode("translate");
+    ikPoleTransformControls.setSize(0.6);
+    ikPoleTransformControls.enabled = false;
+    const ikPoleTransformHelper = ikPoleTransformControls.getHelper();
+    ikPoleTransformHelper.visible = false;
+    scene.add(ikPoleTransformHelper);
+    ikPoleTransformControlsRef.current = ikPoleTransformControls;
+    ikPoleTransformHelperRef.current = ikPoleTransformHelper;
+
+    // Shared by both gizmos' objectChange — resolves the chain's actual
+    // root/mid/effector bones and picks the analytic solve (2-link chains
+    // with a pole bone) or falls back to the CCD solver otherwise.
+    function solveIKChain(entry: SculptMeshEntry, chainId: string) {
+      const chain = entry.poseAnimation?.ikChains.find((c) => c.id === chainId);
+      const skeleton = entry.skeleton;
+      const targetBone = entry.ikTargetBones?.get(chainId);
+      const poleBone = entry.ikPoleBones?.get(chainId);
+      if (chain && skeleton && targetBone && poleBone && chain.links.length === 2) {
+        const midBone = skeleton.bones.find((b) => b.name === chain.links[0]);
+        const rootBone = skeleton.bones.find((b) => b.name === chain.links[1]);
+        const effectorBone = skeleton.bones.find((b) => b.name === chain.effectorBone);
+        if (midBone && rootBone && effectorBone) {
+          const targetPos = new THREE.Vector3();
+          targetBone.getWorldPosition(targetPos);
+          const polePos = new THREE.Vector3();
+          poleBone.getWorldPosition(polePos);
+          solveTwoBoneIK(rootBone, midBone, effectorBone, targetPos, polePos);
+        }
+      } else {
+        entry.ikSolver?.update();
+      }
+      updateBoneHandlesRef.current();
+    }
 
     function selectIKChain(entry: SculptMeshEntry | null, chainId: string | null) {
       // Selecting an IK target deselects any manually-selected pose
@@ -1649,7 +1818,9 @@ export default function SculptViewer({
       selectedIKChainIdRef.current = chainId;
       const tc = ikTransformControlsRef.current;
       const helper = ikTransformHelperRef.current;
-      if (!tc) return;
+      const poleTc = ikPoleTransformControlsRef.current;
+      const poleHelper = ikPoleTransformHelperRef.current;
+      if (!tc || !poleTc) return;
       const targetBone = entry && chainId ? entry.ikTargetBones?.get(chainId) : undefined;
       if (!entry || !chainId || !targetBone) {
         tc.enabled = false;
@@ -1659,6 +1830,19 @@ export default function SculptViewer({
         tc.attach(targetBone);
         tc.enabled = true;
         if (helper) helper.visible = true;
+      }
+      // Pole gizmo — shown alongside the target gizmo whenever this chain
+      // has a pole bone (every 2-link chain); hidden otherwise, same
+      // enable/detach pattern.
+      const poleBone = entry && chainId ? entry.ikPoleBones?.get(chainId) : undefined;
+      if (!entry || !chainId || !poleBone) {
+        poleTc.enabled = false;
+        if (poleHelper) poleHelper.visible = false;
+        poleTc.detach();
+      } else {
+        poleTc.attach(poleBone);
+        poleTc.enabled = true;
+        if (poleHelper) poleHelper.visible = true;
       }
     }
     selectIKChainRef.current = selectIKChain;
@@ -1671,8 +1855,18 @@ export default function SculptViewer({
       // mechanism manual dragging uses, so the bone-handle overlay and
       // (once a keyframe is inserted) undo/keyframing need no IK-
       // specific handling at all.
-      selectedIKEntryRef.current?.ikSolver?.update();
-      updateBoneHandlesRef.current();
+      const entry = selectedIKEntryRef.current;
+      const chainId = selectedIKChainIdRef.current;
+      if (entry && chainId) solveIKChain(entry, chainId);
+    });
+
+    ikPoleTransformControls.addEventListener("dragging-changed", (event) => {
+      controls.enabled = !event.value;
+    });
+    ikPoleTransformControls.addEventListener("objectChange", () => {
+      const entry = selectedIKEntryRef.current;
+      const chainId = selectedIKChainIdRef.current;
+      if (entry && chainId) solveIKChain(entry, chainId);
     });
 
     // World position of every joint across every entry with a `rig`, in
@@ -2221,7 +2415,60 @@ export default function SculptViewer({
             ikTargetBones.set(chain.id, targetBone);
           }
 
+          // A second synthetic bone per 2-link chain (every leg/arm chain
+          // this project's convention produces) for pole-vector bend
+          // control — CCDIKSolver has no pole-vector concept at all, so
+          // these chains are solved analytically instead (solveTwoBoneIK,
+          // below) and excluded from the CCD `iks` array entirely rather
+          // than fighting it. Default position: offset outward from the
+          // mid joint (knee/elbow) along whichever way it's ALREADY bent
+          // in the bind pose, so the pole starts somewhere sane (roughly
+          // in front of a knee / behind an elbow) instead of at the origin.
+          const ikPoleBones = new Map<string, THREE.Bone>();
+          for (const chain of ikChains) {
+            if (chain.links.length !== 2) continue;
+            const midBone = skinned.skeleton.bones.find((b) => b.name === chain.links[0]);
+            const rootBone = skinned.skeleton.bones.find((b) => b.name === chain.links[1]);
+            const effectorBone = skinned.skeleton.bones.find((b) => b.name === chain.effectorBone);
+            if (!midBone || !rootBone || !effectorBone) continue;
+            midBone.updateWorldMatrix(true, false);
+            rootBone.updateWorldMatrix(true, false);
+            effectorBone.updateWorldMatrix(true, false);
+            const rootPos = new THREE.Vector3();
+            rootBone.getWorldPosition(rootPos);
+            const midPos = new THREE.Vector3();
+            midBone.getWorldPosition(midPos);
+            const effectorPos = new THREE.Vector3();
+            effectorBone.getWorldPosition(effectorPos);
+
+            const axis = effectorPos.clone().sub(rootPos);
+            const len1 = rootPos.distanceTo(midPos);
+            if (axis.lengthSq() < 1e-10 || len1 < 1e-6) continue; // degenerate rig proportions — skip this chain's pole
+            axis.normalize();
+            const toMid = midPos.clone().sub(rootPos);
+            const bendDir = toMid.clone().sub(axis.clone().multiplyScalar(toMid.dot(axis)));
+            if (bendDir.lengthSq() < 1e-8) {
+              // Bind pose is dead-straight (root/mid/effector colinear) —
+              // no bend direction to read from geometry, so fall back to a
+              // deterministic perpendicular rather than leaving the pole
+              // at a NaN/zero-length offset.
+              bendDir.crossVectors(axis, new THREE.Vector3(0, 1, 0));
+              if (bendDir.lengthSq() < 1e-8) bendDir.crossVectors(axis, new THREE.Vector3(0, 0, 1));
+            }
+            bendDir.normalize();
+
+            const poleBone = new THREE.Bone();
+            poleBone.name = `__ikPole_${chain.id}`;
+            poleBone.position.copy(midPos).addScaledVector(bendDir, len1 * 1.5);
+            scene.add(poleBone);
+            poleBone.updateMatrixWorld(true);
+            skinned.skeleton.bones.push(poleBone);
+            skinned.skeleton.boneInverses.push(new THREE.Matrix4());
+            ikPoleBones.set(chain.id, poleBone);
+          }
+
           const iks = ikChains
+            .filter((chain) => chain.links.length !== 2) // 2-link chains are solved analytically (solveTwoBoneIK) instead, so they don't fight CCD
             .map((chain) => {
               const targetBone = ikTargetBones.get(chain.id);
               const targetIndex = targetBone ? skinned.skeleton.bones.indexOf(targetBone) : -1;
@@ -2232,7 +2479,7 @@ export default function SculptViewer({
             .filter((ik) => ik.target >= 0 && ik.effector >= 0 && ik.links.every((l) => l.index >= 0));
           const ikSolver = iks.length > 0 ? new CCDIKSolver(skinned, iks) : undefined;
 
-          skeletonEntry = { skeleton: skinned.skeleton, bindPose, poseAnimation, ikSolver, ikTargetBones };
+          skeletonEntry = { skeleton: skinned.skeleton, bindPose, poseAnimation, ikSolver, ikTargetBones, ikPoleBones };
           processedSkeletons.add(skinned.skeleton);
         }
         meshEntriesRef.current.push({ id: crypto.randomUUID(), name: entryName, mesh, seams, baseEdgeLen, quadIndices, ...paintEntry, ...skeletonEntry });
@@ -4010,10 +4257,10 @@ export default function SculptViewer({
   const getBones = useCallback((entryId: string): Array<{ id: string; name: string; depth: number }> => {
     const entry = meshEntriesRef.current.find((e) => e.id === entryId);
     if (!entry?.skeleton) return [];
-    // Excludes the synthetic IK target bones (see ikTargetBones) — they'd
-    // otherwise clutter this list as selectable-looking "bones" that
-    // aren't actually part of the character.
-    return entry.skeleton.bones.filter((bone) => !bone.name.startsWith("__ikTarget_")).map((bone) => {
+    // Excludes the synthetic IK target/pole bones (see ikTargetBones/
+    // ikPoleBones) — they'd otherwise clutter this list as selectable-
+    // looking "bones" that aren't actually part of the character.
+    return entry.skeleton.bones.filter((bone) => !isSyntheticIKBone(bone.name)).map((bone) => {
       let depth = 0;
       let p = bone.parent as THREE.Bone | null;
       while (p?.isBone) { depth++; p = p.parent as THREE.Bone | null; }
@@ -4134,11 +4381,11 @@ export default function SculptViewer({
     if (!entry.poseAnimation) entry.poseAnimation = createPoseAnimationState();
     const clip = activeClipFor(entry) ?? createClip(entry.poseAnimation);
     entry.poseAnimation.activeClipId = clip.id;
-    // Excludes the synthetic IK target bones (see ikTargetBones) — those
-    // are drag aids, not part of the actual performance, so keyframing
-    // "wherever you last left the mouse" for them would be pointless
-    // (and export bogus, unused tracks).
-    const bones = entry.skeleton.bones.filter((bone) => !bone.name.startsWith("__ikTarget_")).map((bone) => ({
+    // Excludes the synthetic IK target/pole bones (see ikTargetBones/
+    // ikPoleBones) — those are drag aids, not part of the actual
+    // performance, so keyframing "wherever you last left the mouse" for
+    // them would be pointless (and export bogus, unused tracks).
+    const bones = entry.skeleton.bones.filter((bone) => !isSyntheticIKBone(bone.name)).map((bone) => ({
       boneName: bone.name,
       position: [bone.position.x, bone.position.y, bone.position.z] as [number, number, number],
       quaternion: [bone.quaternion.x, bone.quaternion.y, bone.quaternion.z, bone.quaternion.w] as [number, number, number, number],

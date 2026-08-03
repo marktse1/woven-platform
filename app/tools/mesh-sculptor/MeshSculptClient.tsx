@@ -137,6 +137,19 @@ const PRIMITIVES: { type: PrimitiveType; label: string; icon: string }[] = [
 
 const PURPLE = "#c47be8";
 
+/** Picks a "nice" (1/2/5 × power of 10) frame interval for the
+ * timeline ruler's major tick marks, aiming for roughly `targetTicks`
+ * of them across whatever range is currently visible — keeps the ruler
+ * readable whether zoomed out to a 500-frame clip or zoomed into a
+ * 10-frame window. */
+function niceTickInterval(span: number, targetTicks = 10): number {
+  const rough = Math.max(span / targetTicks, 1);
+  const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+  const norm = rough / mag;
+  const mult = norm < 1.5 ? 1 : norm < 3.5 ? 2 : norm < 7.5 ? 5 : 10;
+  return Math.max(1, Math.round(mult * mag));
+}
+
 export default function MeshSculptClient() {
   const { user, isLoaded } = useUser();
   const creatorStatus = useCreatorStatus();
@@ -234,6 +247,7 @@ export default function MeshSculptClient() {
 
   const viewerHandleRef = useRef<SculptViewerHandle | null>(null);
   const navigatorBarRef = useRef<HTMLDivElement | null>(null);
+  const rulerRef = useRef<HTMLDivElement | null>(null);
 
   // Mesh Sculptor no longer keeps its own "browse my assets" list — the
   // global My Assets panel (app/layout.tsx) is the universal loader now.
@@ -674,6 +688,25 @@ export default function MeshSculptClient() {
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
   }, [poseTotalFrames, viewRangeStart, viewRangeEnd]);
+
+  // Click-or-drag-anywhere-on-the-ruler-to-scrub — the Maya/Blender
+  // interaction model, replacing a single native slider thumb. Takes
+  // the already-measured rect (plain data), not the element itself —
+  // the pointermove/pointerup listeners below only need coordinates,
+  // not a live DOM reference.
+  const dragRuler = useCallback((rect: DOMRect) => {
+    const scrubAt = (clientX: number) => {
+      const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      handleScrubFrame(Math.round(viewRangeStart + pct * (viewRangeEnd - viewRangeStart)));
+    };
+    const onMove = (e: PointerEvent) => scrubAt(e.clientX);
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, [handleScrubFrame, viewRangeStart, viewRangeEnd]);
 
   const handleCreateClip = useCallback(() => {
     const entryId = primaryPoseEntryId();
@@ -1790,28 +1823,57 @@ export default function MeshSculptClient() {
                 </button>
               </div>
 
-              {/* Row 2: frame scrubber (shows only the zoomed view range),
-                  with keyframe markers */}
-              <div className="relative px-4 pb-2 pt-3">
-                <input
-                  type="range" min={viewRangeStart} max={viewRangeEnd} step={1}
-                  value={Math.min(Math.max(currentFrame, viewRangeStart), viewRangeEnd)}
-                  onChange={(e) => handleScrubFrame(parseInt(e.target.value, 10))}
-                  disabled={!activeClipId}
-                  className="w-full relative z-10"
-                />
-                <div className="absolute left-4 right-4 top-0 h-0 pointer-events-none overflow-hidden">
+              {/* Row 2: Maya/Blender-style ruler — tick marks + frame
+                  labels, a draggable playhead, keyframe diamonds sitting
+                  on the ruler at their exact frame. Click or drag
+                  anywhere on it to scrub (not a single slider thumb). */}
+              <div className="px-4 pb-2 pt-3">
+                <div
+                  ref={rulerRef}
+                  onPointerDown={(e) => {
+                    const ruler = rulerRef.current;
+                    if (activeClipId && ruler) {
+                      const rect = ruler.getBoundingClientRect();
+                      const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                      handleScrubFrame(Math.round(viewRangeStart + pct * viewSpan));
+                      dragRuler(rect);
+                    }
+                  }}
+                  className="relative h-9 rounded select-none"
+                  style={{ background: "#1e1a17", cursor: activeClipId ? "ew-resize" : "default", opacity: activeClipId ? 1 : 0.4 }}
+                >
+                  {/* Tick marks + frame labels */}
+                  {(() => {
+                    const interval = niceTickInterval(viewSpan);
+                    const ticks: number[] = [];
+                    const first = Math.ceil(viewRangeStart / interval) * interval;
+                    for (let f = first; f <= viewRangeEnd; f += interval) ticks.push(f);
+                    return ticks.map((f) => (
+                      <div key={f} className="absolute top-0 bottom-0 pointer-events-none"
+                        style={{ left: `${((f - viewRangeStart) / viewSpan) * 100}%` }}>
+                        <div className="absolute top-0 w-px h-2.5" style={{ background: "#4a4040" }} />
+                        <span className="absolute top-3 text-[9.5px] tabular-nums -translate-x-1/2" style={{ color: "#6a8098" }}>{f}</span>
+                      </div>
+                    ));
+                  })()}
+
+                  {/* Keyframe diamonds */}
                   {poseKeyframeFrames.filter((f) => f >= viewRangeStart && f <= viewRangeEnd).map((frame) => (
                     <div key={frame}
                       title={`Keyframe at frame ${frame}`}
-                      className="absolute w-1.5 h-1.5 rotate-45"
+                      className="absolute bottom-1 w-2 h-2 rotate-45 pointer-events-none"
                       style={{
-                        left: `calc(${((frame - viewRangeStart) / viewSpan) * 100}% - 3px)`,
-                        top: "2px",
+                        left: `calc(${((frame - viewRangeStart) / viewSpan) * 100}% - 4px)`,
                         background: PURPLE,
                       }}
                     />
                   ))}
+
+                  {/* Playhead */}
+                  <div className="absolute top-0 bottom-0 w-px pointer-events-none"
+                    style={{ left: `${((currentFrame - viewRangeStart) / viewSpan) * 100}%`, background: "#fff" }}>
+                    <div className="absolute -top-0.5 -left-1 w-2.5 h-2.5 rotate-45" style={{ background: "#fff" }} />
+                  </div>
                 </div>
               </div>
 

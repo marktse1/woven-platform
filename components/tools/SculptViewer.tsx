@@ -2061,6 +2061,12 @@ export default function SculptViewer({
           const poseAnimation = createPoseAnimationState();
           poseAnimation.ikChains = ikChains;
           poseAnimation.hipBoneName = hipBoneName;
+          // A timeline with a real range exists the moment a rigged
+          // character loads — matching Maya/Blender, where "create a
+          // clip" isn't a step the user has to think about before the
+          // Length field/scrubber/keyframing become usable. "+ New Clip"
+          // in the UI is for adding ADDITIONAL clips beyond this one.
+          createClip(poseAnimation);
           skeletonEntry = { skeleton: skinned.skeleton, bindPose, poseAnimation };
         }
         meshEntriesRef.current.push({ id: crypto.randomUUID(), name: entryName, mesh, seams, baseEdgeLen, quadIndices, ...paintEntry, ...skeletonEntry });
@@ -2096,6 +2102,15 @@ export default function SculptViewer({
       // already in pose mode (a no-op, correctly hidden, if it's not).
       updateBoneHandlesRef.current();
       updateJointHandlesRef.current();
+
+      // Build the mixer for each entry's freshly auto-created default
+      // clip immediately, so onPoseTimeChange fires with the real
+      // length/fps right away — the timeline UI shouldn't show a
+      // stale/zeroed duration until the user happens to trigger some
+      // other action first.
+      for (const entry of meshEntriesRef.current) {
+        if (entry.poseAnimation) rebuildPoseMixerRef.current(entry);
+      }
 
       onModelLoadedRef.current?.(totalVerts);
     }, (err) => {

@@ -211,6 +211,14 @@ export default function MeshSculptClient() {
    * clip — refreshed alongside poseClips, not an onPoseTimeChange event
    * (keyframe placement doesn't change every frame during playback). */
   const [poseKeyframeFrames, setPoseKeyframeFrames] = useState<number[]>([]);
+  /** After Effects-style zoom navigator — which sub-range of the full
+   * [0, totalFrames] timeline the main scrubber currently shows, for
+   * finer per-pixel scrubbing precision on long clips. Pure view state,
+   * doesn't touch clip data at all; reset to the full range below
+   * whenever the total length changes so a stale zoom window on a new/
+   * shorter clip can't leave the scrubber unreachable. */
+  const [viewRangeStart, setViewRangeStart] = useState(0);
+  const [viewRangeEnd, setViewRangeEnd] = useState(1);
 
   // Rig mode: manually-placed joints (lib/sculpt/rig.ts) — distinct from
   // `bones` above (an imported skeleton). Starts empty on every mesh;
@@ -220,6 +228,7 @@ export default function MeshSculptClient() {
   const [editingJointId, setEditingJointId] = useState<string | null>(null);
 
   const viewerHandleRef = useRef<SculptViewerHandle | null>(null);
+  const navigatorBarRef = useRef<HTMLDivElement | null>(null);
 
   // Mesh Sculptor no longer keeps its own "browse my assets" list — the
   // global My Assets panel (app/layout.tsx) is the universal loader now.
@@ -609,6 +618,40 @@ export default function MeshSculptClient() {
     viewerHandleRef.current?.setClipLength(entryId, currentFrameCount, fps);
     refreshPoseClips();
   }, [primaryPoseEntryId, poseDuration, poseFrameRate, refreshPoseClips]);
+
+  const poseTotalFrames = Math.max(1, Math.round(poseDuration * poseFrameRate));
+
+  // Snap the zoom navigator back to the full range whenever the total
+  // length changes (or a different clip becomes active) — a stale zoom
+  // window from a previous, longer clip would otherwise leave the new
+  // scrubber unable to reach parts of its own range.
+  useEffect(() => {
+    setViewRangeStart(0);
+    setViewRangeEnd(poseTotalFrames);
+  }, [poseTotalFrames, activeClipId]);
+
+  // Drags one of the navigator bar's two edge handles — `side` is which
+  // edge, `barEl` is the navigator track div (to convert pointer X into
+  // a frame position). Native <input type="range"> only exposes one
+  // thumb, so these two handles are plain pointer-driven divs instead.
+  const dragNavigatorHandle = useCallback((side: "start" | "end", barEl: HTMLDivElement) => {
+    const rect = barEl.getBoundingClientRect();
+    const onMove = (e: PointerEvent) => {
+      const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      const frame = Math.round(pct * poseTotalFrames);
+      if (side === "start") {
+        setViewRangeStart(Math.min(frame, viewRangeEnd - 1));
+      } else {
+        setViewRangeEnd(Math.max(frame, viewRangeStart + 1));
+      }
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, [poseTotalFrames, viewRangeStart, viewRangeEnd]);
 
   const handleCreateClip = useCallback(() => {
     const entryId = primaryPoseEntryId();
@@ -1658,8 +1701,9 @@ export default function MeshSculptClient() {
             Bones, Reset Pose) stays in the sidebar's Pose panel, matching
             Maya's own split between the Time Slider and Trax Editor. */}
         {editMode === "pose" && (() => {
-          const totalFrames = Math.max(1, Math.round(poseDuration * poseFrameRate));
+          const totalFrames = poseTotalFrames;
           const currentFrame = Math.round(Math.min(poseTime, poseDuration) * poseFrameRate);
+          const viewSpan = Math.max(1, viewRangeEnd - viewRangeStart);
           return (
             <div className="border-t border-[#2a2320] bg-[#100e0c] flex-shrink-0">
               {/* Row 1: playback + frame length/rate + keyframe actions */}
@@ -1706,27 +1750,54 @@ export default function MeshSculptClient() {
                 </button>
               </div>
 
-              {/* Row 2: frame scrubber with keyframe markers */}
+              {/* Row 2: frame scrubber (shows only the zoomed view range),
+                  with keyframe markers */}
               <div className="relative px-4 pb-2 pt-3">
                 <input
-                  type="range" min={0} max={totalFrames} step={1}
-                  value={currentFrame}
+                  type="range" min={viewRangeStart} max={viewRangeEnd} step={1}
+                  value={Math.min(Math.max(currentFrame, viewRangeStart), viewRangeEnd)}
                   onChange={(e) => handleScrubFrame(parseInt(e.target.value, 10))}
                   disabled={!activeClipId}
                   className="w-full relative z-10"
                 />
-                <div className="absolute left-4 right-4 top-0 h-0 pointer-events-none">
-                  {poseKeyframeFrames.map((frame) => (
+                <div className="absolute left-4 right-4 top-0 h-0 pointer-events-none overflow-hidden">
+                  {poseKeyframeFrames.filter((f) => f >= viewRangeStart && f <= viewRangeEnd).map((frame) => (
                     <div key={frame}
                       title={`Keyframe at frame ${frame}`}
                       className="absolute w-1.5 h-1.5 rotate-45"
                       style={{
-                        left: `calc(${(frame / totalFrames) * 100}% - 3px)`,
+                        left: `calc(${((frame - viewRangeStart) / viewSpan) * 100}% - 3px)`,
                         top: "2px",
                         background: PURPLE,
                       }}
                     />
                   ))}
+                </div>
+              </div>
+
+              {/* Row 3: After Effects-style zoom navigator — drag the two
+                  handles inward to narrow Row 2's visible range for finer
+                  scrubbing precision. View-only, never touches clip data. */}
+              <div className="px-4 pb-2">
+                <div ref={navigatorBarRef} className="relative h-3 rounded" style={{ background: "#1e1a17" }}>
+                  <div className="absolute top-0 bottom-0 rounded"
+                    style={{
+                      left: `${(viewRangeStart / totalFrames) * 100}%`,
+                      right: `${100 - (viewRangeEnd / totalFrames) * 100}%`,
+                      background: "rgba(196,123,232,.25)",
+                      border: `1px solid ${PURPLE}`,
+                    }}
+                  />
+                  <div
+                    onPointerDown={() => navigatorBarRef.current && dragNavigatorHandle("start", navigatorBarRef.current)}
+                    className="absolute top-0 bottom-0 w-2 cursor-ew-resize"
+                    style={{ left: `calc(${(viewRangeStart / totalFrames) * 100}% - 4px)`, background: PURPLE, borderRadius: 2 }}
+                  />
+                  <div
+                    onPointerDown={() => navigatorBarRef.current && dragNavigatorHandle("end", navigatorBarRef.current)}
+                    className="absolute top-0 bottom-0 w-2 cursor-ew-resize"
+                    style={{ left: `calc(${(viewRangeEnd / totalFrames) * 100}% - 4px)`, background: PURPLE, borderRadius: 2 }}
+                  />
                 </div>
               </div>
             </div>

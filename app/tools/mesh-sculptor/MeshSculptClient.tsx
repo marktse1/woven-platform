@@ -677,6 +677,12 @@ export default function MeshSculptClient() {
     }
   }, [bones]);
 
+  const handleResetBone = useCallback(() => {
+    if (!selectedBoneId) return;
+    const bone = bones.find((b) => b.id === selectedBoneId);
+    if (bone) viewerHandleRef.current?.resetBone(bone.entryId, bone.id);
+  }, [bones, selectedBoneId]);
+
   const handleExtractMask = useCallback(() => {
     const created = viewerHandleRef.current?.extractMask(maskThreshold, maskThickness) ?? 0;
     setExtractMsg(created > 0 ? `Created ${created} submesh${created === 1 ? "" : "es"}.` : "Nothing masked — paint a region first.");
@@ -959,23 +965,8 @@ export default function MeshSculptClient() {
                     style={{ background: PURPLE }}>
                     Reset Pose
                   </button>
-                  <p className="text-[10px] text-dim uppercase tracking-wide mb-1.5">Bones</p>
-                  <div className="max-h-60 overflow-y-auto space-y-0.5">
-                    {bones.map((bone) => (
-                      <button
-                        key={bone.id}
-                        onClick={() => handleSelectBone(bone.entryId, bone.id === selectedBoneId ? null : bone.id)}
-                        style={{ paddingLeft: `${8 + bone.depth * 14}px`, background: selectedBoneId === bone.id ? "rgba(196,123,232,.22)" : "transparent", color: selectedBoneId === bone.id ? PURPLE : "#8aa0b4" }}
-                        className="w-full text-left py-1 rounded text-[11px] truncate transition-colors hover:bg-[#1e1a17]">
-                        {bone.name}
-                      </button>
-                    ))}
-                  </div>
-                  <p className="text-[10.5px] mt-2" style={{ color: selectedBoneId ? PURPLE : "#6a8098" }}>
-                    {selectedBoneId ? "Drag the gizmo to pose the selected bone" : "Click a bone (in the list or viewport) to select it"}
-                  </p>
 
-                  <div className="mt-4 pt-3 border-t border-[#2a2320]">
+                  <div className="pb-3 mb-3 border-b border-[#2a2320]">
                     <div className="flex items-center justify-between mb-1.5">
                       <p className="text-[10px] text-dim uppercase tracking-wide">Clips</p>
                       <button onClick={handleCreateClip} disabled={bones.length === 0}
@@ -1030,6 +1021,31 @@ export default function MeshSculptClient() {
                       </div>
                     )}
                   </div>
+
+                  <p className="text-[10px] text-dim uppercase tracking-wide mb-1.5">Bones</p>
+                  <div className="max-h-60 overflow-y-auto space-y-0.5">
+                    {bones.map((bone) => (
+                      <button
+                        key={bone.id}
+                        onClick={() => handleSelectBone(bone.entryId, bone.id === selectedBoneId ? null : bone.id)}
+                        style={{ paddingLeft: `${8 + bone.depth * 14}px`, background: selectedBoneId === bone.id ? "rgba(196,123,232,.22)" : "transparent", color: selectedBoneId === bone.id ? PURPLE : "#8aa0b4" }}
+                        className="w-full text-left py-1 rounded text-[11px] truncate transition-colors hover:bg-[#1e1a17]">
+                        {bone.name}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[10.5px] mt-2" style={{ color: selectedBoneId ? PURPLE : "#6a8098" }}>
+                    {selectedBoneId ? "Drag the gizmo to pose the selected bone" : "Click a bone (in the list or viewport) to select it"}
+                  </p>
+                  {selectedBoneId && (
+                    <button
+                      onClick={handleResetBone}
+                      title="Restore just this bone to its bind pose, leaving every other bone's current pose untouched"
+                      className="w-full mt-1.5 py-1 rounded text-[11px] font-medium transition-colors"
+                      style={{ background: "#1e1a17", color: "#8aa0b4", border: "1px solid #3a3530" }}>
+                      Reset Selected Bone
+                    </button>
+                  )}
                 </div>
               )}
 
@@ -1090,7 +1106,12 @@ export default function MeshSculptClient() {
         </div>
 
         {/* Brush settings */}
-        <div className="px-4 py-3 border-b border-[#2a2320] flex-1 overflow-y-auto">
+        {/* min-h-0 overrides the flex default of min-height:auto, which
+            otherwise refuses to shrink this item below its content size —
+            without it, a tall panel (e.g. Pose mode's bones+clips list)
+            pushes the sidebar taller than its fixed height instead of
+            scrolling internally. */}
+        <div className="px-4 py-3 border-b border-[#2a2320] flex-1 min-h-0 overflow-y-auto">
           <div className="mb-4">
             <p className="text-[10.5px] leading-relaxed" style={{ color: "#6a8098" }}>
               <span className="font-semibold" style={{ color: PURPLE }}>{activeDef.label}</span>

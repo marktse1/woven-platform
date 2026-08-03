@@ -445,6 +445,9 @@ export type SculptViewerHandle = {
   /** Restores every bone in an entry's skeleton to its originally-imported
    * bind pose (a no-op if the entry has no skeleton). */
   resetPose: (entryId: string) => void;
+  /** Restores just ONE bone to its bind pose, leaving every other bone's
+   * current pose untouched — for zeroing a single joint. */
+  resetBone: (entryId: string, boneId: string) => void;
   /** Pose-mode animation clips for an entry (empty until the first
    * keyframe/explicit New Clip — see lib/sculpt/animation.ts). */
   getClips: (entryId: string) => Array<{ id: string; name: string; duration: number }>;
@@ -865,6 +868,10 @@ export default function SculptViewer({
   const updateBoneHandlesRef = useRef<() => void>(() => {});
   const selectBoneRef = useRef<(entry: SculptMeshEntry | null, bone: THREE.Bone | null) => void>(() => {});
   const resetPoseRef = useRef<(entry: SculptMeshEntry) => void>(() => {});
+  /** Restores just one bone from bindPose — distinct from resetPose's
+   * whole-skeleton restore, for zeroing a single joint without disturbing
+   * the rest of the pose. */
+  const resetBoneRef = useRef<(entry: SculptMeshEntry, bone: THREE.Bone) => void>(() => {});
   // Assigned in the scene-init effect (where boneHandleIndex lives) so the
   // separate pointer-events effect below can resolve a click without a
   // real raycast (bone handles are small points, not intersectable geometry).
@@ -1293,6 +1300,12 @@ export default function SculptViewer({
 
     poseTransformControls.addEventListener("dragging-changed", (event) => {
       controls.enabled = !event.value;
+      // Snapshot the bone's pre-drag transform for undo — same trigger
+      // point (drag start, before any displacement) beginRigDrag/
+      // beginGizmoDrag already use for their own snapshot kinds.
+      if (event.value && selectedBoneRef.current) {
+        undoRef.current.pushPose([selectedBoneRef.current]);
+      }
     });
     poseTransformControls.addEventListener("objectChange", () => {
       // Keep the handle dots/links following the bone live as it's dragged
@@ -1381,6 +1394,16 @@ export default function SculptViewer({
       updateBoneHandles();
     }
     resetPoseRef.current = resetPose;
+
+    function resetBone(entry: SculptMeshEntry, bone: THREE.Bone) {
+      const orig = entry.bindPose?.get(bone.uuid);
+      if (!orig) return;
+      undoRef.current.pushPose([bone]);
+      bone.position.copy(orig.position);
+      bone.quaternion.copy(orig.quaternion);
+      updateBoneHandles();
+    }
+    resetBoneRef.current = resetBone;
 
     // Assembles one bone's worth of per-component channels back into the
     // single vector/quaternion KeyframeTracks three.js actually expects.
@@ -3025,30 +3048,46 @@ export default function SculptViewer({
   // directly) so it's not a forward reference — both only depend on refs
   // declared earlier in the component, so moving them up is safe.
   const undo = useCallback(() => {
-    const snaps = undoRef.current.undo();
-    if (!snaps) return;
-    for (const { mesh, positions } of snaps) {
-      (mesh.geometry.attributes.position.array as Float32Array).set(positions);
-      mesh.geometry.attributes.position.needsUpdate = true;
-      mesh.geometry.computeVertexNormals();
+    const entry = undoRef.current.undo();
+    if (!entry) return;
+    if (entry.kind === "mesh") {
+      for (const { mesh, positions } of entry.snapshots) {
+        (mesh.geometry.attributes.position.array as Float32Array).set(positions);
+        mesh.geometry.attributes.position.needsUpdate = true;
+        mesh.geometry.computeVertexNormals();
+      }
+      // A poly-edit gizmo drag pushes onto this same stack (beginGizmoDrag)
+      // — without these, the selection overlay and gizmo stay rendered at
+      // the stale, pre-undo shape/position after the mesh reverts.
+      updateSelectionHighlightPointsRef.current();
+      repositionGizmoToSelectionRef.current();
+    } else {
+      for (const { bone, position, quaternion } of entry.snapshots) {
+        bone.position.copy(position);
+        bone.quaternion.copy(quaternion);
+      }
+      updateBoneHandlesRef.current();
     }
-    // A poly-edit gizmo drag pushes onto this same position-only undo stack
-    // (beginGizmoDrag) — without these, the selection overlay and gizmo stay
-    // rendered at the stale, pre-undo shape/position after the mesh reverts.
-    updateSelectionHighlightPointsRef.current();
-    repositionGizmoToSelectionRef.current();
   }, []);
 
   const redo = useCallback(() => {
-    const snaps = undoRef.current.redo();
-    if (!snaps) return;
-    for (const { mesh, positions } of snaps) {
-      (mesh.geometry.attributes.position.array as Float32Array).set(positions);
-      mesh.geometry.attributes.position.needsUpdate = true;
-      mesh.geometry.computeVertexNormals();
+    const entry = undoRef.current.redo();
+    if (!entry) return;
+    if (entry.kind === "mesh") {
+      for (const { mesh, positions } of entry.snapshots) {
+        (mesh.geometry.attributes.position.array as Float32Array).set(positions);
+        mesh.geometry.attributes.position.needsUpdate = true;
+        mesh.geometry.computeVertexNormals();
+      }
+      updateSelectionHighlightPointsRef.current();
+      repositionGizmoToSelectionRef.current();
+    } else {
+      for (const { bone, position, quaternion } of entry.snapshots) {
+        bone.position.copy(position);
+        bone.quaternion.copy(quaternion);
+      }
+      updateBoneHandlesRef.current();
     }
-    updateSelectionHighlightPointsRef.current();
-    repositionGizmoToSelectionRef.current();
   }, []);
 
   // ── keyboard undo/redo ────────────────────────────────────────────────────
@@ -3765,6 +3804,12 @@ export default function SculptViewer({
     if (entry) resetPoseRef.current(entry);
   }, []);
 
+  const resetBone = useCallback((entryId: string, boneId: string) => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    const bone = entry?.skeleton?.bones.find((b) => b.uuid === boneId);
+    if (entry && bone) resetBoneRef.current(entry, bone);
+  }, []);
+
   const setPoseTime = useCallback((entryId: string, time: number) => {
     const entry = meshEntriesRef.current.find((e) => e.id === entryId);
     if (entry) setPoseTimeRef.current(entry, time);
@@ -3960,14 +4005,14 @@ export default function SculptViewer({
         exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene,
         extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance,
         extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb,
-        getBones, selectBone: selectBoneById, resetPose, recenterView, toggleProjection, conformToReference,
+        getBones, selectBone: selectBoneById, resetPose, resetBone, recenterView, toggleProjection, conformToReference,
         getJoints, selectJoint: selectJointById, renameJoint, deleteJoint,
         getClips, getActiveClipId, setActiveClip, createAnimationClip, renameAnimationClip,
         duplicateAnimationClip, deleteAnimationClip, insertKeyframe, removeKeyframe,
         setPoseTime, setPosePlaying,
       };
     }
-  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance, extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb, getBones, selectBoneById, resetPose, recenterView, toggleProjection, conformToReference, getJoints, selectJointById, renameJoint, deleteJoint, getClips, getActiveClipId, setActiveClip, createAnimationClip, renameAnimationClip, duplicateAnimationClip, deleteAnimationClip, insertKeyframe, removeKeyframe, setPoseTime, setPosePlaying]);
+  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance, extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb, getBones, selectBoneById, resetPose, resetBone, recenterView, toggleProjection, conformToReference, getJoints, selectJointById, renameJoint, deleteJoint, getClips, getActiveClipId, setActiveClip, createAnimationClip, renameAnimationClip, duplicateAnimationClip, deleteAnimationClip, insertKeyframe, removeKeyframe, setPoseTime, setPosePlaying]);
 
   return <div ref={mountRef} className="w-full h-full" style={{ touchAction: "none" }} />;
 }

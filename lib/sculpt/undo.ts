@@ -1,5 +1,10 @@
-// Simple per-mesh position snapshot stack for sculpt undo/redo.
-// Snapshot on pointerdown (before any displacement), restore on Ctrl+Z.
+// Snapshot stack for sculpt undo/redo — mesh vertex-position edits (brush
+// strokes, poly-edit's gizmo, Rig mode's masked-vertex drag) and Pose
+// mode's bone transforms share one history so interleaved geometry edits
+// and posing undo in the order they actually happened, rather than two
+// independent stacks the user would have to reason about separately.
+// Snapshot at drag/stroke start (before any displacement), restore on
+// Ctrl+Z.
 
 import type * as THREE from "three";
 
@@ -8,52 +13,77 @@ export type SculptMeshSnapshot = {
   positions: Float32Array;
 };
 
+export type BonePoseSnapshot = {
+  bone: THREE.Bone;
+  position: THREE.Vector3;
+  quaternion: THREE.Quaternion;
+};
+
+export type UndoEntry =
+  | { kind: "mesh"; snapshots: SculptMeshSnapshot[] }
+  | { kind: "pose"; snapshots: BonePoseSnapshot[] };
+
 const MAX_UNDO = 32;
 
-export class SculptUndoStack {
-  private past: SculptMeshSnapshot[][] = [];
-  private future: SculptMeshSnapshot[][] = [];
+function captureMesh(meshes: THREE.Mesh[]): SculptMeshSnapshot[] {
+  return meshes.map((mesh) => ({
+    mesh,
+    positions: Float32Array.from(
+      mesh.geometry.attributes.position.array as Float32Array,
+    ),
+  }));
+}
 
-  /** Call at the start of each brush stroke (pointerdown). */
+function capturePose(bones: THREE.Bone[]): BonePoseSnapshot[] {
+  return bones.map((bone) => ({
+    bone,
+    position: bone.position.clone(),
+    quaternion: bone.quaternion.clone(),
+  }));
+}
+
+export class SculptUndoStack {
+  private past: UndoEntry[] = [];
+  private future: UndoEntry[] = [];
+
+  /** Call at the start of each brush stroke / vertex-displacing drag
+   * (pointerdown or dragging-changed). */
   push(meshes: THREE.Mesh[]): void {
-    const snap = meshes.map((mesh) => ({
-      mesh,
-      positions: Float32Array.from(
-        mesh.geometry.attributes.position.array as Float32Array,
-      ),
-    }));
-    this.past.push(snap);
+    this.pushEntry({ kind: "mesh", snapshots: captureMesh(meshes) });
+  }
+
+  /** Call at the start of a Pose-mode bone drag (dragging-changed,
+   * value === true) — same trigger point push() uses for gizmo drags. */
+  pushPose(bones: THREE.Bone[]): void {
+    this.pushEntry({ kind: "pose", snapshots: capturePose(bones) });
+  }
+
+  private pushEntry(entry: UndoEntry): void {
+    this.past.push(entry);
     if (this.past.length > MAX_UNDO) this.past.shift();
     this.future = [];
   }
 
-  undo(): SculptMeshSnapshot[] | null {
-    const snap = this.past.pop();
-    if (!snap) return null;
-    // Capture current state as redo entry before restoring.
-    this.future.push(
-      snap.map(({ mesh }) => ({
-        mesh,
-        positions: Float32Array.from(
-          mesh.geometry.attributes.position.array as Float32Array,
-        ),
-      })),
-    );
-    return snap;
+  private recapture(entry: UndoEntry): UndoEntry {
+    if (entry.kind === "mesh") {
+      return { kind: "mesh", snapshots: captureMesh(entry.snapshots.map((s) => s.mesh)) };
+    }
+    return { kind: "pose", snapshots: capturePose(entry.snapshots.map((s) => s.bone)) };
   }
 
-  redo(): SculptMeshSnapshot[] | null {
-    const snap = this.future.pop();
-    if (!snap) return null;
-    this.past.push(
-      snap.map(({ mesh }) => ({
-        mesh,
-        positions: Float32Array.from(
-          mesh.geometry.attributes.position.array as Float32Array,
-        ),
-      })),
-    );
-    return snap;
+  undo(): UndoEntry | null {
+    const entry = this.past.pop();
+    if (!entry) return null;
+    // Capture current state as the redo entry before the caller restores.
+    this.future.push(this.recapture(entry));
+    return entry;
+  }
+
+  redo(): UndoEntry | null {
+    const entry = this.future.pop();
+    if (!entry) return null;
+    this.past.push(this.recapture(entry));
+    return entry;
   }
 
   clear(): void {

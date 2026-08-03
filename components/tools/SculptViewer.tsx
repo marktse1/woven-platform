@@ -1516,7 +1516,13 @@ export default function SculptViewer({
       entry.poseAction = undefined;
       const clip = activeClipForMixer(entry);
       if (!clip || clip.channels.length === 0) {
-        onPoseTimeChangeRef.current?.(entry.id, 0, 0, false, clip?.frameRate ?? DEFAULT_FRAME_RATE);
+        // No channels yet (no keyframes inserted) doesn't mean no length —
+        // report the clip's actual authored duration so the Length field
+        // reflects what setClipLength() just set instead of snapping back
+        // to a 1-frame timeline before the first keyframe exists.
+        const time = Math.min(entry.poseTime ?? 0, clip?.duration ?? 0);
+        entry.poseTime = time;
+        onPoseTimeChangeRef.current?.(entry.id, time, clip?.duration ?? 0, false, clip?.frameRate ?? DEFAULT_FRAME_RATE);
         return;
       }
       const threeClip = buildThreeClip(clip);

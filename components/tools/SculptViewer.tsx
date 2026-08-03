@@ -890,6 +890,11 @@ export default function SculptViewer({
   // the outer component's imperative handle methods, same indirection
   // pattern as updateBoneHandlesRef above.
   const rebuildPoseMixerRef = useRef<(entry: SculptMeshEntry) => void>(() => {});
+  /** Exposed so exportGlb (a separate useCallback, outside this effect)
+   * can reuse the exact same clip-assembly logic playback uses — the
+   * exported file's animation is guaranteed to match what was actually
+   * previewed, not a second, potentially-diverging implementation. */
+  const buildThreeClipRef = useRef<(clip: AnimationClipData) => THREE.AnimationClip>(() => new THREE.AnimationClip("empty", 0, []));
   const setPoseTimeRef = useRef<(entry: SculptMeshEntry, time: number) => void>(() => {});
   const setPosePlayingRef = useRef<(entry: SculptMeshEntry, playing: boolean) => void>(() => {});
 
@@ -1445,6 +1450,7 @@ export default function SculptViewer({
       }
       return new THREE.AnimationClip(clip.name, clip.duration, tracks);
     }
+    buildThreeClipRef.current = buildThreeClip;
 
     function activeClipForMixer(entry: SculptMeshEntry): AnimationClipData | undefined {
       if (!entry.poseAnimation?.activeClipId) return undefined;
@@ -3236,6 +3242,23 @@ export default function SculptViewer({
       }
     }
 
+    // Every clip on every entry, assembled with the exact same logic
+    // that drives Pose mode's own playback/preview (buildThreeClipRef) —
+    // the exported file's animation is guaranteed to match what was
+    // actually previewed in the viewport, not a second implementation
+    // that could quietly diverge from it.
+    // Matches GLTFExporter's own default onlyVisible behavior for
+    // meshes — exportEntryGlb hides every other entry before calling
+    // this, so without this filter a hidden entry's clips would still
+    // leak into an export meant to isolate just one entry.
+    const animations: THREE.AnimationClip[] = [];
+    for (const entry of meshEntriesRef.current) {
+      if (!entry.mesh.visible) continue;
+      for (const clip of entry.poseAnimation?.clips ?? []) {
+        if (clip.channels.length > 0) animations.push(buildThreeClipRef.current(clip));
+      }
+    }
+
     const exporter = new GLTFExporter();
     return new Promise((resolve, reject) => {
       exporter.parse(
@@ -3250,7 +3273,7 @@ export default function SculptViewer({
           swapped.forEach(({ mesh, prev }) => { mesh.material = prev; });
           reject(err);
         },
-        { binary: true },
+        { binary: true, animations },
       );
     });
   }, []);

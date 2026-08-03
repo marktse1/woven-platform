@@ -38,10 +38,12 @@ import {
   TerrainShaderSettings,
   TerrainSpline,
   WaterSurfaceSettings,
+  GrassSettings,
   chunkIdForCoords,
   defaultSkyGradient,
   defaultTerrainSettings,
   defaultWaterSettings,
+  defaultGrassSettings,
   generateTerrainChunks,
   sampleTerrainHeight,
   sampleWaterSurfaceOffset,
@@ -60,6 +62,7 @@ import {
   distanceToSegment2d,
   layerMaskForChunk,
   layerBlendValueAt,
+  grassDensityForChunk,
   createTerrainMesh as createTerrainMeshShared,
 } from "./terrainMesh";
 import { loadLevel, saveLevel, listVisibleLevels, type WorldLevelRow } from "./levels";
@@ -115,6 +118,7 @@ type RuntimeState = {
   timeOfDay: number;
   playing: boolean;
   water: WaterSurfaceSettings;
+  grass: GrassSettings;
   lighting: LightingSettings;
   terrainMode: "select" | "sculpt" | "road";
   brushMode: TerrainBrushMode;
@@ -229,6 +233,7 @@ const state: RuntimeState = {
   timeOfDay: 12,
   playing: false,
   water: defaultWaterSettings(),
+  grass: defaultGrassSettings(),
   lighting: loadLightingSettings(),
   terrainMode: "select",
   brushMode: "raise",
@@ -321,9 +326,10 @@ const terrainRoot = new THREE.Group();
 const roadRoot = new THREE.Group();
 const roadGuideGroup = new THREE.Group();
 const waterRoot = new THREE.Group();
+const grassRoot = new THREE.Group();
 const objectRoot = new THREE.Group();
 const skyRoot = new THREE.Group();
-scene.add(worldRoot, terrainRoot, roadRoot, waterRoot, objectRoot, skyRoot);
+scene.add(worldRoot, terrainRoot, roadRoot, waterRoot, grassRoot, objectRoot, skyRoot);
 scene.add(roadGuideGroup);
 
 const sunLight = new THREE.DirectionalLight(0xffffff, 2.4);
@@ -372,6 +378,7 @@ const CREATOR_ASSET_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0
 const terrainMeshes: THREE.Object3D[] = [];
 const waterMeshes: THREE.Mesh[] = [];
 let waterSurfaceMesh: ThreeWater | null = null;
+const grassMeshes: THREE.InstancedMesh[] = [];
 const objectMeshes = new Map<string, THREE.Object3D>();
 // Currently-applied custom (Shaderade) shader materials — ticked each
 // frame for u_time/u_lightDir so animated effects keep moving. Added when
@@ -930,6 +937,13 @@ const waterControls = {
   underwaterFogDensity: ui.underwaterFogDensity,
   foamIntensity: ui.foamIntensity,
 };
+const grassControls = {
+  density: ui.grassDensity,
+  height: ui.grassHeight,
+  windSpeed: ui.grassWindSpeed,
+  windStrength: ui.grassWindStrength,
+  clear: ui.clearGrass,
+};
 const timeControls = {
   slider: ui.timeSlider,
   play: ui.timePlay,
@@ -1356,6 +1370,10 @@ function normalizeSkyGradient(next: SkyGradientSettings): SkyGradientSettings {
   };
 }
 
+function normalizeGrassSettings(next?: Partial<GrassSettings> | null): GrassSettings {
+  return { ...defaultGrassSettings(), ...(next ?? {}) };
+}
+
 function normalizeWaterSettings(next?: Partial<WaterSurfaceSettings> | null): WaterSurfaceSettings {
   const defaults = defaultWaterSettings();
   const waveAmplitude = next?.waveAmplitude ?? next?.waveHeight ?? defaults.waveAmplitude;
@@ -1576,6 +1594,7 @@ async function loadWorldFromInputs() {
     }
     mergeSavedLocalLayout(state.layout);
     state.water = normalizeWaterSettings(state.layout.terrain?.water);
+    state.grass = normalizeGrassSettings(state.layout.terrain?.grass);
     state.skyGradient = normalizeSkyGradient(state.layout.skyGradient ?? defaultSkyGradient());
     state.lighting = normalizeLightingSettings((state.layout.lighting as LightingSettings | undefined) ?? loadLightingSettings());
     const terrainLayers = normalizeTerrainLayerSettings(state.layout.terrain?.terrainLayers ?? defaultTerrainSettings().terrainLayers);
@@ -1938,6 +1957,7 @@ function rebuildWorld() {
   if (waterSurface) waterRoot.add(waterSurface);
   scheduleShoreWetnessRebake();
   rebuildRoadMeshes();
+  rebuildGrassInstances();
 
   for (const object of state.layout.objects) {
     spawnObject(object);
@@ -1967,6 +1987,7 @@ function rebuildTerrainSurfaces() {
   if (waterSurface) waterRoot.add(waterSurface);
   scheduleShoreWetnessRebake();
   rebuildRoadMeshes();
+  rebuildGrassInstances();
   updateDiagnostics();
 }
 
@@ -2189,6 +2210,251 @@ function paintShaderAt(point: THREE.Vector3) {
   terrain.revision += 1;
   rebuildTerrainSurfaces();
   saveLocalLayout();
+}
+
+// Paints instanced grass-BLADE density — deliberately separate from
+// paintShaderAt above, which only tints terrain vertex color (no
+// geometry). Same radius/falloff/strength brush math and raycast-
+// driven trigger as every other terrain brush; `erase` (Alt-held,
+// matching this project's invert convention elsewhere) subtracts
+// instead of adding.
+function paintGrassAt(point: THREE.Vector3, erase: boolean) {
+  updateTerrainToolSettings();
+  pushHistory("terrain");
+  let touched = false;
+  for (const chunk of terrainChunks()) {
+    const density = grassDensityForChunk(chunk);
+    for (let z = 0; z < chunk.resolution; z += 1) {
+      for (let x = 0; x < chunk.resolution; x += 1) {
+        const worldX = chunk.origin[0] + x * chunk.spacing;
+        const worldZ = chunk.origin[1] + z * chunk.spacing;
+        const distance = Math.hypot(worldX - point.x, worldZ - point.z);
+        if (distance > state.brushRadius) continue;
+        const weight = terrainBrushWeight(distance, state.brushRadius, state.brushFalloff) * clamp(state.brushStrength, 0.05, 1);
+        const index = z * chunk.resolution + x;
+        density[index] = clamp(density[index] + (erase ? -weight : weight), 0, 1);
+        touched = true;
+      }
+    }
+  }
+  if (!touched) return;
+  const terrain = ensureTerrainSettings();
+  terrain.revision += 1;
+  rebuildTerrainSurfaces();
+  saveLocalLayout();
+}
+
+// ── Instanced grass blades ──────────────────────────────────────────────
+// First THREE.InstancedMesh usage in this codebase — one InstancedMesh
+// per terrain chunk (geometry/material shared across every chunk and
+// instance), rebuilt whenever that chunk's painted grassDensity changes.
+const GRASS_ASSET_URL = "/blue_reeds.glb";
+const GRASS_MAX_PER_CELL = 6;
+const GRASS_MAX_PER_CHUNK = 4000;
+const GRASS_DENSITY_THRESHOLD = 0.05;
+
+type GrassAsset = {
+  geometry: THREE.BufferGeometry;
+  material: THREE.MeshStandardMaterial;
+  /** blue_reeds.glb's pivot sits near the vertical CENTER of the mesh,
+   * not its base (confirmed directly: bounding box Y spans roughly
+   * -20..+19.8) — placing instances without this offset would bury
+   * half of every blade. minY/heightRange are read from the geometry's
+   * own bounding box at load time (not hardcoded) so this stays correct
+   * if the asset is ever swapped for a different one. */
+  minY: number;
+  heightRange: number;
+};
+
+let grassAsset: GrassAsset | null = null;
+let grassAssetLoading = false;
+
+function ensureGrassAssetLoaded(onReady: () => void) {
+  if (grassAsset) { onReady(); return; }
+  if (grassAssetLoading) return;
+  grassAssetLoading = true;
+  loader.load(
+    GRASS_ASSET_URL,
+    (gltf) => {
+      let geometry: THREE.BufferGeometry | null = null;
+      let material: THREE.MeshStandardMaterial | null = null;
+      gltf.scene.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (mesh.isMesh && !geometry) {
+          geometry = mesh.geometry;
+          const meshMaterial = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+          material = (meshMaterial as THREE.MeshStandardMaterial).clone();
+        }
+      });
+      grassAssetLoading = false;
+      // Cast rather than rely on narrowing the `if` check below — TS
+      // can't reliably narrow a `let` reassigned inside the traverse()
+      // closure above, even though it has definitely finished running
+      // by this point (traverse is synchronous).
+      const geo = geometry as THREE.BufferGeometry | null;
+      const mat = material as THREE.MeshStandardMaterial | null;
+      if (geo && mat) {
+        geo.computeBoundingBox();
+        const box = geo.boundingBox!;
+        attachGrassWindShader(mat);
+        grassAsset = { geometry: geo, material: mat, minY: box.min.y, heightRange: Math.max(0.0001, box.max.y - box.min.y) };
+        onReady();
+      } else {
+        console.warn(`Grass asset ${GRASS_ASSET_URL} has no mesh to instance.`);
+      }
+    },
+    undefined,
+    (err) => {
+      grassAssetLoading = false;
+      console.warn(`Failed to load grass asset ${GRASS_ASSET_URL}`, err);
+    }
+  );
+}
+
+// Wind sway — onBeforeCompile injection into MeshStandardMaterial's
+// vertex shader, same GLSL-string-replacement technique
+// attachShoreFoamShader (above) already uses for THREE.Water, just a
+// different anchor/material: "#include <begin_vertex>" is the literal,
+// unresolved chunk directive in ShaderLib.standard's vertex shader
+// (confirmed directly in three's source,
+// node_modules/three/src/renderers/shaders/ShaderChunk/
+// begin_vertex.glsl.js — WebGLProgram resolves #include directives
+// AFTER onBeforeCompile runs, so string-replacing the literal directive
+// text is the standard, correct extension point). Displacement is
+// derived from each INSTANCE's own world position (via instanceMatrix,
+// already provided by three's built-in instancing support) rather than
+// a custom per-instance attribute — avoids needing a separate
+// InstancedBufferAttribute (which would force cloning the shared
+// geometry per chunk, since attribute size must match each mesh's own
+// instance count) while still giving every blade a different phase so
+// they don't sway in unison, the standard technique for instanced-
+// foliage wind.
+function attachGrassWindShader(material: THREE.MeshStandardMaterial) {
+  material.onBeforeCompile = (shader) => {
+    // MeshStandardMaterial (unlike THREE.Water's raw ShaderMaterial) has
+    // no `.uniforms` of its own outside this callback — stash the
+    // compiled shader's uniforms object on the material so
+    // syncGrassWindUniforms can reach it later, the standard technique
+    // for updating onBeforeCompile-injected uniforms after the fact.
+    material.userData.shader = shader;
+    shader.uniforms.u_time = { value: 0 };
+    shader.uniforms.u_windSpeed = { value: state.grass.windSpeed };
+    shader.uniforms.u_windStrength = { value: state.grass.windStrength };
+    shader.uniforms.u_grassMinY = { value: grassAsset?.minY ?? 0 };
+    shader.uniforms.u_grassHeightRange = { value: grassAsset?.heightRange ?? 1 };
+
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        "#include <common>",
+        `#include <common>
+	uniform float u_time;
+	uniform float u_windSpeed;
+	uniform float u_windStrength;
+	uniform float u_grassMinY;
+	uniform float u_grassHeightRange;`
+      )
+      .replace(
+        "#include <begin_vertex>",
+        `#include <begin_vertex>
+	#ifdef USE_INSTANCING
+		vec3 grassInstanceWorldPos = ( modelMatrix * instanceMatrix * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;
+	#else
+		vec3 grassInstanceWorldPos = ( modelMatrix * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;
+	#endif
+	float grassWindPhase = grassInstanceWorldPos.x * 0.7 + grassInstanceWorldPos.z * 1.3;
+	float grassHeightFactor = clamp( ( position.y - u_grassMinY ) / u_grassHeightRange, 0.0, 1.0 );
+	float grassSway = sin( u_time * u_windSpeed + grassWindPhase ) * u_windStrength * grassHeightFactor * grassHeightFactor;
+	transformed.x += grassSway;
+	transformed.z += grassSway * 0.6;`
+      );
+  };
+}
+
+// Per-frame push (onBeforeCompile only runs once, at first compile) —
+// called from tick(), same pattern as syncShoreFoamUniforms. No-ops
+// until the material has actually compiled at least once (userData.shader
+// only exists after that first WebGL draw) — same "material hasn't
+// compiled yet" guard style syncShoreFoamUniforms uses.
+function syncGrassWindUniforms(elapsedSeconds: number) {
+  const shader = grassAsset?.material.userData.shader as { uniforms: Record<string, { value: unknown }> } | undefined;
+  if (!shader) return;
+  shader.uniforms.u_time.value = elapsedSeconds;
+  shader.uniforms.u_windSpeed.value = state.grass.windSpeed;
+  shader.uniforms.u_windStrength.value = state.grass.windStrength;
+}
+
+const _grassMatrix = new THREE.Matrix4();
+const _grassQuat = new THREE.Quaternion();
+const _grassScale = new THREE.Vector3();
+const _grassUp = new THREE.Vector3(0, 1, 0);
+
+/** Scatters random instance positions within `chunk`'s painted
+ * grassDensity, jittered within each heightfield cell (not one instance
+ * per vertex — a grid-aligned look) and placed at the terrain's actual
+ * (bilinear-interpolated) height via terrainHeightAt. */
+function scatterGrassPositions(chunk: TerrainChunkData, density: number[], settings: GrassSettings) {
+  const positions: THREE.Vector3[] = [];
+  for (let z = 0; z < chunk.resolution; z += 1) {
+    if (positions.length >= GRASS_MAX_PER_CHUNK) break;
+    for (let x = 0; x < chunk.resolution; x += 1) {
+      if (positions.length >= GRASS_MAX_PER_CHUNK) break;
+      const d = density[z * chunk.resolution + x] ?? 0;
+      if (d < GRASS_DENSITY_THRESHOLD) continue;
+      const count = Math.round(d * settings.densityMultiplier * GRASS_MAX_PER_CELL);
+      const baseX = chunk.origin[0] + x * chunk.spacing;
+      const baseZ = chunk.origin[1] + z * chunk.spacing;
+      for (let i = 0; i < count && positions.length < GRASS_MAX_PER_CHUNK; i += 1) {
+        const worldX = baseX + (Math.random() - 0.5) * chunk.spacing;
+        const worldZ = baseZ + (Math.random() - 0.5) * chunk.spacing;
+        positions.push(new THREE.Vector3(worldX, terrainHeightAt(worldX, worldZ), worldZ));
+      }
+    }
+  }
+  return positions;
+}
+
+// NOT clearGroup(grassRoot) — that disposes every child's geometry
+// unconditionally, but every InstancedMesh here intentionally SHARES
+// grassAsset.geometry/material across every chunk and every rebuild;
+// disposing it on this rebuild would leave the next one rendering with
+// a destroyed GPU buffer. Just detach the children instead.
+function clearGrassRoot() {
+  while (grassRoot.children.length > 0) grassRoot.remove(grassRoot.children[0]);
+}
+
+function rebuildGrassInstances() {
+  clearGrassRoot();
+  grassMeshes.length = 0;
+  if (!grassAsset) {
+    ensureGrassAssetLoaded(() => rebuildGrassInstances());
+    return;
+  }
+  const { geometry, material, minY } = grassAsset;
+  const settings = state.grass;
+  for (const chunk of terrainChunks()) {
+    const density = chunk.grassDensity;
+    if (!density) continue;
+    const positions = scatterGrassPositions(chunk, density, settings);
+    if (positions.length === 0) continue;
+    const mesh = new THREE.InstancedMesh(geometry, material, positions.length);
+    for (let i = 0; i < positions.length; i += 1) {
+      _grassQuat.setFromAxisAngle(_grassUp, Math.random() * Math.PI * 2);
+      const scale = settings.bladeHeight * (0.8 + Math.random() * 0.4);
+      _grassScale.set(scale, scale, scale);
+      // Shift up by the scaled distance from the mesh's pivot to its own
+      // lowest point (minY, which is negative here — see GrassAsset's
+      // comment) so the blade's BASE sits at terrain height, not its
+      // pivot, which for this asset is near its vertical center.
+      const position = positions[i];
+      position.y -= minY * scale;
+      _grassMatrix.compose(position, _grassQuat, _grassScale);
+      mesh.setMatrixAt(i, _grassMatrix);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.castShadow = false;
+    grassRoot.add(mesh);
+    grassMeshes.push(mesh);
+  }
 }
 
 function createWaterMesh(chunk: TerrainChunkData) {
@@ -4334,6 +4600,7 @@ function undoLastChange() {
     const layout = JSON.parse(snapshot) as LevelLayout;
     state.layout = layout;
     state.water = normalizeWaterSettings(layout.terrain?.water);
+    state.grass = normalizeGrassSettings(layout.terrain?.grass);
     state.skyGradient = normalizeSkyGradient(layout.skyGradient ?? defaultSkyGradient());
     state.selectedObjectId = null;
     selectedObjectIds.clear();
@@ -4449,6 +4716,7 @@ async function handleSaveButtonClick() {
 function serializeLayout(): LevelLayout {
   const terrain = state.layout.terrain ?? defaultTerrainSettings();
   terrain.water = normalizeWaterSettings(terrain.water);
+  terrain.grass = normalizeGrassSettings(terrain.grass);
   terrain.roadShader = normalizeRoadShaderSettings(terrain.roadShader ?? defaultTerrainSettings().roadShader);
   const layout: LevelLayout = {
     name: state.layout.name,
@@ -4601,6 +4869,7 @@ function syncUiFromState() {
   manifestInput.value = state.manifestUrl;
   catalogInput.value = state.assetCatalogUrl;
   state.water = normalizeWaterSettings(state.layout.terrain?.water);
+  state.grass = normalizeGrassSettings(state.layout.terrain?.grass);
   state.skyGradient = normalizeSkyGradient(state.layout.skyGradient ?? defaultSkyGradient());
   state.lighting = normalizeLightingSettings((state.layout.lighting as LightingSettings | undefined) ?? state.lighting);
   const terrainLayers = normalizeTerrainLayerSettings(state.layout.terrain?.terrainLayers ?? defaultTerrainSettings().terrainLayers);
@@ -4620,6 +4889,10 @@ function syncUiFromState() {
   waterControls.choppiness.value = String(state.water.choppiness);
   waterControls.underwaterFogDensity.value = String(state.water.underwaterFogDensity);
   waterControls.foamIntensity.value = String(state.water.foamIntensity);
+  grassControls.density.value = String(state.grass.densityMultiplier);
+  grassControls.height.value = String(state.grass.bladeHeight);
+  grassControls.windSpeed.value = String(state.grass.windSpeed);
+  grassControls.windStrength.value = String(state.grass.windStrength);
   timeControls.slider.value = String(state.timeOfDay);
   timeControls.skyRotation.value = String(state.lighting.skyRotation);
   timeControls.moonIntensity.value = String(state.lighting.moonIntensity);
@@ -4662,6 +4935,7 @@ function createNewWorld() {
   state.layout = emptyLayout(slug, districtFromManifest(manifestUrl));
   state.layout.terrainChunks = createFlatTerrainChunks(state.layout.terrain ?? blankTerrainSettings(), state.layout.district || "district_00");
   state.water = normalizeWaterSettings(state.layout.terrain?.water);
+  state.grass = normalizeGrassSettings(state.layout.terrain?.grass);
   state.skyGradient = normalizeSkyGradient(state.layout.skyGradient ?? defaultSkyGradient());
   state.activeRoadSplineId = null;
   state.selectedObjectId = null;
@@ -4753,6 +5027,12 @@ function bindUi() {
   waterControls.choppiness.addEventListener("input", () => updateWaterControls());
   waterControls.underwaterFogDensity.addEventListener("input", () => updateWaterControls());
   waterControls.foamIntensity.addEventListener("input", () => updateWaterControls());
+
+  grassControls.density.addEventListener("input", () => updateGrassControls());
+  grassControls.height.addEventListener("input", () => updateGrassControls());
+  grassControls.windSpeed.addEventListener("input", () => updateGrassControls());
+  grassControls.windStrength.addEventListener("input", () => updateGrassControls());
+  grassControls.clear.addEventListener("click", () => clearGrassPaint());
 
   timeControls.slider.addEventListener("input", () => {
     state.timeOfDay = Number(timeControls.slider.value);
@@ -5155,6 +5435,7 @@ function regenerateTerrainFromSettings(recordHistory = true) {
   terrain.revision += 1;
   state.layout.terrainChunks = generateTerrainChunks(terrain, state.layout.district || "district_00");
   state.water = normalizeWaterSettings(terrain.water);
+  state.grass = normalizeGrassSettings(terrain.grass);
   rebuildWorld();
   syncUiFromState();
   saveLocalLayout();
@@ -5219,6 +5500,10 @@ function sculptAt(point: THREE.Vector3, mode = state.brushMode) {
 function applyTerrainBrush(point: THREE.Vector3, event: PointerEvent) {
   if (state.brushMode === "blend") {
     paintShaderAt(point);
+    return;
+  }
+  if (state.brushMode === "grass") {
+    paintGrassAt(point, event.altKey);
     return;
   }
   const mode =
@@ -5608,6 +5893,32 @@ function updateWaterControls(rebuild = false) {
     }
     saveLocalLayout();
   }
+}
+
+function updateGrassControls() {
+  state.grass.densityMultiplier = Math.max(0, Number(grassControls.density.value) || state.grass.densityMultiplier);
+  state.grass.bladeHeight = Math.max(0.0001, Number(grassControls.height.value) || state.grass.bladeHeight);
+  state.grass.windSpeed = Math.max(0, Number(grassControls.windSpeed.value) || state.grass.windSpeed);
+  state.grass.windStrength = Math.max(0, Number(grassControls.windStrength.value) || state.grass.windStrength);
+  if (state.layout.terrain) {
+    state.layout.terrain.grass = { ...state.grass };
+    rebuildGrassInstances();
+    saveLocalLayout();
+  }
+}
+
+function clearGrassPaint() {
+  pushHistory("terrain");
+  let touched = false;
+  for (const chunk of terrainChunks()) {
+    if (chunk.grassDensity) {
+      chunk.grassDensity = chunk.grassDensity.map(() => 0);
+      touched = true;
+    }
+  }
+  if (!touched) return;
+  rebuildGrassInstances();
+  saveLocalLayout();
 }
 
 function onResize() {
@@ -6163,6 +6474,7 @@ function tick() {
   renderWaterShaderViewer(elapsedSeconds);
   updateActiveCustomShaderUniforms(elapsedSeconds);
   updateActiveWaterMeshes(elapsedSeconds);
+  syncGrassWindUniforms(elapsedSeconds);
   controls.update();
   renderer.render(scene, camera);
 }
@@ -6273,7 +6585,7 @@ function buildUi() {
             <button id="terrain-sculpt" type="button">Sculpt</button>
             <button id="terrain-road" type="button">Roads</button>
           </div>
-          <label><span>Brush mode</span><select id="terrain-brush-mode"><option value="raise">Raise</option><option value="lower">Lower</option><option value="smooth">Smooth</option><option value="flatten">Flatten</option><option value="blend">Paint Shader</option></select></label>
+          <label><span>Brush mode</span><select id="terrain-brush-mode"><option value="raise">Raise</option><option value="lower">Lower</option><option value="smooth">Smooth</option><option value="flatten">Flatten</option><option value="blend">Paint Shader</option><option value="grass">Grass Blades</option></select></label>
           <label><span>Brush radius</span><input id="terrain-brush-radius" type="number" min="1" max="40" step="1" value="8" /></label>
           <label><span>Strength</span><input id="terrain-brush-strength" type="number" min="0.05" max="8" step="0.05" value="0.15" /></label>
           <label><span>Falloff</span><input id="terrain-brush-falloff" type="range" min="0" max="1" step="0.05" value="0.7" /></label>
@@ -6311,6 +6623,17 @@ function buildUi() {
               <label><span>Repeat</span><input id="sand-repeat" type="number" min="0.1" max="16" step="0.01" value="${state.sandRepeat}" /></label>
             </div>
             <div class="status">Choose Soil or Sand Dunes, then use Paint Shader to place that material on the terrain.</div>
+          </div>
+          <div class="shader-shelf terrain-grass-shelf">
+            <div class="panel-subhead">Grass Blades</div>
+            <label><span>Density</span><input id="grass-density" type="range" min="0" max="3" step="0.05" value="1" /></label>
+            <label><span>Blade height</span><input id="grass-height" type="range" min="0.002" max="0.03" step="0.001" value="0.01" /></label>
+            <label><span>Wind speed</span><input id="grass-wind-speed" type="range" min="0" max="2.5" step="0.01" value="0.6" /></label>
+            <label><span>Wind strength</span><input id="grass-wind-strength" type="range" min="0" max="1.5" step="0.01" value="0.35" /></label>
+            <div class="btn-row">
+              <button id="terrain-clear-grass" type="button">Clear Grass</button>
+            </div>
+            <div class="status">Set Brush mode to Grass Blades above, then paint on the terrain. Alt-drag erases.</div>
           </div>
           <div class="btn-row">
             <button id="terrain-regenerate" type="button">Regenerate Base</button>
@@ -6482,6 +6805,11 @@ function buildUi() {
     terrainSandRoughness: shell.querySelector<HTMLInputElement>("#terrain-sand-roughness")!,
     terrainSandMetalness: shell.querySelector<HTMLInputElement>("#terrain-sand-metalness")!,
     terrainLayerButtons: Array.from(shell.querySelectorAll<HTMLButtonElement>("[data-terrain-layer]")),
+    grassDensity: shell.querySelector<HTMLInputElement>("#grass-density")!,
+    grassHeight: shell.querySelector<HTMLInputElement>("#grass-height")!,
+    grassWindSpeed: shell.querySelector<HTMLInputElement>("#grass-wind-speed")!,
+    grassWindStrength: shell.querySelector<HTMLInputElement>("#grass-wind-strength")!,
+    clearGrass: shell.querySelector<HTMLButtonElement>("#terrain-clear-grass")!,
     terrainRoadWidth: shell.querySelector<HTMLInputElement>("#terrain-road-width")!,
     terrainRoadShoulder: shell.querySelector<HTMLInputElement>("#terrain-road-shoulder")!,
     terrainRoadElevation: shell.querySelector<HTMLInputElement>("#terrain-road-elevation")!,

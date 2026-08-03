@@ -49,6 +49,14 @@ export function layerMaskForChunk(chunk: TerrainChunkData) {
   return chunk.paintMask;
 }
 
+/** Painted grass-BLADE density array for a chunk — separate from
+ * layerMaskForChunk's paintMask.grass (a flat color tint, no geometry).
+ * Same lazy-init convention. */
+export function grassDensityForChunk(chunk: TerrainChunkData) {
+  chunk.grassDensity ??= new Array(chunk.heights.length).fill(0);
+  return chunk.grassDensity;
+}
+
 function autoSandAt(chunk: TerrainChunkData, index: number, waterLevel: number) {
   const height = chunk.heights[index] ?? waterLevel;
   return smoothstep(-0.35, 1.15, waterLevel - height + 0.45) * 0.8;

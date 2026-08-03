@@ -164,12 +164,25 @@ export type WaterSurfaceSettings = {
   underwaterFogDensity: number;
 };
 
+// Instanced grass-blade scattering (lib/world-builder/editor.ts's
+// rebuildGrassInstances) — deliberately separate from paintMask.grass
+// above, which is only a flat terrain vertex-color tint with no
+// geometry. densityMultiplier/bladeHeight/windSpeed/windStrength are
+// all exposed as sliders in the terrain brush panel.
+export type GrassSettings = {
+  densityMultiplier: number;
+  bladeHeight: number;
+  windSpeed: number;
+  windStrength: number;
+};
+
 export type TerrainDistrictSettings = {
   seed: number;
   revision: number;
   extentChunks: number;
   waterLevel: number;
   water: WaterSurfaceSettings;
+  grass: GrassSettings;
   shoreline: TerrainControlPoint[];
   splines: TerrainSpline[];
   terrainLayers?: {
@@ -190,11 +203,17 @@ export type TerrainChunkData = {
     grass?: number[];
     sand?: number[];
   };
+  /** Painted grass-BLADE density, one float per heightfield vertex —
+   * same shape/convention as paintMask above, but drives instanced 3D
+   * grass geometry (rebuildGrassInstances), not a color tint. Separate
+   * field so "tint the ground green" and "place 3D blades" can't be
+   * confused with each other. */
+  grassDensity?: number[];
   objects?: PlacedObjectData[];
   terrain?: Partial<TerrainDistrictSettings>;
 };
 
-export type TerrainBrushMode = "raise" | "lower" | "smooth" | "flatten" | "blend";
+export type TerrainBrushMode = "raise" | "lower" | "smooth" | "flatten" | "blend" | "grass";
 
 export type TerrainBrushSettings = {
   mode: TerrainBrushMode;
@@ -256,6 +275,18 @@ export function defaultWaterSettings(): WaterSurfaceSettings {
   };
 }
 
+export function defaultGrassSettings(): GrassSettings {
+  return {
+    densityMultiplier: 1,
+    // blue_reeds.glb's bounds (~26x40x63 units) suggest it was
+    // authored in centimeters — 0.01 brings a blade to roughly
+    // half-a-meter tall, a reasonable "tall grass" starting point.
+    bladeHeight: 0.01,
+    windSpeed: 0.6,
+    windStrength: 0.35,
+  };
+}
+
 export function defaultTerrainSettings(): TerrainDistrictSettings {
   return {
     seed: 7319,
@@ -263,6 +294,7 @@ export function defaultTerrainSettings(): TerrainDistrictSettings {
     extentChunks: 4,
     waterLevel: -1.35,
     water: defaultWaterSettings(),
+    grass: defaultGrassSettings(),
     shoreline: [
       { x: -52, z: -96 },
       { x: -48, z: -32 },

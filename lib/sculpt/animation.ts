@@ -62,8 +62,14 @@ export type IKChain = {
   name: string;
   /** Bone the target handle actually drags (the chain's tip). */
   effectorBone: string;
-  /** Root-to-tip chain of bone names between (and including) the base
-   * and the effector's parent — the links CCDIKSolver rotates. */
+  /** TIP-TO-ROOT order: links[0] is the effector's direct parent,
+   * links[1] is links[0]'s parent, etc. — confirmed by reading
+   * CCDIKSolver's own _valid() check (three/examples/jsm/animation/
+   * CCDIKSolver.js), which walks the chain exactly this direction and
+   * warns if `link0.parent !== link1` doesn't hold. Backwards from
+   * what you'd naturally write (root-to-tip) — worth the explicit note
+   * since getting this backwards doesn't throw, it just silently
+   * solves wrong. */
   links: string[];
   targetPosition: [number, number, number];
 };
@@ -128,14 +134,14 @@ export function detectBipedControls(boneNames: string[]): { ikChains: IKChain[];
     const calf = findSideBone(boneNames, side, "calf") ?? findSideBone(boneNames, side, "leg", "upleg");
     const foot = findSideBone(boneNames, side, "foot");
     if (thigh && calf && foot) {
-      ikChains.push({ id: crypto.randomUUID(), name: `${sideLabel} Leg IK`, effectorBone: foot, links: [thigh, calf], targetPosition: [0, 0, 0] });
+      ikChains.push({ id: crypto.randomUUID(), name: `${sideLabel} Leg IK`, effectorBone: foot, links: [calf, thigh], targetPosition: [0, 0, 0] });
     }
 
     const upperArm = findSideBone(boneNames, side, "upperarm") ?? findSideBone(boneNames, side, "arm", "forearm");
     const lowerArm = findSideBone(boneNames, side, "lowerarm") ?? findSideBone(boneNames, side, "forearm");
     const hand = findSideBone(boneNames, side, "hand");
     if (upperArm && lowerArm && hand) {
-      ikChains.push({ id: crypto.randomUUID(), name: `${sideLabel} Arm IK`, effectorBone: hand, links: [upperArm, lowerArm], targetPosition: [0, 0, 0] });
+      ikChains.push({ id: crypto.randomUUID(), name: `${sideLabel} Arm IK`, effectorBone: hand, links: [lowerArm, upperArm], targetPosition: [0, 0, 0] });
     }
   }
 

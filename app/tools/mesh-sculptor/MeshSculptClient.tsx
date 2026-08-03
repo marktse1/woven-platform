@@ -209,8 +209,14 @@ export default function MeshSculptClient() {
   // a one-click shortcut to select these bones without hunting through
   // the raw Bones list. Empty for any skeleton matching neither known
   // naming convention; that's fine, manual bone selection still works.
-  const [detectedControls, setDetectedControls] = useState<Array<{ entryId: string; id: string; label: string }>>([]);
+  const [detectedControls, setDetectedControls] = useState<Array<{ entryId: string; kind: "hip" | "ik"; id: string; label: string }>>([]);
   const [selectedBoneId, setSelectedBoneId] = useState<string | null>(null);
+  // "ik" controls select via SculptViewerHandle.selectIKChain (id =
+  // chain id) instead of selectBone (id = bone uuid) — local UI state
+  // since, unlike bone selection, nothing in the viewport currently
+  // changes IK selection except these buttons (no click-to-select-
+  // target in the 3D view yet).
+  const [selectedIKChainId, setSelectedIKChainId] = useState<string | null>(null);
   const [isOrthographic, setIsOrthographic] = useState(false);
 
   // Pose-mode timeline — v1 operates on a single "primary" entry (the
@@ -546,12 +552,14 @@ export default function MeshSculptClient() {
   const refreshDetectedControls = useCallback(() => {
     const handle = viewerHandleRef.current;
     const entries = handle?.getMeshEntries() ?? [];
-    const all: Array<{ entryId: string; id: string; label: string }> = [];
+    const all: Array<{ entryId: string; kind: "hip" | "ik"; id: string; label: string }> = [];
     for (const entry of entries) {
       const hipBoneId = handle?.getHipBoneId(entry.id);
-      if (hipBoneId) all.push({ entryId: entry.id, id: hipBoneId, label: "Hip" });
+      if (hipBoneId) all.push({ entryId: entry.id, kind: "hip", id: hipBoneId, label: "Hip" });
       for (const chain of handle?.getIKChains(entry.id) ?? []) {
-        all.push({ entryId: entry.id, id: chain.effectorBoneId, label: chain.name });
+        // id is the CHAIN id here (for selectIKChain), not the
+        // effector bone — deliberately different from "hip" above.
+        all.push({ entryId: entry.id, kind: "ik", id: chain.id, label: chain.name });
       }
     }
     setDetectedControls(all);
@@ -724,6 +732,16 @@ export default function MeshSculptClient() {
 
   const handleSelectBone = useCallback((entryId: string, boneId: string | null) => {
     viewerHandleRef.current?.selectBone(entryId, boneId);
+    // selectBone (SculptViewer.tsx) clears any active IK selection
+    // itself when boneId is non-null — mirror that here so the Controls
+    // UI's own highlight state stays in sync without a round-trip event.
+    if (boneId) setSelectedIKChainId(null);
+  }, []);
+
+  const handleSelectIKChain = useCallback((entryId: string, chainId: string | null) => {
+    viewerHandleRef.current?.selectIKChain(entryId, chainId);
+    setSelectedIKChainId(chainId);
+    if (chainId) setSelectedBoneId(null);
   }, []);
 
   const handleSelectJoint = useCallback((entryId: string, jointId: string | null) => {
@@ -1121,16 +1139,23 @@ export default function MeshSculptClient() {
                     <div className="pb-3 mb-3 border-b border-[#2a2320]">
                       <p className="text-[10px] text-dim uppercase tracking-wide mb-1.5">Controls</p>
                       <div className="flex flex-wrap gap-1">
-                        {detectedControls.map((c) => (
-                          <button
-                            key={c.id}
-                            onClick={() => handleSelectBone(c.entryId, c.id === selectedBoneId ? null : c.id)}
-                            title={c.label === "Hip" ? "Hip/COG control — a direct FK handle on the root/pelvis bone" : `Auto-detected IK chain effector — dragging this bone directly for now; a real IK target handle is a follow-up`}
-                            style={{ background: selectedBoneId === c.id ? "rgba(196,123,232,.22)" : "#1e1a17", color: selectedBoneId === c.id ? PURPLE : "#8aa0b4", border: `1px solid ${selectedBoneId === c.id ? PURPLE : "#3a3530"}` }}
-                            className="px-2 py-1 rounded text-[10.5px] font-medium transition-colors">
-                            {c.label}
-                          </button>
-                        ))}
+                        {detectedControls.map((c) => {
+                          const active = c.kind === "hip" ? selectedBoneId === c.id : selectedIKChainId === c.id;
+                          return (
+                            <button
+                              key={`${c.kind}-${c.id}`}
+                              onClick={() => c.kind === "hip"
+                                ? handleSelectBone(c.entryId, active ? null : c.id)
+                                : handleSelectIKChain(c.entryId, active ? null : c.id)}
+                              title={c.kind === "hip"
+                                ? "Hip/COG control — a direct FK handle on the root/pelvis bone"
+                                : "IK target — drag the gizmo and the chain solves toward it via CCDIKSolver"}
+                              style={{ background: active ? "rgba(196,123,232,.22)" : "#1e1a17", color: active ? PURPLE : "#8aa0b4", border: `1px solid ${active ? PURPLE : "#3a3530"}` }}
+                              className="px-2 py-1 rounded text-[10.5px] font-medium transition-colors">
+                              {c.label}
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
                   )}

@@ -7,6 +7,7 @@ import { KTX2Loader } from "three/examples/jsm/loaders/KTX2Loader.js";
 import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
+import { CCDIKSolver } from "three/examples/jsm/animation/CCDIKSolver.js";
 import { MeshBVH, acceleratedRaycast } from "three-mesh-bvh";
 import "three-mesh-bvh"; // pulls in BufferGeometry.boundsTree augmentation
 import { buildSeamData, type SeamData } from "@/lib/sculpt/seams";
@@ -92,6 +93,20 @@ type SculptMeshEntry = {
   poseAction?: THREE.AnimationAction;
   poseTime?: number;
   posePlaying?: boolean;
+  /** One real CCDIKSolver per entry, built once at import from every
+   * detected chain in poseAnimation.ikChains — undefined if the
+   * skeleton had no detected chains. CCDIKSolver requires its `target`
+   * to be a real bone INDEX in skeleton.bones (confirmed by reading
+   * its source, not assumed), so each chain also gets a synthetic,
+   * unskinned target THREE.Bone appended to the skeleton — see
+   * ikTargetBones below. */
+  ikSolver?: CCDIKSolver;
+  /** chain.id -> its synthetic drag target bone (see ikSolver above).
+   * Not part of the actual bone hierarchy, not skinned to any vertex —
+   * just a free-floating position CCDIKSolver reads as the chain's
+   * target, added directly to the scene so its matrixWorld updates
+   * normally every frame. */
+  ikTargetBones?: Map<string, THREE.Bone>;
 };
 
 // ── ZBrush-style extraction mask painting/visualization ──────────────────────
@@ -459,6 +474,11 @@ export type SculptViewerHandle = {
   /** The auto-detected hip/pelvis/root bone's id (THREE.Bone uuid), for
    * a one-click "select the hip control" shortcut — null if none found. */
   getHipBoneId: (entryId: string) => string | null;
+  /** Attaches the IK drag gizmo to a chain's target bone (deselecting
+   * any manually-selected pose bone/rig joint), or detaches it if
+   * chainId is null. Dragging the gizmo solves the whole chain live via
+   * CCDIKSolver — a no-op if the entry/chain has no detected IK. */
+  selectIKChain: (entryId: string, chainId: string | null) => void;
   getActiveClipId: (entryId: string) => string | null;
   setActiveClip: (entryId: string, clipId: string | null) => void;
   /** Creates a new empty clip (lazily creating the entry's PoseAnimationState
@@ -927,6 +947,20 @@ export default function SculptViewer({
   const createJointAtRef = useRef<(entry: SculptMeshEntry, worldPos: THREE.Vector3) => void>(() => {});
   const getJointHitFromEventRef = useRef<(e: PointerEvent) => { entry: SculptMeshEntry; bone: RigBone } | null>(() => null);
 
+  // ── IK target dragging ─────────────────────────────────────────────────
+  // A dedicated TransformControls, same pattern as poseTransformControls/
+  // rigTransformControls, just attached to a chain's synthetic target
+  // bone (SculptMeshEntry.ikTargetBones) instead of a real pose bone or
+  // a Rig-mode pivot. Dragging it calls entry.ikSolver.update(), which
+  // mutates the actual chain bones' quaternions — the exact same
+  // mechanism manual bone dragging uses, so keyframing/undo need no
+  // IK-specific handling at all.
+  const ikTransformControlsRef = useRef<TransformControls | null>(null);
+  const ikTransformHelperRef = useRef<THREE.Object3D | null>(null);
+  const selectedIKChainIdRef = useRef<string | null>(null);
+  const selectedIKEntryRef = useRef<SculptMeshEntry | null>(null);
+  const selectIKChainRef = useRef<(entry: SculptMeshEntry | null, chainId: string | null) => void>(() => {});
+
   useEffect(() => {
     boneViewerModeRef.current = boneViewerMode;
     updateBoneHandlesRef.current();
@@ -948,6 +982,7 @@ export default function SculptViewer({
       updateBoneHandlesRef.current();
     } else {
       selectBoneRef.current(null, null);
+      selectIKChainRef.current(null, null);
       if (boneHandlesRef.current) boneHandlesRef.current.visible = false;
       if (boneLinksRef.current) boneLinksRef.current.visible = false;
     }
@@ -1384,6 +1419,11 @@ export default function SculptViewer({
     updateBoneHandlesRef.current = updateBoneHandles;
 
     function selectBone(entry: SculptMeshEntry | null, bone: THREE.Bone | null) {
+      // Only clear IK selection when actually selecting a bone (not on
+      // a plain deselect call) — selectIKChain calls this the same way
+      // to clear pose selection, and both guard on their own non-null
+      // param to avoid the two calling each other forever.
+      if (bone) selectIKChainRef.current(null, null);
       selectedBoneEntryRef.current = entry;
       selectedBoneRef.current = bone;
       const tc = poseTransformControlsRef.current;
@@ -1575,6 +1615,57 @@ export default function SculptViewer({
     scene.add(rigTransformHelper);
     rigTransformControlsRef.current = rigTransformControls;
     rigTransformHelperRef.current = rigTransformHelper;
+
+    // IK target gizmo — translate-only (a target position is all
+    // CCDIKSolver reads), attaches to a chain's synthetic target bone.
+    const ikTransformControls = new TransformControls(camera, renderer.domElement);
+    ikTransformControls.setMode("translate");
+    ikTransformControls.enabled = false;
+    const ikTransformHelper = ikTransformControls.getHelper();
+    ikTransformHelper.visible = false;
+    scene.add(ikTransformHelper);
+    ikTransformControlsRef.current = ikTransformControls;
+    ikTransformHelperRef.current = ikTransformHelper;
+
+    function selectIKChain(entry: SculptMeshEntry | null, chainId: string | null) {
+      // Selecting an IK target deselects any manually-selected pose
+      // bone/rig joint and vice versa (selectBone does the same) — only
+      // one gizmo is ever active at a time. Guarded on chainId (like
+      // selectBone guards on bone) so a plain deselect call here
+      // doesn't loop back into selectBone's own IK-clearing call.
+      if (chainId) {
+        selectBoneRef.current(null, null);
+        selectJointRef.current(null, null);
+      }
+      selectedIKEntryRef.current = entry;
+      selectedIKChainIdRef.current = chainId;
+      const tc = ikTransformControlsRef.current;
+      const helper = ikTransformHelperRef.current;
+      if (!tc) return;
+      const targetBone = entry && chainId ? entry.ikTargetBones?.get(chainId) : undefined;
+      if (!entry || !chainId || !targetBone) {
+        tc.enabled = false;
+        if (helper) helper.visible = false;
+        tc.detach();
+      } else {
+        tc.attach(targetBone);
+        tc.enabled = true;
+        if (helper) helper.visible = true;
+      }
+    }
+    selectIKChainRef.current = selectIKChain;
+
+    ikTransformControls.addEventListener("dragging-changed", (event) => {
+      controls.enabled = !event.value;
+    });
+    ikTransformControls.addEventListener("objectChange", () => {
+      // Solving mutates the actual chain bones' quaternions — the same
+      // mechanism manual dragging uses, so the bone-handle overlay and
+      // (once a keyframe is inserted) undo/keyframing need no IK-
+      // specific handling at all.
+      selectedIKEntryRef.current?.ikSolver?.update();
+      updateBoneHandlesRef.current();
+    });
 
     // World position of every joint across every entry with a `rig`, in
     // the same order as jointHandles' position buffer — same "resolve a
@@ -2067,7 +2158,42 @@ export default function SculptViewer({
           // Length field/scrubber/keyframing become usable. "+ New Clip"
           // in the UI is for adding ADDITIONAL clips beyond this one.
           createClip(poseAnimation);
-          skeletonEntry = { skeleton: skinned.skeleton, bindPose, poseAnimation };
+
+          // One synthetic, unskinned target bone per detected chain —
+          // CCDIKSolver's `target` must be a real bone INDEX in
+          // skeleton.bones (confirmed by reading its source), so a
+          // free-floating Object3D can't be used directly. Each target
+          // starts exactly at its effector's current world position so
+          // grabbing it doesn't snap the limb before it's even dragged.
+          const ikTargetBones = new Map<string, THREE.Bone>();
+          for (const chain of ikChains) {
+            const effectorBone = skinned.skeleton.bones.find((b) => b.name === chain.effectorBone);
+            if (!effectorBone) continue;
+            effectorBone.updateWorldMatrix(true, false);
+            const worldPos = new THREE.Vector3();
+            effectorBone.getWorldPosition(worldPos);
+            const targetBone = new THREE.Bone();
+            targetBone.name = `__ikTarget_${chain.id}`;
+            targetBone.position.copy(worldPos);
+            scene.add(targetBone);
+            targetBone.updateMatrixWorld(true);
+            skinned.skeleton.bones.push(targetBone);
+            skinned.skeleton.boneInverses.push(new THREE.Matrix4());
+            ikTargetBones.set(chain.id, targetBone);
+          }
+
+          const iks = ikChains
+            .map((chain) => {
+              const targetBone = ikTargetBones.get(chain.id);
+              const targetIndex = targetBone ? skinned.skeleton.bones.indexOf(targetBone) : -1;
+              const effectorIndex = skinned.skeleton.bones.findIndex((b) => b.name === chain.effectorBone);
+              const links = chain.links.map((name) => ({ index: skinned.skeleton.bones.findIndex((b) => b.name === name) }));
+              return { target: targetIndex, effector: effectorIndex, links };
+            })
+            .filter((ik) => ik.target >= 0 && ik.effector >= 0 && ik.links.every((l) => l.index >= 0));
+          const ikSolver = iks.length > 0 ? new CCDIKSolver(skinned, iks) : undefined;
+
+          skeletonEntry = { skeleton: skinned.skeleton, bindPose, poseAnimation, ikSolver, ikTargetBones };
         }
         meshEntriesRef.current.push({ id: crypto.randomUUID(), name: entryName, mesh, seams, baseEdgeLen, quadIndices, ...paintEntry, ...skeletonEntry });
         totalVerts += mesh.geometry.attributes.position.count;
@@ -3844,7 +3970,10 @@ export default function SculptViewer({
   const getBones = useCallback((entryId: string): Array<{ id: string; name: string; depth: number }> => {
     const entry = meshEntriesRef.current.find((e) => e.id === entryId);
     if (!entry?.skeleton) return [];
-    return entry.skeleton.bones.map((bone) => {
+    // Excludes the synthetic IK target bones (see ikTargetBones) — they'd
+    // otherwise clutter this list as selectable-looking "bones" that
+    // aren't actually part of the character.
+    return entry.skeleton.bones.filter((bone) => !bone.name.startsWith("__ikTarget_")).map((bone) => {
       let depth = 0;
       let p = bone.parent as THREE.Bone | null;
       while (p?.isBone) { depth++; p = p.parent as THREE.Bone | null; }
@@ -3901,6 +4030,11 @@ export default function SculptViewer({
     const hipName = entry?.poseAnimation?.hipBoneName;
     if (!entry?.skeleton || !hipName) return null;
     return entry.skeleton.bones.find((b) => b.name === hipName)?.uuid ?? null;
+  }, []);
+
+  const selectIKChain = useCallback((entryId: string, chainId: string | null) => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    if (entry) selectIKChainRef.current(entry, chainId);
   }, []);
 
   const getActiveClipId = useCallback((entryId: string): string | null => {
@@ -3960,7 +4094,11 @@ export default function SculptViewer({
     if (!entry.poseAnimation) entry.poseAnimation = createPoseAnimationState();
     const clip = activeClipFor(entry) ?? createClip(entry.poseAnimation);
     entry.poseAnimation.activeClipId = clip.id;
-    const bones = entry.skeleton.bones.map((bone) => ({
+    // Excludes the synthetic IK target bones (see ikTargetBones) — those
+    // are drag aids, not part of the actual performance, so keyframing
+    // "wherever you last left the mouse" for them would be pointless
+    // (and export bogus, unused tracks).
+    const bones = entry.skeleton.bones.filter((bone) => !bone.name.startsWith("__ikTarget_")).map((bone) => ({
       boneName: bone.name,
       position: [bone.position.x, bone.position.y, bone.position.z] as [number, number, number],
       quaternion: [bone.quaternion.x, bone.quaternion.y, bone.quaternion.z, bone.quaternion.w] as [number, number, number, number],
@@ -4104,10 +4242,10 @@ export default function SculptViewer({
         getJoints, selectJoint: selectJointById, renameJoint, deleteJoint,
         getClips, getActiveClipId, setActiveClip, createAnimationClip, renameAnimationClip,
         duplicateAnimationClip, deleteAnimationClip, insertKeyframe, removeKeyframe,
-        setPoseTime, setPosePlaying, getKeyframeTimes, setClipLength, getIKChains, getHipBoneId,
+        setPoseTime, setPosePlaying, getKeyframeTimes, setClipLength, getIKChains, getHipBoneId, selectIKChain,
       };
     }
-  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance, extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb, getBones, selectBoneById, resetPose, resetBone, recenterView, toggleProjection, conformToReference, getJoints, selectJointById, renameJoint, deleteJoint, getClips, getActiveClipId, setActiveClip, createAnimationClip, renameAnimationClip, duplicateAnimationClip, deleteAnimationClip, insertKeyframe, removeKeyframe, setPoseTime, setPosePlaying, getKeyframeTimes, setClipLength, getIKChains, getHipBoneId]);
+  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance, extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb, getBones, selectBoneById, resetPose, resetBone, recenterView, toggleProjection, conformToReference, getJoints, selectJointById, renameJoint, deleteJoint, getClips, getActiveClipId, setActiveClip, createAnimationClip, renameAnimationClip, duplicateAnimationClip, deleteAnimationClip, insertKeyframe, removeKeyframe, setPoseTime, setPosePlaying, getKeyframeTimes, setClipLength, getIKChains, getHipBoneId, selectIKChain]);
 
   return <div ref={mountRef} className="w-full h-full" style={{ touchAction: "none" }} />;
 }

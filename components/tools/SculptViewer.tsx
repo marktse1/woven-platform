@@ -1379,12 +1379,14 @@ export default function SculptViewer({
       const links = boneLinksRef.current;
       if (!handles || !links) return;
       const inPoseMode = editModeRef.current === "pose";
-      // Pose mode's own editing gizmo always needs handles fully visible
-      // and unoccluded, regardless of the Bone Viewer toggle — that
-      // existing behavior is untouched. Outside Pose mode, the toggle's
-      // "on" state lets the mesh occlude bones normally (depthTest:true,
-      // pair with X-Ray to see through); "onTop" matches the always-on-top
-      // look Pose mode already has.
+      // Bone/joint click-selection (getBoneHitFromEvent below) picks via a
+      // screen-space nearest-point search over boneHandleIndex, which stays
+      // populated regardless of this .visible flag — so the Bone Viewer
+      // toggle can genuinely hide the dots/lines even while posing, without
+      // breaking the ability to click-select or drag a bone. The
+      // TransformControls gizmo on the currently-selected bone is a
+      // separate object with its own visible flag (selectBone), unaffected
+      // by this toggle either way.
       const depthTest = !inPoseMode && boneViewerModeRef.current === "on";
       boneHandleMat.depthTest = depthTest;
       boneLinkMat.depthTest = depthTest;
@@ -1409,12 +1411,12 @@ export default function SculptViewer({
       handles.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
       handles.geometry.attributes.position.needsUpdate = true;
       handles.geometry.computeBoundingSphere();
-      handles.visible = (inPoseMode || boneViewerModeRef.current !== "off") && positions.length > 0;
+      handles.visible = boneViewerModeRef.current !== "off" && positions.length > 0;
 
       links.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(linkPositions), 3));
       links.geometry.attributes.position.needsUpdate = true;
       links.geometry.computeBoundingSphere();
-      links.visible = (inPoseMode || boneViewerModeRef.current !== "off") && linkPositions.length > 0;
+      links.visible = boneViewerModeRef.current !== "off" && linkPositions.length > 0;
     }
     updateBoneHandlesRef.current = updateBoneHandles;
 
@@ -1698,12 +1700,16 @@ export default function SculptViewer({
       handles.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
       handles.geometry.attributes.position.needsUpdate = true;
       handles.geometry.computeBoundingSphere();
-      handles.visible = (inRigMode || boneViewerModeRef.current !== "off") && positions.length > 0;
+      // Same reasoning as updateBoneHandles above: joint click-selection
+      // (getJointHitFromEvent) picks via screen-space distance over
+      // jointHandleIndex, independent of this .visible flag, so the Bone
+      // Viewer toggle can hide the dots/lines even while actively rigging.
+      handles.visible = boneViewerModeRef.current !== "off" && positions.length > 0;
 
       links.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(linkPositions), 3));
       links.geometry.attributes.position.needsUpdate = true;
       links.geometry.computeBoundingSphere();
-      links.visible = (inRigMode || boneViewerModeRef.current !== "off") && linkPositions.length > 0;
+      links.visible = boneViewerModeRef.current !== "off" && linkPositions.length > 0;
     }
     updateJointHandlesRef.current = updateJointHandles;
 

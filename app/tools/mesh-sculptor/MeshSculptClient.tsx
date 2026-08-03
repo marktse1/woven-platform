@@ -195,6 +195,18 @@ export default function MeshSculptClient() {
   const [selectedBoneId, setSelectedBoneId] = useState<string | null>(null);
   const [isOrthographic, setIsOrthographic] = useState(false);
 
+  // Pose-mode timeline — v1 operates on a single "primary" entry (the
+  // first skinned one, same simplification `bones` above already makes
+  // by flattening every entry's bones into one list). onPoseTimeChange
+  // (SculptViewer.tsx) is the source of truth for time/duration/playing
+  // (same "event, not polled ref" reasoning as bone selection), not a
+  // value this component computes itself.
+  const [poseClips, setPoseClips] = useState<Array<{ id: string; name: string; duration: number }>>([]);
+  const [activeClipId, setActiveClipId] = useState<string | null>(null);
+  const [poseTime, setPoseTimeState] = useState(0);
+  const [poseDuration, setPoseDuration] = useState(0);
+  const [posePlaying, setPosePlayingState] = useState(false);
+
   // Rig mode: manually-placed joints (lib/sculpt/rig.ts) — distinct from
   // `bones` above (an imported skeleton). Starts empty on every mesh;
   // populated as the user places joints in the viewport.
@@ -508,12 +520,79 @@ export default function MeshSculptClient() {
     setJoints(all);
   }, []);
 
+  // The single entry the pose timeline operates on for v1 — same
+  // "first skinned entry" simplification `bones` already makes by
+  // flattening every entry's bones into one combined list.
+  const primaryPoseEntryId = useCallback((): string | null => bones[0]?.entryId ?? null, [bones]);
+
+  const refreshPoseClips = useCallback(() => {
+    const handle = viewerHandleRef.current;
+    const entryId = primaryPoseEntryId();
+    if (!handle || !entryId) { setPoseClips([]); setActiveClipId(null); return; }
+    setPoseClips(handle.getClips(entryId));
+    setActiveClipId(handle.getActiveClipId(entryId));
+  }, [primaryPoseEntryId]);
+
+  // Re-derive whenever `bones` changes (a new skinned entry loaded, or an
+  // existing one's bones refreshed) rather than trying to call this
+  // synchronously right after refreshBones() — bones is still the
+  // pre-update value at that point (React state updates aren't
+  // synchronous), so this effect is the correct place to react to it.
+  useEffect(() => { refreshPoseClips(); }, [bones, refreshPoseClips]);
+
   const handleModelLoaded = useCallback((count: number) => {
     setVertexCount(count);
     refreshSubmeshes();
     refreshBones();
     refreshJoints();
   }, [refreshSubmeshes, refreshBones, refreshJoints]);
+
+  // SculptViewer.tsx's onPoseTimeChange — fired every frame during
+  // playback plus once on any scrub/keyframe/clip-switch, so this is
+  // the sole source of truth for time/duration/playing (never polled).
+  const handlePoseTimeChange = useCallback((_entryId: string, time: number, duration: number, playing: boolean) => {
+    setPoseTimeState(time);
+    setPoseDuration(duration);
+    setPosePlayingState(playing);
+  }, []);
+
+  const handleInsertKeyframe = useCallback(() => {
+    const entryId = primaryPoseEntryId();
+    if (!entryId) return;
+    viewerHandleRef.current?.insertKeyframe(entryId, poseTime);
+    refreshPoseClips();
+  }, [primaryPoseEntryId, poseTime, refreshPoseClips]);
+
+  const handleRemoveKeyframe = useCallback(() => {
+    const entryId = primaryPoseEntryId();
+    if (!entryId) return;
+    viewerHandleRef.current?.removeKeyframe(entryId, poseTime);
+    refreshPoseClips();
+  }, [primaryPoseEntryId, poseTime, refreshPoseClips]);
+
+  const handleScrub = useCallback((time: number) => {
+    const entryId = primaryPoseEntryId();
+    if (entryId) viewerHandleRef.current?.setPoseTime(entryId, time);
+  }, [primaryPoseEntryId]);
+
+  const handleTogglePlay = useCallback(() => {
+    const entryId = primaryPoseEntryId();
+    if (entryId) viewerHandleRef.current?.setPosePlaying(entryId, !posePlaying);
+  }, [primaryPoseEntryId, posePlaying]);
+
+  const handleCreateClip = useCallback(() => {
+    const entryId = primaryPoseEntryId();
+    if (!entryId) return;
+    viewerHandleRef.current?.createAnimationClip(entryId);
+    refreshPoseClips();
+  }, [primaryPoseEntryId, refreshPoseClips]);
+
+  const handleSelectClip = useCallback((clipId: string) => {
+    const entryId = primaryPoseEntryId();
+    if (!entryId) return;
+    viewerHandleRef.current?.setActiveClip(entryId, clipId);
+    refreshPoseClips();
+  }, [primaryPoseEntryId, refreshPoseClips]);
 
   const handleSelectBone = useCallback((entryId: string, boneId: string | null) => {
     viewerHandleRef.current?.selectBone(entryId, boneId);
@@ -895,6 +974,62 @@ export default function MeshSculptClient() {
                   <p className="text-[10.5px] mt-2" style={{ color: selectedBoneId ? PURPLE : "#6a8098" }}>
                     {selectedBoneId ? "Drag the gizmo to pose the selected bone" : "Click a bone (in the list or viewport) to select it"}
                   </p>
+
+                  <div className="mt-4 pt-3 border-t border-[#2a2320]">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <p className="text-[10px] text-dim uppercase tracking-wide">Clips</p>
+                      <button onClick={handleCreateClip} disabled={bones.length === 0}
+                        className="text-[10.5px] px-1.5 py-0.5 rounded" style={{ color: PURPLE }}>
+                        + New Clip
+                      </button>
+                    </div>
+                    {poseClips.length === 0 ? (
+                      <p className="text-[10.5px]" style={{ color: "#4a4040" }}>No clips yet — pose the character and press Add Keyframe.</p>
+                    ) : (
+                      <div className="space-y-0.5 mb-2">
+                        {poseClips.map((clip) => (
+                          <button key={clip.id} onClick={() => handleSelectClip(clip.id)}
+                            style={{ background: activeClipId === clip.id ? "rgba(196,123,232,.22)" : "transparent", color: activeClipId === clip.id ? PURPLE : "#8aa0b4" }}
+                            className="w-full text-left py-1 px-1.5 rounded text-[11px] truncate transition-colors hover:bg-[#1e1a17]">
+                            {clip.name} <span className="opacity-60">({clip.duration.toFixed(2)}s)</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    {activeClipId && (
+                      <div className="mt-2">
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <button onClick={handleTogglePlay}
+                            className="px-2 py-1 rounded text-[11px] font-semibold text-white transition-colors"
+                            style={{ background: PURPLE }}>
+                            {posePlaying ? "Pause" : "Play"}
+                          </button>
+                          <input
+                            type="range" min={0} max={Math.max(poseDuration, 0.001)} step={0.001}
+                            value={Math.min(poseTime, poseDuration)}
+                            onChange={(e) => handleScrub(parseFloat(e.target.value))}
+                            className="flex-1"
+                          />
+                          <span className="text-[10.5px] tabular-nums" style={{ color: "#8aa0b4" }}>
+                            {poseTime.toFixed(2)}s
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button onClick={handleInsertKeyframe}
+                            className="flex-1 py-1 rounded text-[11px] font-medium transition-colors"
+                            style={{ background: "#1e1a17", color: PURPLE, border: `1px solid ${PURPLE}` }}>
+                            Add Keyframe
+                          </button>
+                          <button onClick={handleRemoveKeyframe}
+                            className="flex-1 py-1 rounded text-[11px] font-medium transition-colors"
+                            style={{ background: "#1e1a17", color: "#8aa0b4" }}>
+                            Remove Keyframe
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -1493,6 +1628,7 @@ export default function MeshSculptClient() {
             onBoneSelect={setSelectedBoneId}
             onJointSelect={handleJointSelectionChange}
             onProjectionChange={setIsOrthographic}
+            onPoseTimeChange={handlePoseTimeChange}
             paintColor={paintColor}
             handleRef={viewerHandleRef}
           />

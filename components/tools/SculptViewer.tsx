@@ -22,6 +22,7 @@ import { extrudeFaces as extrudeFacesLib, extrudeEdgeLoop as extrudeEdgeLoopLib,
 import { buildMirrorData, type MirrorData } from "@/lib/sculpt/mirror";
 import { createBone, nextBoneName, renameBone as renameRigBone, deleteBone as deleteRigBone, type RigBone, type RigSkeleton } from "@/lib/sculpt/rig";
 import { conformToReference as conformMeshToReference } from "@/lib/sculpt/conform";
+import { createPoseAnimationState, createClip, findClip, renameClip as renameClipData, duplicateClip as duplicateClipData, deleteClip as deleteClipData, insertWholePoseKeyframe, removeKeyframeAtTime, sampleChannelLinear, type PoseAnimationState, type AnimationClipData } from "@/lib/sculpt/animation";
 import * as BufferGeometryUtils from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
 // Patch Three.js raycaster to use BVH acceleration
@@ -78,6 +79,19 @@ type SculptMeshEntry = {
    * mask-weighted region transforms. Lazily created on first joint
    * placement, same "absent until used" convention as mask/topology/mirror. */
   rig?: RigSkeleton;
+  /** Pose-mode keyframeable animation clips + IK chains (lib/sculpt/
+   * animation.ts) — only meaningful alongside `skeleton` above. Lazily
+   * created on first keyframe insert, same "absent until used"
+   * convention as mask/topology/mirror/rig. */
+  poseAnimation?: PoseAnimationState;
+  /** Runtime playback objects for the active clip — rebuilt (not
+   * patched) via rebuildPoseMixer whenever the active clip, its
+   * keyframes, or the active-clip selection changes. Absent until
+   * the first clip exists, same convention as the fields above. */
+  poseMixer?: THREE.AnimationMixer;
+  poseAction?: THREE.AnimationAction;
+  poseTime?: number;
+  posePlaying?: boolean;
 };
 
 // ── ZBrush-style extraction mask painting/visualization ──────────────────────
@@ -431,6 +445,31 @@ export type SculptViewerHandle = {
   /** Restores every bone in an entry's skeleton to its originally-imported
    * bind pose (a no-op if the entry has no skeleton). */
   resetPose: (entryId: string) => void;
+  /** Pose-mode animation clips for an entry (empty until the first
+   * keyframe/explicit New Clip — see lib/sculpt/animation.ts). */
+  getClips: (entryId: string) => Array<{ id: string; name: string; duration: number }>;
+  getActiveClipId: (entryId: string) => string | null;
+  setActiveClip: (entryId: string, clipId: string | null) => void;
+  /** Creates a new empty clip (lazily creating the entry's PoseAnimationState
+   * too, if this is its first clip) and makes it active. Returns its id, or
+   * null if the entry has no skeleton to animate. */
+  createAnimationClip: (entryId: string) => string | null;
+  renameAnimationClip: (entryId: string, clipId: string, name: string) => void;
+  /** Deep-copies a clip's channels/keys under a new id, same pattern as
+   * duplicateClip in lib/sculpt/animation.ts. Returns the new clip's id. */
+  duplicateAnimationClip: (entryId: string, clipId: string) => string | null;
+  deleteAnimationClip: (entryId: string, clipId: string) => void;
+  /** Whole-pose snapshot: reads every bone's CURRENT transform (however it
+   * got there — manual drag or IK) and keys all of it into the active clip
+   * at `time` in one call, creating the clip lazily if none is active. */
+  insertKeyframe: (entryId: string, time: number) => void;
+  /** Removes every channel's key at `time` from the active clip. */
+  removeKeyframe: (entryId: string, time: number) => void;
+  /** Scrubs the active clip to `time` (clamped to [0, duration]) without
+   * starting playback — the timeline slider's drag handler. */
+  setPoseTime: (entryId: string, time: number) => void;
+  /** Starts/stops playback of the active clip from its current time. */
+  setPosePlaying: (entryId: string, playing: boolean) => void;
   /** Re-frames the camera on the currently-selected mesh/submesh, or the
    * whole scene if nothing's selected. */
   recenterView: () => void;
@@ -623,6 +662,12 @@ type Props = {
   /** Fired whenever the Perspective/Ortho projection toggle switches, so
    * the toggle button can show which mode is currently active. */
   onProjectionChange?: (isOrthographic: boolean) => void;
+  /** Fired every frame while a pose clip is playing, and once whenever
+   * the scrub time or play/pause state changes some other way (e.g.
+   * insertKeyframe) — same "event, not polled ref" reasoning as
+   * onBoneSelect, so the timeline UI can show a live playhead/duration
+   * without polling a ref during render. */
+  onPoseTimeChange?: (entryId: string, time: number, duration: number, playing: boolean) => void;
   handleRef?: React.RefObject<SculptViewerHandle | null>;
 };
 
@@ -654,6 +699,7 @@ export default function SculptViewer({
   onBoneSelect,
   onJointSelect,
   onProjectionChange,
+  onPoseTimeChange,
   handleRef,
 }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null);
@@ -762,6 +808,7 @@ export default function SculptViewer({
   const onBoneSelectRef = useRef(onBoneSelect);
   const onJointSelectRef = useRef(onJointSelect);
   const onProjectionChangeRef = useRef(onProjectionChange);
+  const onPoseTimeChangeRef = useRef(onPoseTimeChange);
   useEffect(() => { onModelLoadedRef.current = onModelLoaded; }, [onModelLoaded]);
   useEffect(() => { onLoadErrorRef.current = onLoadError; }, [onLoadError]);
   useEffect(() => { onSelectionChangeRef.current = onSelectionChange; }, [onSelectionChange]);
@@ -769,6 +816,7 @@ export default function SculptViewer({
   useEffect(() => { onBoneSelectRef.current = onBoneSelect; }, [onBoneSelect]);
   useEffect(() => { onJointSelectRef.current = onJointSelect; }, [onJointSelect]);
   useEffect(() => { onProjectionChangeRef.current = onProjectionChange; }, [onProjectionChange]);
+  useEffect(() => { onPoseTimeChangeRef.current = onPoseTimeChange; }, [onPoseTimeChange]);
 
   // ── poly-edit mode: selection state + transform gizmo ─────────────────────
   const editModeRef = useRef<EditMode>(editMode);
@@ -821,6 +869,16 @@ export default function SculptViewer({
   // separate pointer-events effect below can resolve a click without a
   // real raycast (bone handles are small points, not intersectable geometry).
   const getBoneHitFromEventRef = useRef<(e: PointerEvent) => { entry: SculptMeshEntry; bone: THREE.Bone } | null>(() => null);
+
+  // Pose-mode animation playback — rebuilds a THREE.AnimationMixer/Action
+  // from the entry's active clip whenever it changes (clip switch, keyframe
+  // insert/remove), and scrubs/plays it. See lib/sculpt/animation.ts for
+  // the underlying data; these refs just expose the scene-graph side to
+  // the outer component's imperative handle methods, same indirection
+  // pattern as updateBoneHandlesRef above.
+  const rebuildPoseMixerRef = useRef<(entry: SculptMeshEntry) => void>(() => {});
+  const setPoseTimeRef = useRef<(entry: SculptMeshEntry, time: number) => void>(() => {});
+  const setPosePlayingRef = useRef<(entry: SculptMeshEntry, playing: boolean) => void>(() => {});
 
   // ── rig mode: manual joint placement + mask-weighted pivot transform ──────
   // Unlike Pose mode's gizmo (attaches directly to a real THREE.Bone), a
@@ -1324,6 +1382,97 @@ export default function SculptViewer({
     }
     resetPoseRef.current = resetPose;
 
+    // Assembles one bone's worth of per-component channels back into the
+    // single vector/quaternion KeyframeTracks three.js actually expects.
+    // Linear interpolation only for now — CUBICSPLINE (real tangents) is a
+    // later pass once the curve editor exists to author them.
+    function buildThreeClip(clip: AnimationClipData): THREE.AnimationClip {
+      const boneNames = Array.from(new Set(clip.channels.map((c) => c.boneName)));
+      const tracks: THREE.KeyframeTrack[] = [];
+      for (const boneName of boneNames) {
+        const chans = clip.channels.filter((c) => c.boneName === boneName);
+        // Per-bone time union, not global-across-clip — different bones'
+        // channels can (in principle, once the curve editor allows
+        // independent edits) have different keyframe times.
+        const times = Array.from(new Set(chans.flatMap((c) => c.keys.map((k) => k.time)))).sort((a, b) => a - b);
+        if (times.length === 0) continue;
+        const posX = chans.find((c) => c.property === "position.x");
+        const posY = chans.find((c) => c.property === "position.y");
+        const posZ = chans.find((c) => c.property === "position.z");
+        if (posX && posY && posZ) {
+          const values: number[] = [];
+          for (const t of times) values.push(sampleChannelLinear(posX, t), sampleChannelLinear(posY, t), sampleChannelLinear(posZ, t));
+          tracks.push(new THREE.VectorKeyframeTrack(`${boneName}.position`, times, values, THREE.InterpolateLinear));
+        }
+        const qx = chans.find((c) => c.property === "quaternion.x");
+        const qy = chans.find((c) => c.property === "quaternion.y");
+        const qz = chans.find((c) => c.property === "quaternion.z");
+        const qw = chans.find((c) => c.property === "quaternion.w");
+        if (qx && qy && qz && qw) {
+          const values: number[] = [];
+          for (const t of times) values.push(sampleChannelLinear(qx, t), sampleChannelLinear(qy, t), sampleChannelLinear(qz, t), sampleChannelLinear(qw, t));
+          tracks.push(new THREE.QuaternionKeyframeTrack(`${boneName}.quaternion`, times, values, THREE.InterpolateLinear));
+        }
+      }
+      return new THREE.AnimationClip(clip.name, clip.duration, tracks);
+    }
+
+    function activeClipForMixer(entry: SculptMeshEntry): AnimationClipData | undefined {
+      if (!entry.poseAnimation?.activeClipId) return undefined;
+      return findClip(entry.poseAnimation, entry.poseAnimation.activeClipId);
+    }
+
+    // Called whenever the active clip's shape changes (clip switch,
+    // keyframe insert/remove) — mixer/action are cheap, just rebuilt
+    // rather than patched in place.
+    function rebuildPoseMixer(entry: SculptMeshEntry) {
+      entry.poseMixer?.stopAllAction();
+      entry.poseMixer = undefined;
+      entry.poseAction = undefined;
+      const clip = activeClipForMixer(entry);
+      if (!clip || clip.channels.length === 0) {
+        onPoseTimeChangeRef.current?.(entry.id, 0, 0, false);
+        return;
+      }
+      const threeClip = buildThreeClip(clip);
+      const mixer = new THREE.AnimationMixer(entry.mesh);
+      const action = mixer.clipAction(threeClip);
+      action.play();
+      action.paused = true;
+      const time = Math.min(entry.poseTime ?? 0, clip.duration);
+      action.time = time;
+      mixer.update(0);
+      entry.poseMixer = mixer;
+      entry.poseAction = action;
+      entry.poseTime = time;
+      updateBoneHandles();
+      onPoseTimeChangeRef.current?.(entry.id, time, clip.duration, entry.posePlaying ?? false);
+    }
+    rebuildPoseMixerRef.current = rebuildPoseMixer;
+
+    // Scrubbing: force the mixer to evaluate a specific time without
+    // advancing playback — the standard three.js technique (set
+    // action.time directly, then update(0)).
+    function setPoseTime(entry: SculptMeshEntry, time: number) {
+      const clip = activeClipForMixer(entry);
+      const clamped = Math.max(0, Math.min(time, clip?.duration ?? time));
+      if (!entry.poseAction || !entry.poseMixer) { entry.poseTime = clamped; return; }
+      entry.poseAction.time = clamped;
+      entry.poseMixer.update(0);
+      entry.poseTime = clamped;
+      updateBoneHandles();
+      onPoseTimeChangeRef.current?.(entry.id, clamped, clip?.duration ?? 0, entry.posePlaying ?? false);
+    }
+    setPoseTimeRef.current = setPoseTime;
+
+    function setPosePlaying(entry: SculptMeshEntry, playing: boolean) {
+      entry.posePlaying = playing;
+      if (entry.poseAction) entry.poseAction.paused = !playing;
+      const clip = activeClipForMixer(entry);
+      onPoseTimeChangeRef.current?.(entry.id, entry.poseTime ?? 0, clip?.duration ?? 0, playing);
+    }
+    setPosePlayingRef.current = setPosePlaying;
+
     // Screen-space nearest-handle picking, same technique projectToScreen
     // (below, for mesh vertices) uses, just for a world position directly
     // since a Bone isn't a mesh vertex index.
@@ -1708,7 +1857,24 @@ export default function SculptViewer({
     toggleProjectionRef.current = toggleProjection;
 
     let raf = 0;
+    let lastTime = performance.now();
     const tick = () => {
+      const now = performance.now();
+      // Clamp so a backgrounded tab (or a debugger pause) resuming doesn't
+      // jump playback forward by however long it was away.
+      const delta = Math.min((now - lastTime) / 1000, 0.1);
+      lastTime = now;
+      let bonesDirty = false;
+      for (const entry of meshEntriesRef.current) {
+        if (entry.posePlaying && entry.poseMixer && entry.poseAction) {
+          entry.poseMixer.update(delta);
+          entry.poseTime = entry.poseAction.time;
+          bonesDirty = true;
+          const clip = entry.poseAnimation?.activeClipId ? findClip(entry.poseAnimation, entry.poseAnimation.activeClipId) : undefined;
+          onPoseTimeChangeRef.current?.(entry.id, entry.poseTime, clip?.duration ?? 0, true);
+        }
+      }
+      if (bonesDirty) updateBoneHandlesRef.current();
       controls.update();
       renderer.render(scene, cameraRef.current!);
       raf = requestAnimationFrame(tick);
@@ -3599,6 +3765,97 @@ export default function SculptViewer({
     if (entry) resetPoseRef.current(entry);
   }, []);
 
+  const setPoseTime = useCallback((entryId: string, time: number) => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    if (entry) setPoseTimeRef.current(entry, time);
+  }, []);
+
+  const setPosePlaying = useCallback((entryId: string, playing: boolean) => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    if (entry) setPosePlayingRef.current(entry, playing);
+  }, []);
+
+  const getClips = useCallback((entryId: string): Array<{ id: string; name: string; duration: number }> => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    return entry?.poseAnimation?.clips.map((c) => ({ id: c.id, name: c.name, duration: c.duration })) ?? [];
+  }, []);
+
+  const getActiveClipId = useCallback((entryId: string): string | null => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    return entry?.poseAnimation?.activeClipId ?? null;
+  }, []);
+
+  const setActiveClip = useCallback((entryId: string, clipId: string | null) => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    if (!entry?.poseAnimation) return;
+    entry.poseAnimation.activeClipId = clipId;
+    entry.poseTime = 0;
+    rebuildPoseMixerRef.current(entry);
+  }, []);
+
+  const createAnimationClip = useCallback((entryId: string): string | null => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    if (!entry?.skeleton) return null;
+    if (!entry.poseAnimation) entry.poseAnimation = createPoseAnimationState();
+    const clip = createClip(entry.poseAnimation);
+    entry.poseAnimation.activeClipId = clip.id;
+    rebuildPoseMixerRef.current(entry);
+    return clip.id;
+  }, []);
+
+  const renameAnimationClip = useCallback((entryId: string, clipId: string, name: string) => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    if (entry?.poseAnimation) renameClipData(entry.poseAnimation, clipId, name);
+  }, []);
+
+  const duplicateAnimationClip = useCallback((entryId: string, clipId: string): string | null => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    if (!entry?.poseAnimation) return null;
+    const copy = duplicateClipData(entry.poseAnimation, clipId);
+    if (!copy) return null;
+    entry.poseAnimation.activeClipId = copy.id;
+    rebuildPoseMixerRef.current(entry);
+    return copy.id;
+  }, []);
+
+  const deleteAnimationClip = useCallback((entryId: string, clipId: string) => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    if (!entry?.poseAnimation) return;
+    deleteClipData(entry.poseAnimation, clipId);
+    rebuildPoseMixerRef.current(entry);
+  }, []);
+
+  function activeClipFor(entry: SculptMeshEntry): AnimationClipData | undefined {
+    if (!entry.poseAnimation) return undefined;
+    const id = entry.poseAnimation.activeClipId;
+    return id ? findClip(entry.poseAnimation, id) : undefined;
+  }
+
+  const insertKeyframe = useCallback((entryId: string, time: number) => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    if (!entry?.skeleton) return;
+    if (!entry.poseAnimation) entry.poseAnimation = createPoseAnimationState();
+    const clip = activeClipFor(entry) ?? createClip(entry.poseAnimation);
+    entry.poseAnimation.activeClipId = clip.id;
+    const bones = entry.skeleton.bones.map((bone) => ({
+      boneName: bone.name,
+      position: [bone.position.x, bone.position.y, bone.position.z] as [number, number, number],
+      quaternion: [bone.quaternion.x, bone.quaternion.y, bone.quaternion.z, bone.quaternion.w] as [number, number, number, number],
+    }));
+    insertWholePoseKeyframe(clip, time, bones);
+    entry.poseTime = time;
+    rebuildPoseMixerRef.current(entry);
+  }, []);
+
+  const removeKeyframe = useCallback((entryId: string, time: number) => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    if (!entry) return;
+    const clip = activeClipFor(entry);
+    if (!clip) return;
+    removeKeyframeAtTime(clip, time);
+    rebuildPoseMixerRef.current(entry);
+  }, []);
+
   // Frames the currently-selected mesh/submesh (selectedEntryRef, already
   // tracked for poly-edit and other per-entry tools) if one is selected,
   // otherwise the whole scene — so this doubles as "look at my selection"
@@ -3705,9 +3962,12 @@ export default function SculptViewer({
         extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb,
         getBones, selectBone: selectBoneById, resetPose, recenterView, toggleProjection, conformToReference,
         getJoints, selectJoint: selectJointById, renameJoint, deleteJoint,
+        getClips, getActiveClipId, setActiveClip, createAnimationClip, renameAnimationClip,
+        duplicateAnimationClip, deleteAnimationClip, insertKeyframe, removeKeyframe,
+        setPoseTime, setPosePlaying,
       };
     }
-  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance, extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb, getBones, selectBoneById, resetPose, recenterView, toggleProjection, conformToReference, getJoints, selectJointById, renameJoint, deleteJoint]);
+  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance, extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb, getBones, selectBoneById, resetPose, recenterView, toggleProjection, conformToReference, getJoints, selectJointById, renameJoint, deleteJoint, getClips, getActiveClipId, setActiveClip, createAnimationClip, renameAnimationClip, duplicateAnimationClip, deleteAnimationClip, insertKeyframe, removeKeyframe, setPoseTime, setPosePlaying]);
 
   return <div ref={mountRef} className="w-full h-full" style={{ touchAction: "none" }} />;
 }

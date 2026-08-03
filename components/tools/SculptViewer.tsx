@@ -2076,6 +2076,27 @@ export default function SculptViewer({
     loader.parse(glbData.slice(0), "", (gltf) => {
       const group = gltf.scene;
       let totalVerts = 0;
+      // Multiple SkinnedMesh nodes (e.g. a body + separate modular clothing
+      // pieces) commonly share ONE THREE.Skeleton object — confirmed
+      // directly against base_female_-_game_ready_-_rigged_-_low_poly.glb
+      // (6 skinned parts, 1 shared skeleton). Without this, the per-mesh
+      // setup below would run once per PART instead of once per RIG: bind
+      // pose snapshotting is merely redundant, but IK/hip detection would
+      // create a separate PoseAnimationState (and default clip) per part —
+      // duplicating every Bones-list row, Hip/IK Controls button, and
+      // bone-handle dot once per part in the UI — and, more seriously,
+      // synthetic IK target bones would get pushed into the shared
+      // skeleton.bones/boneInverses arrays again on every part, ballooning
+      // the one real skeleton by (chain count) extra bones per part. Only
+      // the FIRST part encountered for a given skeleton becomes that rig's
+      // "owner" (keeps skeleton/bindPose/poseAnimation/ikSolver/
+      // ikTargetBones on its entry) — every other part sharing that
+      // skeleton is left with none of that on its own entry. This doesn't
+      // affect their actual deformation at all: `mesh.skeleton` (three.js's
+      // own SkinnedMesh property, set by GLTFLoader) is untouched either
+      // way, so posing bones via the owner's entry still visually deforms
+      // every sibling part through the normal skinning pipeline.
+      const processedSkeletons = new Set<THREE.Skeleton>();
 
       if (!wireMatRef.current) {
         wireMatRef.current = new THREE.LineBasicMaterial({
@@ -2151,7 +2172,13 @@ export default function SculptViewer({
         // restore to.
         let skeletonEntry: Partial<SculptMeshEntry> = {};
         const skinned = mesh as THREE.SkinnedMesh;
-        if (skinned.isSkinnedMesh && skinned.skeleton) {
+        if (skinned.isSkinnedMesh && skinned.skeleton && processedSkeletons.has(skinned.skeleton)) {
+          // An earlier part already became this exact skeleton's "owner"
+          // (see the note above totalVerts) — this part stays a plain
+          // geometry entry with no pose-editing surface of its own; it
+          // still deforms correctly since mesh.skeleton (three.js's own
+          // property) is untouched.
+        } else if (skinned.isSkinnedMesh && skinned.skeleton) {
           const bindPose = new Map<string, { position: THREE.Vector3; quaternion: THREE.Quaternion }>();
           for (const bone of skinned.skeleton.bones) {
             bindPose.set(bone.uuid, { position: bone.position.clone(), quaternion: bone.quaternion.clone() });
@@ -2206,6 +2233,7 @@ export default function SculptViewer({
           const ikSolver = iks.length > 0 ? new CCDIKSolver(skinned, iks) : undefined;
 
           skeletonEntry = { skeleton: skinned.skeleton, bindPose, poseAnimation, ikSolver, ikTargetBones };
+          processedSkeletons.add(skinned.skeleton);
         }
         meshEntriesRef.current.push({ id: crypto.randomUUID(), name: entryName, mesh, seams, baseEdgeLen, quadIndices, ...paintEntry, ...skeletonEntry });
         totalVerts += mesh.geometry.attributes.position.count;

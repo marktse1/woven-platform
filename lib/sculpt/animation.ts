@@ -95,16 +95,37 @@ export function createPoseAnimationState(): PoseAnimationState {
 // and Mixamo-style (UpLeg.L_02, Arm.L_014, ...) — not a universal bone-name
 // parser. A skeleton matching neither just gets no detected controls; that's
 // fine, manual bone selection/posing still works regardless.
+//
+// IMPORTANT: bone names never actually reach this function in their raw,
+// authored form. GLTFLoader runs every node name through
+// PropertyBinding.sanitizeNodeName(), which strips the characters
+// `[ ] . : /` (reserved for animation track-binding path syntax) —
+// confirmed directly in three.js's source
+// (three/src/animation/PropertyBinding.js: `_RESERVED_CHARS_RE =
+// '\\[\\]\\.:\\/'`) and by actually loading
+// base_female_-_game_ready_-_rigged_-_low_poly.glb through GLTFLoader and
+// inspecting the resulting Bone names. So Mixamo's authored "UpLeg.L_02"
+// arrives here as "UpLegL_02" — the dot is simply gone, not replaced with
+// anything — which the original `.${side}_`/`.${side}` patterns could never
+// match. hasSide() below matches the POST-SANITIZATION shape instead
+// (`l_<digits>` / `r_<digits>` run together with no separator, immediately
+// before the trailing numeric suffix) in addition to the UE-Mannequin
+// underscore style, which has no dot to lose and was unaffected.
 
 function norm(name: string): string {
   return name.toLowerCase();
 }
 
+const SANITIZED_MIXAMO_SIDE_RE: Record<"l" | "r", RegExp> = { l: /l_\d+$/, r: /r_\d+$/ };
+
 /** True if `name` carries a left/right side marker for `side` — covers
- * both conventions' suffix styles (`_l`, `.L_02`, `.L`). */
+ * UE-Mannequin's `_l`/`_l_` suffix style (dot-free, passes through
+ * GLTFLoader's sanitizer untouched) and Mixamo's `.L_02` style AS IT
+ * ACTUALLY ARRIVES post-sanitization (`L_02`, dot stripped — see the note
+ * above). */
 function hasSide(name: string, side: "l" | "r"): boolean {
   const n = norm(name);
-  return n.includes(`.${side}_`) || n.includes(`.${side}`) || n.includes(`_${side}_`) || n.endsWith(`_${side}`);
+  return n.includes(`_${side}_`) || n.endsWith(`_${side}`) || SANITIZED_MIXAMO_SIDE_RE[side].test(n);
 }
 
 function findSideBone(names: string[], side: "l" | "r", include: string, exclude?: string): string | undefined {

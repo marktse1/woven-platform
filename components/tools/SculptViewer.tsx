@@ -1496,6 +1496,22 @@ export default function SculptViewer({
       // — cheap (bone counts are small), simplest way to keep the overlay
       // from visibly lagging the actual pose.
       updateBoneHandlesRef.current();
+      // Dragging the Hip/COG control is otherwise plain FK — since Hips is
+      // a parent of both the spine AND the leg/arm root bones, moving it
+      // would just rigidly drag the feet/hands along with it instead of
+      // letting them stay at their existing (world-space-fixed) IK
+      // targets. Re-solving every chain here gives the intended "root
+      // motion, feet planted" feel: solveIKChain reads root/mid/effector
+      // world positions fresh every call, so once the hip has moved the
+      // leg root's world position, it naturally re-bends the leg back
+      // toward its unchanged target.
+      const entry = selectedBoneEntryRef.current;
+      const bone = selectedBoneRef.current;
+      if (entry && bone && entry.poseAnimation?.hipBoneName === bone.name) {
+        for (const chain of entry.poseAnimation.ikChains) {
+          if (entry.ikTargetBones?.has(chain.id)) solveIKChain(entry, chain.id);
+        }
+      }
     });
 
     // World position of every bone across every skinned entry, in the same
@@ -2398,6 +2414,14 @@ export default function SculptViewer({
           // free-floating Object3D can't be used directly. Each target
           // starts exactly at its effector's current world position so
           // grabbing it doesn't snap the limb before it's even dragged.
+          // Parented under `group` (the loaded GLTF's own root), NOT the
+          // outer `scene` — GLTFExporter's processSkin only resolves a
+          // skin's joints against nodes it actually traversed from the
+          // object passed to exporter.parse() (confirmed in its source),
+          // which is `group`. A `scene`-parented bone would silently
+          // export as an invalid `null` joint reference in every export
+          // once any IK chain exists, corrupting the file — confirmed
+          // this was happening, root cause of save/compression failures.
           const ikTargetBones = new Map<string, THREE.Bone>();
           for (const chain of ikChains) {
             const effectorBone = skinned.skeleton.bones.find((b) => b.name === chain.effectorBone);
@@ -2407,8 +2431,9 @@ export default function SculptViewer({
             effectorBone.getWorldPosition(worldPos);
             const targetBone = new THREE.Bone();
             targetBone.name = `__ikTarget_${chain.id}`;
+            group.add(targetBone);
             targetBone.position.copy(worldPos);
-            scene.add(targetBone);
+            group.worldToLocal(targetBone.position);
             targetBone.updateMatrixWorld(true);
             skinned.skeleton.bones.push(targetBone);
             skinned.skeleton.boneInverses.push(new THREE.Matrix4());
@@ -2445,11 +2470,33 @@ export default function SculptViewer({
             const len1 = rootPos.distanceTo(midPos);
             if (axis.lengthSq() < 1e-10 || len1 < 1e-6) continue; // degenerate rig proportions — skip this chain's pole
             axis.normalize();
-            const toMid = midPos.clone().sub(rootPos);
-            const bendDir = toMid.clone().sub(axis.clone().multiplyScalar(toMid.dot(axis)));
+
+            // Preferred: an anatomically-grounded forward reference (the
+            // toe bone, for leg chains where one was detected) — a knee
+            // always bends toward wherever the toes point, regardless of
+            // bind-pose bend precision or which world axis happens to be
+            // "forward" for this particular rig. Falls back to reading
+            // the bind pose's own bend direction, then to an arbitrary
+            // deterministic perpendicular if even that's degenerate
+            // (dead-straight bind pose with no toe reference either).
+            const bendDir = new THREE.Vector3();
+            const forwardBone = chain.poleForwardBone
+              ? skinned.skeleton.bones.find((b) => b.name === chain.poleForwardBone)
+              : undefined;
+            if (forwardBone) {
+              forwardBone.updateWorldMatrix(true, false);
+              const forwardPos = new THREE.Vector3();
+              forwardBone.getWorldPosition(forwardPos);
+              const effectorToForward = forwardPos.clone().sub(effectorPos);
+              bendDir.copy(effectorToForward).sub(axis.clone().multiplyScalar(effectorToForward.dot(axis)));
+            }
             if (bendDir.lengthSq() < 1e-8) {
-              // Bind pose is dead-straight (root/mid/effector colinear) —
-              // no bend direction to read from geometry, so fall back to a
+              const toMid = midPos.clone().sub(rootPos);
+              bendDir.copy(toMid).sub(axis.clone().multiplyScalar(toMid.dot(axis)));
+            }
+            if (bendDir.lengthSq() < 1e-8) {
+              // Bind pose is dead-straight (root/mid/effector colinear) and
+              // there's no toe-style reference either — fall back to a
               // deterministic perpendicular rather than leaving the pole
               // at a NaN/zero-length offset.
               bendDir.crossVectors(axis, new THREE.Vector3(0, 1, 0));
@@ -2459,8 +2506,9 @@ export default function SculptViewer({
 
             const poleBone = new THREE.Bone();
             poleBone.name = `__ikPole_${chain.id}`;
+            group.add(poleBone);
             poleBone.position.copy(midPos).addScaledVector(bendDir, len1 * 1.5);
-            scene.add(poleBone);
+            group.worldToLocal(poleBone.position);
             poleBone.updateMatrixWorld(true);
             skinned.skeleton.bones.push(poleBone);
             skinned.skeleton.boneInverses.push(new THREE.Matrix4());

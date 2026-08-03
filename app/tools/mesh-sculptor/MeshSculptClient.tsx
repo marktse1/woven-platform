@@ -9,6 +9,7 @@ import { useCreatorStatus } from "@/lib/useCreatorStatus";
 import { useActiveLoader } from "@/components/assets/ActiveLoaderContext";
 import {
   uploadAsset,
+  overwriteAssetBytes,
   signedAssetUrl,
   type AssetRow,
 } from "@/lib/assets";
@@ -206,11 +207,15 @@ export default function MeshSculptClient() {
   // Pose mode: only populated when the loaded model actually has a
   // skeleton (e.g. an AccuRIG-exported GLB) — most loads won't.
   const [bones, setBones] = useState<Array<{ entryId: string; id: string; name: string; depth: number }>>([]);
-  // Auto-detected biped controls (hip/COG + leg/arm IK chain effectors) —
-  // a one-click shortcut to select these bones without hunting through
-  // the raw Bones list. Empty for any skeleton matching neither known
-  // naming convention; that's fine, manual bone selection still works.
-  const [detectedControls, setDetectedControls] = useState<Array<{ entryId: string; kind: "hip" | "ik"; id: string; label: string }>>([]);
+  // Auto-detected biped controls: "bone" entries are a direct FK
+  // quick-select (Hip/COG, plus each IK chain's own effector bone — the
+  // foot/hand itself, for rotating its own ankle-flex/wrist-twist
+  // independent of where IK has positioned it) and "ik" entries select an
+  // IK chain's draggable target. One-click shortcuts to bones/chains
+  // without hunting through the raw Bones list. Empty for any skeleton
+  // matching neither known naming convention; that's fine, manual bone
+  // selection still works.
+  const [detectedControls, setDetectedControls] = useState<Array<{ entryId: string; kind: "bone" | "ik"; id: string; label: string }>>([]);
   const [selectedBoneId, setSelectedBoneId] = useState<string | null>(null);
   // "ik" controls select via SculptViewerHandle.selectIKChain (id =
   // chain id) instead of selectBone (id = bone uuid) — local UI state
@@ -271,14 +276,24 @@ export default function MeshSculptClient() {
   // Uploads a GLB, then optionally runs it through the shared server-side
   // KTX2 compression pass. Compression failure is non-fatal — the
   // already-uploaded uncompressed asset stays valid either way.
+  // `overwrite`, when passed, updates that existing asset's bytes in
+  // place (same storage_path, same row) instead of minting a new one —
+  // used by handleSave when the current mesh was loaded from the library,
+  // so repeated saves update the same asset rather than piling up
+  // derivatives. Callers with nothing to overwrite (a fresh local import,
+  // a submesh extract) just omit it and get the original always-new
+  // behavior.
   const uploadAndMaybeCompress = useCallback(async (
     name: string,
     bytes: ArrayBuffer,
     polyCount?: number,
     derivedFromAssetId?: string,
+    overwrite?: { id: string; storagePath: string },
   ): Promise<{ asset: AssetRow; compressed: boolean }> => {
     if (!user?.id) throw new Error("Not signed in.");
-    const asset = await uploadAsset({ userId: user.id, name, bytes, visibility: "private", polyCount, derivedFromAssetId });
+    const asset = overwrite
+      ? await overwriteAssetBytes({ id: overwrite.id, storagePath: overwrite.storagePath, bytes, contentType: "model/gltf-binary" })
+      : await uploadAsset({ userId: user.id, name, bytes, visibility: "private", polyCount, derivedFromAssetId });
     if (!compressKtx2) return { asset, compressed: false };
     try {
       const res = await fetch("/api/glb/compress-ktx2", {
@@ -553,14 +568,20 @@ export default function MeshSculptClient() {
   const refreshDetectedControls = useCallback(() => {
     const handle = viewerHandleRef.current;
     const entries = handle?.getMeshEntries() ?? [];
-    const all: Array<{ entryId: string; kind: "hip" | "ik"; id: string; label: string }> = [];
+    const all: Array<{ entryId: string; kind: "bone" | "ik"; id: string; label: string }> = [];
     for (const entry of entries) {
       const hipBoneId = handle?.getHipBoneId(entry.id);
-      if (hipBoneId) all.push({ entryId: entry.id, kind: "hip", id: hipBoneId, label: "Hip" });
+      if (hipBoneId) all.push({ entryId: entry.id, kind: "bone", id: hipBoneId, label: "Hip" });
       for (const chain of handle?.getIKChains(entry.id) ?? []) {
         // id is the CHAIN id here (for selectIKChain), not the
-        // effector bone — deliberately different from "hip" above.
+        // effector bone — deliberately different from the "bone" entries.
         all.push({ entryId: entry.id, kind: "ik", id: chain.id, label: chain.name });
+        // Direct FK quick-select for the effector bone itself (foot/hand)
+        // — separate from the IK target, which controls POSITION; this
+        // one lets you rotate the bone's own local orientation (ankle
+        // flex, wrist twist) independent of where IK has placed it.
+        const effectorLabel = chain.name.replace("Leg IK", "Foot").replace("Arm IK", "Wrist");
+        all.push({ entryId: entry.id, kind: "bone", id: chain.effectorBoneId, label: effectorLabel });
       }
     }
     setDetectedControls(all);
@@ -941,6 +962,7 @@ export default function MeshSculptClient() {
         bytes.buffer as ArrayBuffer,
         vertexCount ?? undefined,
         selectedAsset?.id,
+        selectedAsset ? { id: selectedAsset.id, storagePath: selectedAsset.storage_path } : undefined,
       );
       setSaveMsg(compressKtx2 && !compressed ? "Saved (uncompressed — texture compression failed)." : "Saved to library.");
       notifyAssetsChanged();
@@ -1143,16 +1165,16 @@ export default function MeshSculptClient() {
                       <p className="text-[10px] text-dim uppercase tracking-wide mb-1.5">Controls</p>
                       <div className="flex flex-wrap gap-1">
                         {detectedControls.map((c) => {
-                          const active = c.kind === "hip" ? selectedBoneId === c.id : selectedIKChainId === c.id;
+                          const active = c.kind === "bone" ? selectedBoneId === c.id : selectedIKChainId === c.id;
                           return (
                             <button
                               key={`${c.kind}-${c.id}`}
-                              onClick={() => c.kind === "hip"
+                              onClick={() => c.kind === "bone"
                                 ? handleSelectBone(c.entryId, active ? null : c.id)
                                 : handleSelectIKChain(c.entryId, active ? null : c.id)}
-                              title={c.kind === "hip"
-                                ? "Hip/COG control — a direct FK handle on the root/pelvis bone"
-                                : "IK target — drag the gizmo and the chain solves toward it via CCDIKSolver"}
+                              title={c.kind === "bone"
+                                ? "Direct FK handle — drag to rotate/position this bone on its own, independent of any IK chain"
+                                : "IK target — drag the gizmo and the chain solves toward it"}
                               style={{ background: active ? "rgba(196,123,232,.22)" : "#1e1a17", color: active ? PURPLE : "#8aa0b4", border: `1px solid ${active ? PURPLE : "#3a3530"}` }}
                               className="px-2 py-1 rounded text-[10.5px] font-medium transition-colors">
                               {c.label}

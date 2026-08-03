@@ -18,6 +18,22 @@ function formatBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function formatRelativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "";
+  const seconds = Math.max(0, (Date.now() - then) / 1000);
+  if (seconds < 60) return "just now";
+  const minutes = seconds / 60;
+  if (minutes < 60) return `${Math.floor(minutes)}m ago`;
+  const hours = minutes / 60;
+  if (hours < 24) return `${Math.floor(hours)}h ago`;
+  const days = hours / 24;
+  if (days < 30) return `${Math.floor(days)}d ago`;
+  const months = days / 30;
+  if (months < 12) return `${Math.floor(months)}mo ago`;
+  return `${Math.floor(months / 12)}y ago`;
+}
+
 export default function AssetLibraryRow({
   asset,
   onChange,
@@ -252,6 +268,9 @@ export default function AssetLibraryRow({
         {asset.poly_count != null && (
           <span className="text-[10.5px] text-dim">· {asset.poly_count.toLocaleString()} tris</span>
         )}
+        <span className="text-[10.5px] text-dim" title={new Date(asset.updated_at).toLocaleString()}>
+          · {formatRelativeTime(asset.updated_at)}
+        </span>
         {asset.kind === "model" && (
           asset.meta?.ktx2Compressed ? (
             <span

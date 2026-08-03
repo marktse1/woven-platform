@@ -25,6 +25,7 @@ export type AssetRow = {
   group_id: string | null;
   derived_from_asset_id: string | null;
   created_at: string;
+  updated_at: string;
 };
 
 export type JobRow = {

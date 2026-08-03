@@ -85,6 +85,20 @@ export default function AssetLibraryPanel() {
   const { roots, childrenOf } = useMemo(() => buildTree(assets), [assets]);
   const assetsById = useMemo(() => new Map(assets.map((a) => [a.id, a])), [assets]);
 
+  // Client-side sort over whatever the query already returned (fixed
+  // created_at-descending order) — the list has no server-side sort
+  // control, and re-querying per sort mode isn't needed for what's
+  // already in memory.
+  const [sortMode, setSortMode] = useState<"modified" | "created" | "name">("modified");
+  const sortRows = useCallback((rows: AssetRow[]): AssetRow[] => {
+    const sorted = [...rows];
+    if (sortMode === "name") sorted.sort((a, b) => a.name.localeCompare(b.name));
+    else if (sortMode === "created") sorted.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    else sorted.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+    return sorted;
+  }, [sortMode]);
+  const sortedRoots = useMemo(() => sortRows(roots), [roots, sortRows]);
+
   function jumpToAsset(id: string) {
     rowRefs.current.get(id)?.scrollIntoView({ behavior: "smooth", block: "center" });
     setHighlightedId(id);
@@ -202,12 +216,24 @@ export default function AssetLibraryPanel() {
           {loader && <span className="text-[10px] font-medium tracking-[.04em] text-dim normal-case">· click to load</span>}
           <div className="flex-1" />
           {assets.length > 0 && (
-            <button
-              onClick={toggleSelectMode}
-              className="text-[10px] font-medium tracking-[.04em] normal-case text-dim hover:text-ink"
-            >
-              {selectMode ? "Cancel" : "Select"}
-            </button>
+            <>
+              <select
+                value={sortMode}
+                onChange={(e) => setSortMode(e.target.value as typeof sortMode)}
+                title="Sort"
+                className="text-[10px] font-medium tracking-[.04em] normal-case text-dim bg-transparent border-none outline-none cursor-pointer hover:text-ink"
+              >
+                <option value="modified">Last modified</option>
+                <option value="created">Date created</option>
+                <option value="name">Name A–Z</option>
+              </select>
+              <button
+                onClick={toggleSelectMode}
+                className="text-[10px] font-medium tracking-[.04em] normal-case text-dim hover:text-ink"
+              >
+                {selectMode ? "Cancel" : "Select"}
+              </button>
+            </>
           )}
         </div>
         {selectMode && (
@@ -233,8 +259,8 @@ export default function AssetLibraryPanel() {
         ) : assets.length === 0 ? (
           <div className="px-3.5 py-6 text-[13px] text-dim">No assets saved yet — save one from any creator tool and it&apos;ll show up here.</div>
         ) : (
-          roots.map((a) => {
-            const children = childrenOf.get(a.id) ?? [];
+          sortedRoots.map((a) => {
+            const children = sortRows(childrenOf.get(a.id) ?? []);
             const expanded = expandedIds.has(a.id);
             return (
               <div key={a.id}>

@@ -72,6 +72,14 @@ export type IKChain = {
    * solves wrong. */
   links: string[];
   targetPosition: [number, number, number];
+  /** A bone whose direction from the chain's effector gives an
+   * anatomically-grounded "forward" reference for the default pole
+   * position (e.g. a toe bone — a knee always bends toward wherever the
+   * toes point, regardless of bind-pose bend precision or any assumed
+   * world axis). Only set for leg chains where a matching toe bone was
+   * found; undefined otherwise, in which case pole placement falls back
+   * to reading the bind pose's own bend direction. */
+  poleForwardBone?: string;
 };
 
 export type PoseAnimationState = {
@@ -155,7 +163,9 @@ export function detectBipedControls(boneNames: string[]): { ikChains: IKChain[];
     const calf = findSideBone(boneNames, side, "calf") ?? findSideBone(boneNames, side, "leg", "upleg");
     const foot = findSideBone(boneNames, side, "foot");
     if (thigh && calf && foot) {
-      ikChains.push({ id: crypto.randomUUID(), name: `${sideLabel} Leg IK`, effectorBone: foot, links: [calf, thigh], targetPosition: [0, 0, 0] });
+      // Toe bone, if this rig has one — see IKChain.poleForwardBone.
+      const toe = findSideBone(boneNames, side, "toe");
+      ikChains.push({ id: crypto.randomUUID(), name: `${sideLabel} Leg IK`, effectorBone: foot, links: [calf, thigh], targetPosition: [0, 0, 0], poleForwardBone: toe });
     }
 
     const upperArm = findSideBone(boneNames, side, "upperarm") ?? findSideBone(boneNames, side, "arm", "forearm");

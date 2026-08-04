@@ -53,7 +53,12 @@ function wetnessAt(chunks: TerrainChunkData[], x: number, z: number, waterLevel:
       (waterMask[z1 * resolution + x0] ? 1 : 0) * (1 - tx) * tz +
       (waterMask[z1 * resolution + x1] ? 1 : 0) * tx * tz
     );
-    const heightAt = (sx: number, sz: number) => chunk.heights[sz * resolution + sx] ?? waterLevel;
+    // chunk.heights?.[...] — a shell chunk (an object placed outside every
+    // generated terrain chunk's bounds gets a `terrain: {}` row on save,
+    // see terrainMesh.ts's note above layerMaskForChunk) has heights
+    // genuinely undefined; resolution/origin above already fall back to
+    // defaults, which is exactly what lets a shell chunk reach this far.
+    const heightAt = (sx: number, sz: number) => chunk.heights?.[sz * resolution + sx] ?? waterLevel;
     const height = (
       heightAt(x0, z0) * (1 - tx) * (1 - tz) +
       heightAt(x1, z0) * tx * (1 - tz) +

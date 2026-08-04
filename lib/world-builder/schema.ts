@@ -466,7 +466,13 @@ export function generateTerrainChunks(settings: TerrainDistrictSettings, distric
 
 export function sampleTerrainHeight(chunks: TerrainChunkData[], x: number, z: number, fallback = 0, chunkSize = TERRAIN_CHUNK_SIZE, district = "district_00") {
   const chunk = chunks.find((item) => item.id === chunkIdForPosition([x, 0, z], chunkSize, district));
-  if (!chunk) return fallback;
+  // A shell chunk (an object placed outside every generated terrain
+  // chunk's bounds gets a `terrain: {}` row on save — see
+  // terrainMesh.ts's note above layerMaskForChunk) has no heights at
+  // all; in practice its `id` also never matches chunkIdForPosition's
+  // deterministic id, so `find` above shouldn't return one, but this
+  // guard makes that explicit rather than relying on that alone.
+  if (!chunk || !chunk.heights) return fallback;
   const localX = clamp((x - chunk.origin[0]) / chunk.spacing, 0, chunk.resolution - 1);
   const localZ = clamp((z - chunk.origin[1]) / chunk.spacing, 0, chunk.resolution - 1);
   const x0 = Math.floor(localX);

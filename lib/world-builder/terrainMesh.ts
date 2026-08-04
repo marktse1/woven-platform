@@ -69,19 +69,27 @@ export function grassDensityForChunk(chunk: TerrainChunkData) {
   return chunk.grassDensity;
 }
 
+// chunk.heights?.[...] (not chunk.heights[...]) — a shell chunk (see the
+// note above layerMaskForChunk) has heights genuinely undefined, not an
+// empty array; these were the last unguarded reads of it in this file,
+// confirmed as the actual crash site from a live TypeError report
+// (buildHeightfield's resolution = chunk.resolution || 33 fallback means
+// its loop runs a full pass even for a shell chunk, unlike the brush-
+// painting loops which key off the same field with no fallback and so
+// no-op correctly on their own).
 function autoSandAt(chunk: TerrainChunkData, index: number, waterLevel: number) {
-  const height = chunk.heights[index] ?? waterLevel;
+  const height = chunk.heights?.[index] ?? waterLevel;
   return smoothstep(-0.35, 1.15, waterLevel - height + 0.45) * 0.8;
 }
 
 function autoGrassAt(chunk: TerrainChunkData, index: number, waterLevel: number) {
-  const height = chunk.heights[index] ?? waterLevel;
+  const height = chunk.heights?.[index] ?? waterLevel;
   const resolution = chunk.resolution || 33;
   const spacing = chunk.spacing || 2;
-  const left = chunk.heights[index - 1] ?? height;
-  const right = chunk.heights[index + 1] ?? height;
-  const down = chunk.heights[index - resolution] ?? height;
-  const up = chunk.heights[index + resolution] ?? height;
+  const left = chunk.heights?.[index - 1] ?? height;
+  const right = chunk.heights?.[index + 1] ?? height;
+  const down = chunk.heights?.[index - resolution] ?? height;
+  const up = chunk.heights?.[index + resolution] ?? height;
   const slope = Math.max(Math.abs(height - left), Math.abs(height - right), Math.abs(height - down), Math.abs(height - up)) / Math.max(1, spacing);
   const elevation = smoothstep(waterLevel + 0.1, waterLevel + 3.6, height);
   const flatness = 1 - smoothstep(0.08, 0.26, slope);

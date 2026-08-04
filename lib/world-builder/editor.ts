@@ -4655,8 +4655,14 @@ async function saveRemoteLayout(): Promise<boolean> {
     }
 
     const chunkRows = (layout.terrainChunks ?? []).map((chunk) => {
-      const chunkX = Math.round(chunk.origin[0] / TERRAIN_CHUNK_SIZE);
-      const chunkZ = Math.round(chunk.origin[1] / TERRAIN_CHUNK_SIZE);
+      // chunk.origin may be undefined for a shell chunk (an object placed
+      // outside every generated terrain chunk's bounds — see the note
+      // above layerMaskForChunk in terrainMesh.ts); without this fallback
+      // every remote save would throw here and silently degrade to
+      // "browser backup only" the moment one exists in the level.
+      const [originX, originZ] = chunk.origin ?? [0, 0];
+      const chunkX = Math.round(originX / TERRAIN_CHUNK_SIZE);
+      const chunkZ = Math.round(originZ / TERRAIN_CHUNK_SIZE);
       const key = `${chunkX}:${chunkZ}`;
       const objects = objectsByChunkKey.get(key) ?? [];
       objectsByChunkKey.delete(key);
@@ -4809,8 +4815,10 @@ async function exportLayoutAsZip() {
     const levelsFolder = zip.folder(`levels/${district}`)!;
     const chunkIndex: LevelLayout["chunks"] = [];
     for (const chunk of layout.terrainChunks ?? []) {
-      const chunkX = Math.round(chunk.origin[0] / TERRAIN_CHUNK_SIZE);
-      const chunkZ = Math.round(chunk.origin[1] / TERRAIN_CHUNK_SIZE);
+      // Same shell-chunk fallback as the remote-save chunkRows above.
+      const [originX, originZ] = chunk.origin ?? [0, 0];
+      const chunkX = Math.round(originX / TERRAIN_CHUNK_SIZE);
+      const chunkZ = Math.round(originZ / TERRAIN_CHUNK_SIZE);
       const key = `${chunkX}:${chunkZ}`;
       const objects = (objectsByChunkKey.get(key) ?? []).map(rewriteAsset);
       objectsByChunkKey.delete(key);

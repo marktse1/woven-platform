@@ -37,6 +37,7 @@ import {
   TerrainDistrictSettings,
   TerrainShaderSettings,
   TerrainSpline,
+  TerrainControlPoint,
   GrassSettings,
   chunkIdForCoords,
   defaultSkyGradient,
@@ -50,7 +51,7 @@ import {
   TERRAIN_SPACING,
   terrainBrushWeight,
 } from "./schema";
-import { buildShoreWetnessTexture, type ShoreWetnessBake } from "./waterFoam";
+import { buildShoreWetnessTexture, type ShoreWetnessBake, type WetnessContributor } from "./waterFoam";
 import { getAsset, listVisibleAssets, signedAssetUrl, updateAssetMeta, type AssetRow } from "@/lib/assets";
 import {
   clamp,
@@ -120,6 +121,12 @@ type RuntimeState = {
   shaderCatalog: AssetRow[];
   selectedAssetUrl: string | null;
   selectedObjectId: string | null;
+  // Mutually exclusive with selectedObjectId — a road spline picked from
+  // the outliner's Roads section or clicked directly in the viewport (see
+  // rebuildRoadMeshes's userData.roadId / the click-to-select raycast).
+  // Not a PlacedObjectData id — roads live in state.layout.terrain.splines,
+  // a separate collection (see roadSplines()).
+  selectedRoadId: string | null;
   activeDragId: string | null;
   skyGradient: SkyGradientSettings;
   timeOfDay: number;
@@ -234,6 +241,7 @@ const state: RuntimeState = {
   shaderCatalog: [],
   selectedAssetUrl: null,
   selectedObjectId: null,
+  selectedRoadId: null,
   activeDragId: null,
   skyGradient: loadSkyGradient(),
   timeOfDay: 12,
@@ -309,6 +317,7 @@ transformControls.addEventListener("dragging-changed", (event) => {
   controls.enabled = !event.value;
   if (!event.value) {
     syncSelectedObjectOrbitTarget();
+    scheduleLocalWetnessRebake();
   }
 });
 transformControls.addEventListener("mouseDown", () => {
@@ -382,6 +391,12 @@ const CREATOR_ASSET_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0
 const terrainMeshes: THREE.Object3D[] = [];
 const grassMeshes: THREE.InstancedMesh[] = [];
 const objectMeshes = new Map<string, THREE.Object3D>();
+// Road ribbon meshes keyed by TerrainSpline.id — parallel to objectMeshes,
+// so the Inspector/outliner can look up a road's live mesh, and so
+// rebuildRoadMeshes can remove its own previous selectableMeshes entries
+// before re-adding fresh ones (it's also called from the lighter-weight
+// rebuildTerrainSurfaces, which doesn't reset selectableMeshes itself).
+const roadMeshes = new Map<string, THREE.Mesh>();
 // Currently-applied custom (Shaderade) shader materials — ticked each
 // frame for u_time/u_lightDir so animated effects keep moving. Added when
 // a custom material is built (applyCustomShaderAsync), removed when its
@@ -397,6 +412,12 @@ const activeWaterMeshes = new Set<ThreeWater>();
 // own.
 let shoreWetnessBake: ShoreWetnessBake | null = null;
 let shoreWetnessRebakeTimer: ReturnType<typeof setTimeout> | null = null;
+// Per-water-object local wetness bake, keyed by PlacedObjectData.id — only
+// populated for water objects with reactToNearbyObjects on (see
+// rebakeLocalWetness/scheduleLocalWetnessRebake below); every other water
+// object just uses the shared shoreWetnessBake above.
+const localWetnessBakes = new Map<string, ShoreWetnessBake>();
+let localWetnessRebakeTimer: ReturnType<typeof setTimeout> | null = null;
 const selectedObjectIds = new Set<string>();
 const selectableMeshes: THREE.Object3D[] = [];
 const undoStack: string[] = [];
@@ -749,9 +770,6 @@ const timeControls = {
   play: ui.timePlay,
   stop: ui.timeStop,
   speed: ui.timeSpeed,
-  transformTranslate: ui.transformTranslate,
-  transformRotate: ui.transformRotate,
-  transformScale: ui.transformScale,
   skyColors: ui.skyColors,
   skyRotation: ui.skyRotation,
   moonIntensity: ui.moonIntensity,
@@ -1250,8 +1268,7 @@ async function loadWorldFromInputs() {
       // selected before this fetch resolved, its panel rendered with an empty
       // catalog and nothing else re-renders it, so it'd show "No saved
       // shaders" forever until reselected. Refresh it now that data exists.
-      if (state.selectedObjectId) updateInspector();
-      syncRoadShaderAssetOptions();
+      if (state.selectedObjectId || state.selectedRoadId) updateInspector();
       updateStatus(
         loadedRemoteCatalog
           ? `Loaded ${state.layout.name} and ${state.assetCatalog.length} assets`
@@ -1505,39 +1522,40 @@ function applyTerrainShaderSettings() {
 
 // Replaces the old hardcoded gravel/asphalt/highway-lanes texture-preset
 // system (which pulled from public/assets/texture/ paths that never existed
-// in this repo, 404ing in production). A road spline now either renders
+// in this repo, 404ing in production). Each road spline now either renders
 // with the plain default roadMaterial (fallbackTexture, no PBR maps — no
-// 404 risk) or a picked Shaderade shader_graph asset from My Assets, same
-// mechanism objects already use via applyObjectShaderMode/
-// compileCustomShader/buildCustomShaderMaterial. All road meshes share one
-// material instance directly (rebuildRoadMeshes does `new THREE.Mesh(geometry,
-// roadMaterial)` — not cloned per-mesh, confirmed), so resolving the current
-// material once per rebuild and handing that single reference to every road
-// mesh is sufficient; no per-mesh material swapping needed.
-let compiledRoadMaterial: THREE.ShaderMaterial | null = null;
-let compiledRoadShaderAssetId: string | null = null;
+// 404 risk) or its own picked Shaderade shader_graph asset from My Assets,
+// same mechanism objects already use via applyObjectShaderMode/
+// compileCustomShader/buildCustomShaderMaterial — one compiled material per
+// road, keyed by road id (previously one shared material for every road in
+// the level, back when shaderAssetId lived on the single terrain-wide
+// roadShader instead of per-spline).
+const compiledRoadMaterials = new Map<string, { assetId: string; material: THREE.ShaderMaterial }>();
 
-function resolveRoadMaterial(): THREE.Material {
-  const shaderAssetId = state.layout.terrain?.roadShader?.shaderAssetId ?? null;
+function resolveRoadMaterial(road: TerrainSpline): THREE.Material {
+  const shaderAssetId = road.shaderAssetId ?? null;
   if (!shaderAssetId) return roadMaterial;
-  if (compiledRoadShaderAssetId === shaderAssetId && compiledRoadMaterial) return compiledRoadMaterial;
-  void ensureRoadShaderCompiled(shaderAssetId);
+  const cached = compiledRoadMaterials.get(road.id);
+  if (cached && cached.assetId === shaderAssetId) return cached.material;
+  void ensureRoadShaderCompiled(road.id, shaderAssetId);
   return roadMaterial;
 }
 
-// Orchestrates the async fetch+compile+build for the road's picked shader,
+// Orchestrates the async fetch+compile+build for one road's picked shader,
 // mirroring applyCustomShaderAsync's pattern for objects. Re-checks the
-// selection is still current before applying, since this resolves well
-// after the triggering rebuildRoadMeshes() call — and re-triggers a rebuild
-// once the compiled material is ready so the new look actually appears.
-async function ensureRoadShaderCompiled(assetId: string) {
-  if (compiledRoadShaderAssetId === assetId && compiledRoadMaterial) return;
+// road still exists and its selection is still current before applying,
+// since this resolves well after the triggering rebuildRoadMeshes() call —
+// and re-triggers a rebuild once the compiled material is ready so the new
+// look actually appears.
+async function ensureRoadShaderCompiled(roadId: string, assetId: string) {
+  const cached = compiledRoadMaterials.get(roadId);
+  if (cached && cached.assetId === assetId) return;
   const compiled = await compileCustomShader(assetId);
-  if ((state.layout.terrain?.roadShader?.shaderAssetId ?? null) !== assetId) return;
+  const road = roadSplines().find((item) => item.id === roadId);
+  if (!road || (road.shaderAssetId ?? null) !== assetId) return;
   if (!compiled) return;
   const { material } = buildCustomShaderMaterial(compiled);
-  compiledRoadMaterial = material;
-  compiledRoadShaderAssetId = assetId;
+  compiledRoadMaterials.set(roadId, { assetId, material });
   activeCustomShaderMaterials.add(material);
   rebuildRoadMeshes();
 }
@@ -1678,7 +1696,7 @@ function buildRoadRibbonGeometry(road: TerrainSpline) {
       leftX, y, leftZ,
       rightPosX, y, rightPosZ
     );
-    const u = pathDistance * Math.max(0.1, state.roadRepeat ?? 1);
+    const u = pathDistance * Math.max(0.1, road.repeat ?? state.roadRepeat ?? 1);
     uvs.push(0, u, 1, u);
     if (index < samples.length - 1) {
       const nextPoint = samples[index + 1];
@@ -1701,14 +1719,21 @@ function rebuildRoadMeshes() {
   clearGroup(roadRoot);
   clearGroup(roadGuideGroup);
   roadPointMarkers.clear();
+  for (const mesh of roadMeshes.values()) {
+    const index = selectableMeshes.indexOf(mesh);
+    if (index >= 0) selectableMeshes.splice(index, 1);
+  }
+  roadMeshes.clear();
   const roads = (state.layout.terrain?.splines ?? []).filter((spline) => spline.kind === "road" && spline.points.length >= 2);
-  const currentRoadMaterial = resolveRoadMaterial();
   for (const road of roads) {
     const geometry = buildRoadRibbonGeometry(road);
     if (!geometry) continue;
-    const mesh = new THREE.Mesh(geometry, currentRoadMaterial);
+    const mesh = new THREE.Mesh(geometry, resolveRoadMaterial(road));
     mesh.receiveShadow = true;
+    mesh.userData.roadId = road.id;
     roadRoot.add(mesh);
+    roadMeshes.set(road.id, mesh);
+    selectableMeshes.push(mesh);
 
     const guideMaterial = new THREE.LineBasicMaterial({ color: 0xa9ddff, transparent: true, opacity: 0.95 });
     const guidePositions: number[] = [];
@@ -2112,31 +2137,47 @@ function rebuildGrassInstances() {
 // avoiding the null-sampler2D crash that bit that path earlier.
 const shoreWetnessFallbackTexture = createSolidTexture([255, 255, 255, 255]);
 
-// Extends THREE.Water's own shader with a shore-proximity foam band,
-// rather than replacing the whole material — that would lose the
-// built-in real-time planar reflection. onBeforeCompile's GLSL string-
-// injection is the only extension point Three.js exposes for a built-in
-// ShaderMaterial like this. Anchors ("uniform vec3 waterColor;" and
-// "vec3 outgoingLight = albedo;") are unique, verified lines in Water.js's
-// fragment shader; worldPosition is already a fragment-stage varying in
-// that shader, so no vertex-shader change is needed. Initial uniform
-// values are read from the live shoreWetnessBake at whatever moment WebGL
-// actually lazily compiles this material (its own closure, not a snapshot)
-// — subsequent changes are pushed by syncShoreFoamUniforms. Foam
-// intensity/threshold/contrast are fixed constants (SHORE_FOAM_*, see top of
-// file) — previously tunable via the removed terrain-wide Water Shader
-// panel, now fixed at their old default values.
-function attachShoreFoamShader(mesh: ThreeWater) {
+// Resolves which wetness bake a given water object's shader should sample:
+// the shared terrain-wide bake by default, or — when the object has
+// reactToNearbyObjects on — its own local bake (terrain wetness plus nearby
+// placed-object footprints, see rebakeLocalWetness) once one exists, falling
+// back to the shared bake in the meantime so foam doesn't flash off while
+// the local bake is still pending.
+function resolveWetnessBake(object: PlacedObjectData): ShoreWetnessBake | null {
+  if (object.reactToNearbyObjects) {
+    return localWetnessBakes.get(object.id) ?? shoreWetnessBake;
+  }
+  return shoreWetnessBake;
+}
+
+// Extends THREE.Water's own shader with a shore-proximity foam band and a
+// reflectivity control, rather than replacing the whole material — that
+// would lose the built-in real-time planar reflection. onBeforeCompile's
+// GLSL string-injection is the only extension point Three.js exposes for a
+// built-in ShaderMaterial like this. Anchors ("uniform vec3 waterColor;"
+// and the "vec3 albedo = mix(...)"/"vec3 outgoingLight = albedo;" lines)
+// are unique, verified lines in Water.js's own fragment shader source
+// (node_modules/three/examples/jsm/objects/Water.js); worldPosition is
+// already a fragment-stage varying in that shader, so no vertex-shader
+// change is needed. u_reflectivity scales Water.js's own fresnel-driven
+// `reflectance` mix factor between its base (non-reflective) color and the
+// mirror-reflection sample — 1.0 matches the addon's unmodified look.
+// Initial uniform values are read from object/resolveWetnessBake at
+// whatever moment WebGL actually lazily compiles this material (its own
+// closure, not a snapshot) — subsequent changes are pushed by
+// syncShoreFoamUniforms.
+function attachShoreFoamShader(mesh: ThreeWater, object: PlacedObjectData) {
   const material = mesh.material as THREE.ShaderMaterial;
   material.onBeforeCompile = (shader) => {
-    const bake = shoreWetnessBake;
+    const bake = resolveWetnessBake(object);
     shader.uniforms.u_shoreWetness = { value: bake ? bake.texture : shoreWetnessFallbackTexture };
     shader.uniforms.u_shoreOrigin = { value: new THREE.Vector2(bake ? bake.origin[0] : 0, bake ? bake.origin[1] : 0) };
     shader.uniforms.u_shoreWorldSize = { value: new THREE.Vector2(bake ? bake.worldSize[0] : 1, bake ? bake.worldSize[1] : 1) };
     shader.uniforms.u_hasShoreData = { value: bake ? 1 : 0 };
-    shader.uniforms.u_foamIntensity = { value: SHORE_FOAM_INTENSITY };
+    shader.uniforms.u_foamIntensity = { value: object.foamStrength ?? SHORE_FOAM_INTENSITY };
     shader.uniforms.u_foamThreshold = { value: SHORE_FOAM_THRESHOLD };
     shader.uniforms.u_foamContrast = { value: SHORE_FOAM_CONTRAST };
+    shader.uniforms.u_reflectivity = { value: object.reflectivity ?? 1 };
 
     shader.fragmentShader = shader.fragmentShader
       .replace(
@@ -2148,7 +2189,12 @@ function attachShoreFoamShader(mesh: ThreeWater) {
 	uniform float u_hasShoreData;
 	uniform float u_foamIntensity;
 	uniform float u_foamThreshold;
-	uniform float u_foamContrast;`
+	uniform float u_foamContrast;
+	uniform float u_reflectivity;`
+      )
+      .replace(
+        "vec3 albedo = mix( ( sunColor * diffuseLight * 0.3 + scatter ) * getShadowMask(), reflectionSample + specularLight, reflectance );",
+        "vec3 albedo = mix( ( sunColor * diffuseLight * 0.3 + scatter ) * getShadowMask(), reflectionSample + specularLight, clamp( reflectance * u_reflectivity, 0.0, 1.0 ) );"
       )
       .replace(
         "vec3 outgoingLight = albedo;",
@@ -2162,28 +2208,33 @@ function attachShoreFoamShader(mesh: ThreeWater) {
   };
 }
 
-// Pushes the current shore-wetness bake into an already-compiled water
-// material's uniforms (onBeforeCompile only runs once per material, at
-// first render — this is the ongoing per-frame update path, called from
-// updateActiveWaterMeshes). No-ops for a material that hasn't compiled yet
-// (uniforms not injected) or that got swapped to Toon/Custom/Outline (not a
-// Water shader at all) — same guard style as updateActiveWaterMeshes
-// already uses for time/sunDirection/eye. Foam intensity/threshold/contrast
-// are fixed constants (see attachShoreFoamShader).
+// Pushes the current wetness bake + per-object foam/reflectivity settings
+// into an already-compiled water material's uniforms (onBeforeCompile only
+// runs once per material, at first render — this is the ongoing per-frame
+// update path, called from updateActiveWaterMeshes). No-ops for a material
+// that hasn't compiled yet (uniforms not injected) or that got swapped to
+// Toon/Custom/Outline (not a Water shader at all) — same guard style as
+// updateActiveWaterMeshes already uses for time/sunDirection/eye. Reads
+// `object` from mesh.userData.definition (set by spawnWaterObject) rather
+// than a second parameter, since every caller already has the mesh, not
+// always the object.
 function syncShoreFoamUniforms(mesh: ThreeWater) {
   const uniforms = (mesh.material as THREE.ShaderMaterial).uniforms;
   if (!uniforms.u_shoreWetness) return;
-  if (shoreWetnessBake) {
-    uniforms.u_shoreWetness.value = shoreWetnessBake.texture;
-    (uniforms.u_shoreOrigin.value as THREE.Vector2).set(shoreWetnessBake.origin[0], shoreWetnessBake.origin[1]);
-    (uniforms.u_shoreWorldSize.value as THREE.Vector2).set(shoreWetnessBake.worldSize[0], shoreWetnessBake.worldSize[1]);
+  const object = mesh.userData.definition as PlacedObjectData | undefined;
+  const bake = object ? resolveWetnessBake(object) : shoreWetnessBake;
+  if (bake) {
+    uniforms.u_shoreWetness.value = bake.texture;
+    (uniforms.u_shoreOrigin.value as THREE.Vector2).set(bake.origin[0], bake.origin[1]);
+    (uniforms.u_shoreWorldSize.value as THREE.Vector2).set(bake.worldSize[0], bake.worldSize[1]);
     uniforms.u_hasShoreData.value = 1;
   } else {
     uniforms.u_hasShoreData.value = 0;
   }
-  uniforms.u_foamIntensity.value = SHORE_FOAM_INTENSITY;
+  uniforms.u_foamIntensity.value = object?.foamStrength ?? SHORE_FOAM_INTENSITY;
   uniforms.u_foamThreshold.value = SHORE_FOAM_THRESHOLD;
   uniforms.u_foamContrast.value = SHORE_FOAM_CONTRAST;
+  if (uniforms.u_reflectivity) uniforms.u_reflectivity.value = object?.reflectivity ?? 1;
 }
 
 // Rebuilds the shared shore-wetness texture from the current terrain
@@ -2196,6 +2247,65 @@ function rebakeShoreWetness() {
   const previous = shoreWetnessBake;
   shoreWetnessBake = buildShoreWetnessTexture(terrainChunks(), waterLevel);
   previous?.texture.dispose();
+}
+
+// Rebuilds one water object's local wetness bake — terrain wetness plus
+// nearby placed objects' approximate XZ footprints (object.scale as a
+// radius proxy), bounded to just that water mesh's own world footprint
+// (expanded by a margin) rather than the whole terrain, so different water
+// objects can react to different nearby geometry independently. Object
+// kind "water"/"light" are excluded as contributors (only solid geometry
+// should register as "colliding" with the water).
+function rebakeLocalWetness(object: PlacedObjectData, mesh: THREE.Object3D) {
+  const terrain = state.layout.terrain ?? defaultTerrainSettings();
+  const waterLevel = terrain.waterLevel ?? -1.35;
+  const margin = 6;
+  const box = new THREE.Box3().setFromObject(mesh);
+  const bounds = {
+    minX: box.min.x - margin,
+    maxX: box.max.x + margin,
+    minZ: box.min.z - margin,
+    maxZ: box.max.z + margin,
+  };
+  const centerX = (bounds.minX + bounds.maxX) / 2;
+  const centerZ = (bounds.minZ + bounds.maxZ) / 2;
+  const reach = Math.max(bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ);
+  const extraContributors: WetnessContributor[] = [];
+  for (const other of state.layout.objects) {
+    if (other.id === object.id) continue;
+    const otherKind = other.kind ?? "asset";
+    if (otherKind === "water" || otherKind === "light") continue;
+    const dx = other.position[0] - centerX;
+    const dz = other.position[2] - centerZ;
+    if (Math.hypot(dx, dz) > reach) continue;
+    extraContributors.push({
+      x: other.position[0],
+      z: other.position[2],
+      radius: Math.max(0.5, other.scale[0], other.scale[2]),
+    });
+  }
+  const previous = localWetnessBakes.get(object.id);
+  const bake = buildShoreWetnessTexture(terrainChunks(), waterLevel, 128, { bounds, extraContributors });
+  if (bake) localWetnessBakes.set(object.id, bake);
+  else localWetnessBakes.delete(object.id);
+  previous?.texture.dispose();
+}
+
+// Debounced (same 200ms coalescing pattern as scheduleShoreWetnessRebake)
+// rebake of every currently-placed water object that has
+// reactToNearbyObjects on — called whenever terrain edits happen (see
+// scheduleShoreWetnessRebake) and whenever any object finishes being
+// moved/transformed (see the transformControls "dragging-changed" handler).
+function scheduleLocalWetnessRebake() {
+  if (localWetnessRebakeTimer !== null) return;
+  localWetnessRebakeTimer = setTimeout(() => {
+    localWetnessRebakeTimer = null;
+    for (const object of state.layout.objects) {
+      if (object.kind !== "water" || !object.reactToNearbyObjects) continue;
+      const mesh = objectMeshes.get(object.id);
+      if (mesh) rebakeLocalWetness(object, mesh);
+    }
+  }, 200);
 }
 
 // A brush stroke fires many terrain edits per second (each one already
@@ -2212,6 +2322,7 @@ function scheduleShoreWetnessRebake() {
     shoreWetnessRebakeTimer = null;
     rebakeShoreWetness();
   }, 200);
+  scheduleLocalWetnessRebake();
 }
 
 function waterPresenceAt(chunks: TerrainChunkData[], x: number, z: number, waterLevel: number) {
@@ -3313,15 +3424,15 @@ function spawnWaterObject(object: PlacedObjectData) {
     textureWidth: 512,
     textureHeight: 512,
     waterNormals: waterNormalMap,
-    alpha: 0.85,
+    alpha: object.waterOpacity ?? 0.85,
     sunDirection: sunLight.position.clone().normalize(),
     sunColor: 0xffffff,
     waterColor: 0x1f5f7a,
-    distortionScale: 2.2,
+    distortionScale: object.waveAmplitude ?? 2.2,
     fog: scene.fog != null,
     side: THREE.DoubleSide,
   });
-  attachShoreFoamShader(mesh);
+  attachShoreFoamShader(mesh, object);
   // THREE.Water samples its normal map by world-space XZ position * the
   // "size" uniform (not mesh UVs, confirmed from the addon's own source)
   // — not a constructor option, only settable post-construction. Left at
@@ -3349,6 +3460,23 @@ function spawnWaterObject(object: PlacedObjectData) {
   objectRoot.add(mesh);
   objectMeshes.set(object.id, mesh);
   selectableMeshes.push(mesh);
+}
+
+// Pushes a placed water object's Inspector-edited fields onto its already-
+// live mesh's uniforms in place, instead of a full despawn/respawn — so
+// dragging a slider stays smooth. Only meaningful while the object is
+// still showing the default Water look (getObjectShaderMode reads the same
+// shaderMode fallback logic applyObjectShaderMode itself uses); a no-op is
+// harmless if it's been switched to Toon/Custom/Outline, since none of
+// these uniforms exist on that material.
+function refreshWaterObjectMaterial(object: PlacedObjectData) {
+  const mesh = objectMeshes.get(object.id);
+  if (!(mesh instanceof ThreeWater)) return;
+  const uniforms = (mesh.material as THREE.ShaderMaterial).uniforms;
+  if (uniforms.alpha) uniforms.alpha.value = object.waterOpacity ?? 0.85;
+  if (uniforms.distortionScale) uniforms.distortionScale.value = object.waveAmplitude ?? 2.2;
+  syncShoreFoamUniforms(mesh);
+  scheduleLocalWetnessRebake();
 }
 
 function cloneTemplate(template: THREE.Object3D) {
@@ -3636,19 +3764,99 @@ function updatePlaceablesPanel() {
   }
 }
 
+// Small section label rendered inline inside #scene-outliner, one per
+// kind-based group below — reuses the same visual convention as the
+// panel's own subheads (the outer "Lights & Water"/"Placed Objects"
+// labels), just scoped to this scrollable list instead of the whole
+// panel.
+function appendOutlinerSectionHeader(label: string) {
+  const header = document.createElement("div");
+  header.className = "outliner-section-head";
+  header.textContent = label;
+  sceneOutliner.appendChild(header);
+}
+
+function appendOutlinerEmptyRow(text: string) {
+  const empty = document.createElement("div");
+  empty.className = "status";
+  empty.textContent = text;
+  sceneOutliner.appendChild(empty);
+}
+
+// Previously one flat, purely-alphabetical dump of every placed node
+// (lights, water, buildings, plain assets, groups all interleaved) with no
+// visual separation — this partitions by kind into ordered sections
+// (Lights, Water, Roads, then Objects) so lights/water are actually
+// grouped together the way the panel's own "Lights & Water" heading above
+// implies, and roads (a separate collection from PlacedObjectData, see
+// roadSplines()) are listed and selectable here too. Only the Objects
+// section preserves the existing parentId-nested group tree — lights/water
+// render as flat lists regardless of any parentId, which keeps this
+// manageable and matches what was actually asked for (grouped by kind),
+// not full nesting for every kind.
 function updateSceneOutliner() {
   sceneOutliner.innerHTML = "";
   const nodes: SceneNodeData[] = [...(state.layout.groups ?? []), ...state.layout.objects];
   const nodeIds = new Set(nodes.map((node) => node.id));
-  const children = new Map<string, SceneNodeData[]>();
 
-  nodes.forEach((node) => {
+  const lightNodes = state.layout.objects.filter((node) => (node.kind ?? "asset") === "light");
+  const waterNodes = state.layout.objects.filter((node) => (node.kind ?? "asset") === "water");
+  const objectNodes = nodes.filter((node) => (node.kind ?? "asset") !== "light" && (node.kind ?? "asset") !== "water");
+
+  const renderFlatRow = (node: SceneNodeData) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "outliner-row";
+    row.classList.toggle("is-active", selectedObjectIds.has(node.id));
+    row.style.setProperty("--depth", "0");
+    const detail = `${objectKindLabel(node)} | ${objectRuntimeLabel(node)}`;
+    row.title = `${nodeDisplayName(node)}\n${detail}`;
+    row.innerHTML = `<span>${nodeDisplayName(node)}</span><span>${detail}</span>`;
+    row.addEventListener("click", (event) => {
+      if (event.shiftKey || event.ctrlKey || event.metaKey) {
+        toggleObjectSelection(node.id);
+        return;
+      }
+      selectObject(node.id);
+    });
+    row.addEventListener("dblclick", () => focusObjects([node.id]));
+    sceneOutliner.appendChild(row);
+  };
+
+  if (lightNodes.length > 0) {
+    appendOutlinerSectionHeader("Lights");
+    [...lightNodes].sort((a, b) => nodeDisplayName(a).localeCompare(nodeDisplayName(b))).forEach(renderFlatRow);
+  }
+  if (waterNodes.length > 0) {
+    appendOutlinerSectionHeader("Water");
+    [...waterNodes].sort((a, b) => nodeDisplayName(a).localeCompare(nodeDisplayName(b))).forEach(renderFlatRow);
+  }
+  const roads = roadSplines();
+  if (roads.length > 0) {
+    appendOutlinerSectionHeader("Roads");
+    roads.forEach((road, index) => {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "outliner-row";
+      row.classList.toggle("is-active", state.selectedRoadId === road.id);
+      row.style.setProperty("--depth", "0");
+      const detail = `ROAD | ${road.points.length} pts`;
+      row.title = `Road ${index + 1}\n${detail}`;
+      row.innerHTML = `<span>Road ${index + 1}</span><span>${detail}</span>`;
+      row.addEventListener("click", () => selectRoad(road.id));
+      row.addEventListener("dblclick", () => focusRoad(road.id));
+      sceneOutliner.appendChild(row);
+    });
+  }
+
+  appendOutlinerSectionHeader("Objects");
+  const children = new Map<string, SceneNodeData[]>();
+  objectNodes.forEach((node) => {
     const parentId = node.parentId && nodeIds.has(node.parentId) ? node.parentId : "root";
     const nested = children.get(parentId) ?? [];
     nested.push(node);
     children.set(parentId, nested);
   });
-
   children.forEach((nested) => nested.sort((a, b) => nodeDisplayName(a).localeCompare(nodeDisplayName(b))));
 
   const renderNode = (node: SceneNodeData, depth: number) => {
@@ -3682,10 +3890,7 @@ function updateSceneOutliner() {
 
   const roots = children.get("root") ?? [];
   if (roots.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "status";
-    empty.textContent = "No placed objects yet.";
-    sceneOutliner.appendChild(empty);
+    appendOutlinerEmptyRow("No placed objects yet.");
     return;
   }
   roots.forEach((node) => renderNode(node, 0));
@@ -3734,6 +3939,11 @@ function updateInspector() {
     return;
   }
 
+  if (state.selectedRoadId) {
+    renderRoadInspector(state.selectedRoadId);
+    return;
+  }
+
   const object = state.selectedObjectId ? state.layout.objects.find((item) => item.id === state.selectedObjectId) : null;
   if (!object) {
     inspector.innerHTML = `<div class="status">Select an object to edit it. Click an asset to place it, then click the terrain.</div>`;
@@ -3758,11 +3968,6 @@ function updateInspector() {
     <div class="stack">
       <h2>Selection</h2>
       <div class="status">${asset?.name ?? object.asset}</div>
-      <div class="btn-row">
-        <button id="transform-translate-inspector" type="button">Move</button>
-        <button id="transform-rotate-inspector" type="button">Rotate</button>
-        <button id="transform-scale-inspector" type="button">Scale</button>
-      </div>
       <div class="split">
         <label><span>Position X</span><input id="px" type="number" step="0.1" value="${object.position[0]}" /></label>
         <label><span>Position Y</span><input id="py" type="number" step="0.1" value="${object.position[1]}" /></label>
@@ -3775,7 +3980,16 @@ function updateInspector() {
         <label><span>Scale Z</span><input id="sz" type="number" step="0.05" value="${object.scale[2]}" /></label>
       </div>
       ${isLight ? "" : `
-        ${isWater ? `<div class="panel-subhead">Water</div>` : ""}
+        ${isWater ? `
+          <div class="panel-subhead">Water</div>
+          <div class="split">
+            <label><span>Wave Amplitude</span><input id="water-wave-amplitude" type="range" min="0" max="8" step="0.1" value="${object.waveAmplitude ?? 2.2}" /></label>
+            <label><span>Reflectivity</span><input id="water-reflectivity" type="range" min="0" max="1.5" step="0.01" value="${object.reflectivity ?? 1}" /></label>
+            <label><span>Opacity</span><input id="water-opacity" type="range" min="0.2" max="1" step="0.01" value="${object.waterOpacity ?? 0.85}" /></label>
+            <label><span>Foam Strength</span><input id="water-foam-strength" type="range" min="0" max="2" step="0.01" value="${object.foamStrength ?? SHORE_FOAM_INTENSITY}" /></label>
+            <label><span>React to Nearby Objects</span><input id="water-react-nearby" type="checkbox" ${object.reactToNearbyObjects ? "checked" : ""} /></label>
+          </div>
+        ` : ""}
         <div class="panel-subhead">Material</div>
         <div class="split">
           <label>
@@ -3837,9 +4051,6 @@ function updateInspector() {
     </div>
   `;
 
-  inspector.querySelector<HTMLButtonElement>("#transform-translate-inspector")?.addEventListener("click", () => setTransformMode("translate"));
-  inspector.querySelector<HTMLButtonElement>("#transform-rotate-inspector")?.addEventListener("click", () => setTransformMode("rotate"));
-  inspector.querySelector<HTMLButtonElement>("#transform-scale-inspector")?.addEventListener("click", () => setTransformMode("scale"));
   inspector.querySelector<HTMLButtonElement>("#focus-selection")?.addEventListener("click", () => focusSelectedObjects());
   inspector.querySelector<HTMLButtonElement>("#duplicate-object")?.addEventListener("click", () => duplicateObject(object));
   inspector.querySelector<HTMLButtonElement>("#delete-object")?.addEventListener("click", () => deleteObject(object.id));
@@ -3871,6 +4082,11 @@ function bindInspectorInputs(object: PlacedObjectData) {
   const lightIntensity = inspector.querySelector<HTMLInputElement>("#light-intensity");
   const lightRange = inspector.querySelector<HTMLInputElement>("#light-range");
   const lightFalloff = inspector.querySelector<HTMLInputElement>("#light-falloff");
+  const waterWaveAmplitude = inspector.querySelector<HTMLInputElement>("#water-wave-amplitude");
+  const waterReflectivity = inspector.querySelector<HTMLInputElement>("#water-reflectivity");
+  const waterOpacity = inspector.querySelector<HTMLInputElement>("#water-opacity");
+  const waterFoamStrength = inspector.querySelector<HTMLInputElement>("#water-foam-strength");
+  const waterReactNearby = inspector.querySelector<HTMLInputElement>("#water-react-nearby");
   const beforeEditSnapshot = JSON.stringify(serializeLayout());
   let pushedEditHistory = false;
   let previousLightType = object.lightType ?? "omni";
@@ -3954,6 +4170,14 @@ function bindInspectorInputs(object: PlacedObjectData) {
       }
       syncLightObject(object);
     }
+    if ((object.kind ?? "") === "water") {
+      if (waterWaveAmplitude) object.waveAmplitude = Math.max(0, Number(waterWaveAmplitude.value) || 0);
+      if (waterReflectivity) object.reflectivity = Math.max(0, Number(waterReflectivity.value) || 0);
+      if (waterOpacity) object.waterOpacity = clamp(Number(waterOpacity.value) || 0.85, 0.2, 1);
+      if (waterFoamStrength) object.foamStrength = Math.max(0, Number(waterFoamStrength.value) || 0);
+      if (waterReactNearby) object.reactToNearbyObjects = waterReactNearby.checked;
+      refreshWaterObjectMaterial(object);
+    }
     saveLocalLayout();
   };
 
@@ -3982,7 +4206,105 @@ function bindInspectorInputs(object: PlacedObjectData) {
     lightIntensity,
     lightRange,
     lightFalloff,
+    waterWaveAmplitude,
+    waterReflectivity,
+    waterOpacity,
+    waterFoamStrength,
+    waterReactNearby,
   ].forEach((input) => {
+    input?.addEventListener("input", apply);
+    input?.addEventListener("change", apply);
+  });
+}
+
+// A road spline isn't a PlacedObjectData — its Inspector panel is a
+// separate render path from the object one above (updateInspector
+// dispatches to this before ever looking at state.selectedObjectId).
+// Shader/repeat live per-spline now (see TerrainSpline in schema.ts);
+// width/shoulder/elevation reuse the exact fields the Terrain Tools panel's
+// road controls already edit (activeRoadSplineId stays in sync via
+// selectRoad), so editing from either place stays consistent.
+function renderRoadInspector(roadId: string) {
+  const roads = roadSplines();
+  const road = roads.find((item) => item.id === roadId);
+  if (!road) {
+    inspector.innerHTML = `<div class="status">Select an object to edit it. Click an asset to place it, then click the terrain.</div>`;
+    return;
+  }
+  const roadIndex = roads.findIndex((item) => item.id === roadId);
+  const otherRoads = roads.filter((item) => item.id !== roadId);
+  inspector.innerHTML = `
+    <div class="stack">
+      <h2>Selection</h2>
+      <div class="status">Road ${roadIndex + 1} (${road.points.length} pts)</div>
+      <div class="panel-subhead">Material</div>
+      <div class="split">
+        <label>
+          <span>Shader</span>
+          <select id="road-shader-asset-inspector">
+            <option value="">Default (no shader)</option>
+            ${state.shaderCatalog.map((row) =>
+              `<option value="${row.id}" ${row.id === road.shaderAssetId ? "selected" : ""}>${row.name}</option>`
+            ).join("")}
+          </select>
+        </label>
+        <label><span>Texture Repeat</span><input id="road-repeat-inspector" type="number" min="0.1" max="16" step="0.01" value="${road.repeat ?? state.roadRepeat}" /></label>
+      </div>
+      <div class="panel-subhead">Road</div>
+      <div class="split">
+        <label><span>Width</span><input id="road-width-inspector" type="number" min="0.5" step="0.5" value="${road.width}" /></label>
+        <label><span>Shoulder</span><input id="road-shoulder-inspector" type="number" min="0" step="0.1" value="${road.shoulder ?? 1.5}" /></label>
+        <label><span>Elevation</span><input id="road-elevation-inspector" type="number" step="0.05" value="${road.elevation ?? 0.12}" /></label>
+      </div>
+      ${otherRoads.length > 0 ? `
+        <div class="panel-subhead">Merge</div>
+        <div class="split">
+          <label>
+            <span>Merge with</span>
+            <select id="road-merge-target">
+              <option value="">Select a road</option>
+              ${otherRoads.map((item) => `<option value="${item.id}">Road ${roads.findIndex((r) => r.id === item.id) + 1}</option>`).join("")}
+            </select>
+          </label>
+          <button id="road-merge-button" type="button">Merge into this road</button>
+        </div>
+      ` : ""}
+      <div class="btn-row">
+        <button id="focus-road" type="button">Focus</button>
+        <button id="delete-road" type="button">Delete</button>
+      </div>
+    </div>
+  `;
+  bindRoadInspectorInputs(road);
+  inspector.querySelector<HTMLButtonElement>("#focus-road")?.addEventListener("click", () => focusRoad(road.id));
+  inspector.querySelector<HTMLButtonElement>("#delete-road")?.addEventListener("click", () => {
+    state.selectedRoadId = null;
+    deleteActiveRoadSpline();
+    updateSceneOutliner();
+    updateInspector();
+  });
+  inspector.querySelector<HTMLButtonElement>("#road-merge-button")?.addEventListener("click", () => {
+    const target = inspector.querySelector<HTMLSelectElement>("#road-merge-target");
+    if (target?.value) mergeRoadSplines(road.id, target.value);
+  });
+}
+
+function bindRoadInspectorInputs(road: TerrainSpline) {
+  const shaderAsset = inspector.querySelector<HTMLSelectElement>("#road-shader-asset-inspector");
+  const repeat = inspector.querySelector<HTMLInputElement>("#road-repeat-inspector");
+  const width = inspector.querySelector<HTMLInputElement>("#road-width-inspector");
+  const shoulder = inspector.querySelector<HTMLInputElement>("#road-shoulder-inspector");
+  const elevation = inspector.querySelector<HTMLInputElement>("#road-elevation-inspector");
+  const apply = () => {
+    if (shaderAsset) road.shaderAssetId = shaderAsset.value || null;
+    if (repeat) road.repeat = Math.max(0.1, Number(repeat.value) || road.repeat || 1.4);
+    if (width) road.width = Math.max(0.5, Number(width.value) || road.width);
+    if (shoulder) road.shoulder = Math.max(0, Number(shoulder.value) || 0);
+    if (elevation) road.elevation = Number(elevation.value) || 0;
+    rebuildRoadMeshes();
+    saveLocalLayout();
+  };
+  [shaderAsset, repeat, width, shoulder, elevation].forEach((input) => {
     input?.addEventListener("input", apply);
     input?.addEventListener("change", apply);
   });
@@ -4133,6 +4455,7 @@ function undoLastChange() {
     state.grass = normalizeGrassSettings(layout.terrain?.grass);
     state.skyGradient = normalizeSkyGradient(layout.skyGradient ?? defaultSkyGradient());
     state.selectedObjectId = null;
+    state.selectedRoadId = null;
     selectedObjectIds.clear();
     state.activeDragId = null;
     transformControls.detach();
@@ -4413,7 +4736,6 @@ function syncUiFromState() {
   state.sandRepeat = terrainLayers.sand.repeat;
   const roadShader = normalizeRoadShaderSettings(state.layout.terrain?.roadShader ?? defaultTerrainSettings().roadShader);
   state.roadRepeat = roadShader.repeat;
-  syncRoadShaderAssetOptions();
   waterLevelInput.value = String(state.layout.terrain?.waterLevel ?? -1.35);
   grassControls.density.value = String(state.grass.densityMultiplier);
   grassControls.height.value = String(state.grass.bladeHeight);
@@ -4442,7 +4764,6 @@ function syncUiFromState() {
   updateSceneOutliner();
   updateInspector();
   syncTerrainShaderUi();
-  syncRoadShaderAssetOptions();
 }
 
 function createNewWorld() {
@@ -4464,6 +4785,7 @@ function createNewWorld() {
   state.skyGradient = normalizeSkyGradient(state.layout.skyGradient ?? defaultSkyGradient());
   state.activeRoadSplineId = null;
   state.selectedObjectId = null;
+  state.selectedRoadId = null;
   selectedObjectIds.clear();
   state.activeDragId = null;
   state.selectedRoadPoint = null;
@@ -4567,9 +4889,9 @@ function bindUi() {
     updateStatus("Time playback off");
   });
   timeControls.speed.addEventListener("change", () => {});
-  timeControls.transformTranslate.addEventListener("click", () => setTransformMode("translate"));
-  timeControls.transformRotate.addEventListener("click", () => setTransformMode("rotate"));
-  timeControls.transformScale.addEventListener("click", () => setTransformMode("scale"));
+  ui.transformTranslate.addEventListener("click", () => setTransformMode("translate"));
+  ui.transformRotate.addEventListener("click", () => setTransformMode("rotate"));
+  ui.transformScale.addEventListener("click", () => setTransformMode("scale"));
   terrainControls.select.addEventListener("click", () => setTerrainMode("select"));
   terrainControls.sculpt.addEventListener("click", () => setTerrainMode("sculpt"));
   terrainControls.road.addEventListener("click", () => setTerrainMode("road"));
@@ -4625,7 +4947,6 @@ function bindUi() {
   timeControls.moonIntensity.addEventListener("input", () => updateLightingControls());
   timeControls.horizonGlow.addEventListener("input", () => updateLightingControls());
   timeControls.ambientIntensity.addEventListener("input", () => updateLightingControls());
-  ui.roadShaderAsset.addEventListener("change", () => updateRoadShaderSelection());
   ui.skyClose.addEventListener("click", () => closeSkyEditor());
   ui.skyReset.addEventListener("click", () => {
     saveSkyGradient(defaultSkyGradient());
@@ -4755,9 +5076,9 @@ function beginPanelResize(event: PointerEvent, panelName: keyof PanelState, axis
 
 function setTransformMode(mode: "translate" | "rotate" | "scale") {
   transformControls.setMode(mode);
-  timeControls.transformTranslate.classList.toggle("is-active", mode === "translate");
-  timeControls.transformRotate.classList.toggle("is-active", mode === "rotate");
-  timeControls.transformScale.classList.toggle("is-active", mode === "scale");
+  ui.transformTranslate.classList.toggle("is-active", mode === "translate");
+  ui.transformRotate.classList.toggle("is-active", mode === "rotate");
+  ui.transformScale.classList.toggle("is-active", mode === "scale");
   updateStatus(`Transform mode: ${mode === "translate" ? "move" : mode}`);
 }
 
@@ -4881,6 +5202,48 @@ function deleteActiveRoadSpline() {
   updateRoadSplineOptions();
   regenerateTerrainFromSettings(false);
   updateStatus("Deleted active road spline");
+}
+
+// Joins two road splines into one continuous path — picks whichever of the
+// 4 possible endpoint pairings (primary-end/other-start, primary-end/
+// other-end reversed, primary-start/other-end, primary-start/other-start
+// reversed) has the smallest gap between the two nearest endpoints, so the
+// combined point sequence stays a continuous path rather than jumping
+// across the middle. The primary (currently-selected) road's id/
+// shaderAssetId/repeat/width/shoulder/elevation are kept for the merged
+// result — simple, predictable "primary wins" rule; the other road is
+// removed entirely. No validation that the two roads are actually
+// adjacent — merging two distant, unrelated roads produces a straight-line
+// jump between them.
+function mergeRoadSplines(primaryId: string, otherId: string) {
+  if (primaryId === otherId) return;
+  const terrain = ensureTerrainSettings();
+  const primary = terrain.splines.find((spline) => spline.id === primaryId && spline.kind === "road");
+  const other = terrain.splines.find((spline) => spline.id === otherId && spline.kind === "road");
+  if (!primary || !other || primary.points.length === 0 || other.points.length === 0) return;
+  pushHistory("road");
+  const pStart = primary.points[0];
+  const pEnd = primary.points[primary.points.length - 1];
+  const oStart = other.points[0];
+  const oEnd = other.points[other.points.length - 1];
+  const dist = (a: TerrainControlPoint, b: TerrainControlPoint) => Math.hypot(a.x - b.x, a.z - b.z);
+  const options = [
+    { gap: dist(pEnd, oStart), points: [...primary.points, ...other.points] },
+    { gap: dist(pEnd, oEnd), points: [...primary.points, ...[...other.points].reverse()] },
+    { gap: dist(pStart, oEnd), points: [...other.points, ...primary.points] },
+    { gap: dist(pStart, oStart), points: [...[...other.points].reverse(), ...primary.points] },
+  ];
+  options.sort((a, b) => a.gap - b.gap);
+  primary.points = options[0].points;
+  terrain.splines = terrain.splines.filter((spline) => spline.id !== other.id);
+  compiledRoadMaterials.delete(other.id);
+  state.selectedRoadId = primary.id;
+  state.activeRoadSplineId = primary.id;
+  updateRoadSplineOptions();
+  regenerateTerrainFromSettings(false);
+  updateSceneOutliner();
+  updateInspector();
+  updateStatus("Merged roads");
 }
 
 function updateRoadSettingsFromControls() {
@@ -5042,32 +5405,6 @@ function syncTerrainShaderUi() {
   applyTerrainShaderSettings();
 }
 
-// Rebuilds the #road-shader-asset <select>'s options from state.shaderCatalog
-// — same list/convention as the object Inspector's "Custom (Shaderade)"
-// dropdown (line ~3795). Called once catalog data exists (loadWorldFromInputs'
-// loadAssetCatalog callback) and after every terrain load/undo, since a
-// stale option list would silently drop the saved selection back to
-// "Default" the moment the user opened the dropdown.
-function syncRoadShaderAssetOptions() {
-  const currentId = state.layout.terrain?.roadShader?.shaderAssetId ?? "";
-  ui.roadShaderAsset.innerHTML = `<option value="">Default (no shader)</option>${state.shaderCatalog
-    .map((row) => `<option value="${row.id}" ${row.id === currentId ? "selected" : ""}>${row.name}</option>`)
-    .join("")}`;
-}
-
-// Sets the road's picked Shaderade shader (or null for the plain default
-// material) and rebuilds — replaces the old preset-picker's
-// updateRoadShaderFromInputs, called from the inline #road-shader-asset
-// <select> in the terrain panel (see buildUi's HTML template).
-function updateRoadShaderSelection() {
-  const terrain = ensureTerrainSettings();
-  const current = normalizeRoadShaderSettings(terrain.roadShader ?? defaultTerrainSettings().roadShader);
-  const value = ui.roadShaderAsset.value;
-  terrain.roadShader = { ...current, shaderAssetId: value || null };
-  rebuildRoadMeshes();
-  saveLocalLayout();
-}
-
 function updateTerrainShaderFromInputs() {
   const terrain = ensureTerrainSettings();
   const current = normalizeTerrainLayerSettings(terrain.terrainLayers ?? defaultTerrainSettings().terrainLayers);
@@ -5196,6 +5533,16 @@ function objectIdFromHit(node: THREE.Object3D | null) {
   return null;
 }
 
+function roadIdFromHit(node: THREE.Object3D | null) {
+  let current: THREE.Object3D | null = node;
+  while (current) {
+    const roadId = current.userData.roadId as string | undefined;
+    if (roadId) return roadId;
+    current = current.parent;
+  }
+  return null;
+}
+
 // Plain selection deliberately never moves the camera's orbit pivot — only
 // an explicit focus gesture does (F / "Focus Selection" / double-click in
 // the outliner, see focusSelectedObjects()). It used to re-center on every
@@ -5204,6 +5551,7 @@ function objectIdFromHit(node: THREE.Object3D | null) {
 // persisting where the user left it.
 function selectObject(id: string | null) {
   state.selectedObjectId = id;
+  state.selectedRoadId = null;
   selectedObjectIds.clear();
   if (id) selectedObjectIds.add(id);
   const mesh = id ? objectMeshes.get(id) : null;
@@ -5218,6 +5566,7 @@ function selectObject(id: string | null) {
 }
 
 function toggleObjectSelection(id: string) {
+  state.selectedRoadId = null;
   if (selectedObjectIds.has(id)) {
     selectedObjectIds.delete(id);
   } else {
@@ -5230,6 +5579,26 @@ function toggleObjectSelection(id: string) {
     transformControls.attach(mesh);
   } else {
     transformControls.detach();
+  }
+  updateSceneOutliner();
+  updateInspector();
+}
+
+// Roads are selectable (outliner "Roads" section, or clicking a road
+// ribbon mesh in the viewport — see rebuildRoadMeshes's userData.roadId)
+// but deliberately never get the Move/Rotate/Scale gizmo: a road's shape
+// is edited by dragging its individual points (selectRoadPoint, an
+// existing, unrelated mechanism), not by transforming a single mesh.
+// Mutually exclusive with object selection, matching selectObject's own
+// clearing of state.selectedRoadId.
+function selectRoad(id: string | null) {
+  state.selectedRoadId = id;
+  state.selectedObjectId = null;
+  selectedObjectIds.clear();
+  transformControls.detach();
+  if (id) {
+    state.activeRoadSplineId = id;
+    updateRoadSplineOptions();
   }
   updateSceneOutliner();
   updateInspector();
@@ -5254,9 +5623,10 @@ function selectionBounds(ids: Iterable<string>) {
   return new THREE.Box3().setFromPoints(fallbackPoints);
 }
 
-function focusObjects(ids: Iterable<string>) {
-  const box = selectionBounds(ids);
-  if (!box) return;
+// Shared tail of focusObjects/focusRoad — moves the camera to frame a
+// world-space bounding box, keeping the camera's current look direction
+// rather than snapping to some fixed angle.
+function focusBoxCamera(box: THREE.Box3) {
   const sphere = box.getBoundingSphere(new THREE.Sphere());
   const radius = Math.max(sphere.radius, 2);
   const direction = camera.position.clone().sub(controls.target);
@@ -5271,6 +5641,27 @@ function focusObjects(ids: Iterable<string>) {
   camera.far = Math.max(camera.far, distance * 20);
   camera.updateProjectionMatrix();
   controls.update();
+}
+
+function focusObjects(ids: Iterable<string>) {
+  const box = selectionBounds(ids);
+  if (!box) return;
+  focusBoxCamera(box);
+}
+
+// Frames a road spline's live ribbon mesh, falling back to its raw control
+// points (Y=0) if the mesh hasn't been built yet for some reason.
+function focusRoad(roadId: string) {
+  const mesh = roadMeshes.get(roadId);
+  const road = roadSplines().find((item) => item.id === roadId);
+  const box = new THREE.Box3();
+  if (mesh) {
+    box.expandByObject(mesh);
+  } else if (road) {
+    box.setFromPoints(road.points.map((point) => new THREE.Vector3(point.x, 0, point.z)));
+  }
+  if (box.isEmpty()) return;
+  focusBoxCamera(box);
 }
 
 function focusSelectedObjects() {
@@ -5479,9 +5870,12 @@ function onPointerUp(event: PointerEvent) {
       raycaster.setFromCamera(pointer, camera);
       const hits = raycaster.intersectObjects(selectableMeshes, true);
       const objectId = hits.length > 0 ? objectIdFromHit(hits[0].object) : null;
+      const roadId = !objectId && hits.length > 0 ? roadIdFromHit(hits[0].object) : null;
       if (objectId) {
         if (additive) toggleObjectSelection(objectId);
         else selectObject(objectId);
+      } else if (roadId) {
+        selectRoad(roadId);
       } else {
         selectObject(null);
       }
@@ -5700,6 +6094,11 @@ function buildUi() {
       <span id="status" class="status">Ready.</span>
       <span id="diagnostics" class="status"></span>
     </div>
+    <div class="topbar-transform">
+      <button id="topbar-transform-translate" type="button" title="Move (W)"><img src="/Transform.png" width="64" height="64" alt="Move" /></button>
+      <button id="topbar-transform-rotate" type="button" title="Rotate (E)"><img src="/rotate.png" width="64" height="64" alt="Rotate" /></button>
+      <button id="topbar-transform-scale" type="button" title="Scale (R)"><img src="/scale.png" width="64" height="64" alt="Scale" /></button>
+    </div>
   `;
   root.appendChild(topbar);
 
@@ -5745,11 +6144,6 @@ function buildUi() {
                 <option value="0.25">1 hour / 4 sec</option>
               </select>
             </label>
-          </div>
-          <div class="btn-row">
-            <button id="transform-translate" type="button">Move</button>
-            <button id="transform-rotate" type="button">Rotate</button>
-            <button id="transform-scale" type="button">Scale</button>
           </div>
           <div class="panel-subhead">Building Tool</div>
           <label><span>Build style</span><input id="building-style" type="text" placeholder="industrial, parisian, ..." /></label>
@@ -5849,7 +6243,6 @@ function buildUi() {
           <label><span>Horizon glow</span><input id="horizon-glow" type="range" min="0" max="8" step="0.05" value="${state.lighting.horizonGlow}" /></label>
           <label><span>Ambient light</span><input id="ambient-intensity" type="range" min="0" max="1" step="0.01" value="${state.lighting.ambientIntensity}" /></label>
           <label><span>Water level</span><input id="water-level" type="number" step="0.05" value="-1.35" /></label>
-          <label><span>Road Shader</span><select id="road-shader-asset"><option value="">Default (no shader)</option></select></label>
         </div>
         <div class="status">Click an asset, then click the terrain to place it. Select an object to edit position/rotation/scale.</div>
       </div>
@@ -5905,9 +6298,9 @@ function buildUi() {
     timePlay: shell.querySelector<HTMLButtonElement>("#time-play")!,
     timeStop: shell.querySelector<HTMLButtonElement>("#time-stop")!,
     timeSpeed: shell.querySelector<HTMLSelectElement>("#time-speed")!,
-    transformTranslate: shell.querySelector<HTMLButtonElement>("#transform-translate")!,
-    transformRotate: shell.querySelector<HTMLButtonElement>("#transform-rotate")!,
-    transformScale: shell.querySelector<HTMLButtonElement>("#transform-scale")!,
+    transformTranslate: topbar.querySelector<HTMLButtonElement>("#topbar-transform-translate")!,
+    transformRotate: topbar.querySelector<HTMLButtonElement>("#topbar-transform-rotate")!,
+    transformScale: topbar.querySelector<HTMLButtonElement>("#topbar-transform-scale")!,
     terrainSelect: shell.querySelector<HTMLButtonElement>("#terrain-select")!,
     terrainSculpt: shell.querySelector<HTMLButtonElement>("#terrain-sculpt")!,
     terrainRoad: shell.querySelector<HTMLButtonElement>("#terrain-road")!,
@@ -5975,7 +6368,6 @@ function buildUi() {
     skyMoon: skyModal.querySelector<HTMLInputElement>("#sky-moon")!,
     skyReset: skyModal.querySelector<HTMLButtonElement>("#sky-reset")!,
     skyClose: skyModal.querySelector<HTMLButtonElement>("#sky-close")!,
-    roadShaderAsset: shell.querySelector<HTMLSelectElement>("#road-shader-asset")!,
   };
 }
 

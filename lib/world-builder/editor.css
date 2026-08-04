@@ -46,13 +46,44 @@
   top: 16px;
   z-index: 40;
   display: grid;
-  grid-template-columns: auto minmax(360px, 760px);
+  grid-template-columns: auto minmax(360px, 760px) auto;
   gap: 12px;
   padding: 8px 10px;
   border: 1px solid rgb(74 194 138 / 0.35);
   border-radius: 8px;
   background: rgb(7 10 16 / 0.9);
   backdrop-filter: blur(8px);
+}
+
+.wb-root .topbar-transform {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.wb-root .topbar-transform button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: 1px solid rgb(255 255 255 / 0.14);
+  border-radius: 8px;
+  background: rgb(18 24 35 / 0.96);
+  line-height: 0;
+}
+
+.wb-root .topbar-transform button img {
+  filter: brightness(0.9) saturate(0.6);
+  transition: filter 0.15s;
+}
+
+.wb-root .topbar-transform button.is-active {
+  border-color: #56a6e8;
+  background: rgb(20 38 56 / 0.96);
+}
+
+.wb-root .topbar-transform button.is-active img {
+  filter: brightness(1.2) drop-shadow(0 0 6px rgba(86, 166, 232, 0.6));
 }
 
 .wb-root .topbar strong {
@@ -171,6 +202,7 @@
 
 .wb-root .panel .body {
   display: grid;
+  align-content: start;
   gap: 8px;
   min-height: 0;
   overflow: auto;
@@ -222,6 +254,19 @@
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
+}
+
+.wb-root .outliner-section-head {
+  color: #9aa8bb;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 6px 2px 2px;
+}
+
+.wb-root .outliner-section-head:first-child {
+  padding-top: 0;
 }
 
 .wb-root .building-slot-row {

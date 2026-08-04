@@ -98,6 +98,16 @@ export type PlacedObjectData = {
   falloff?: number;
   color?: [number, number, number];
   emissiveIntensity?: number;
+  // For kind "water" (spawnWaterObject/editor.ts) — per-object look, so two
+  // placed water bodies (a still pond vs. a choppy river) can differ.
+  waveAmplitude?: number;
+  waterOpacity?: number;
+  reflectivity?: number;
+  foamStrength?: number;
+  // Bakes a local wetness texture from nearby placed objects' XZ footprints
+  // (in addition to terrain-edge wetness) so foam can appear where this
+  // water body overlaps other placed geometry, not just at the shoreline.
+  reactToNearbyObjects?: boolean;
   position: [number, number, number];
   rotation: [number, number, number];
   scale: [number, number, number];
@@ -125,6 +135,12 @@ export type TerrainSpline = {
   depth?: number;
   elevation?: number;
   points: TerrainControlPoint[];
+  // For kind "road" only — each road picks its own Shaderade shader/UV
+  // repeat now (previously one shared RoadShaderSettings for every road in
+  // the level). Falls back to the terrain-wide roadShader default (below)
+  // when unset, so existing saved roads keep their prior look on load.
+  shaderAssetId?: string | null;
+  repeat?: number;
 };
 
 // A saved Shaderade shader_graph asset id (mirrors PlacedObjectData's own

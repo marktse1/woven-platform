@@ -79,29 +79,49 @@ export type ShoreWetnessBake = {
   worldSize: [number, number];
 };
 
-/**
- * Bakes one shared grayscale texture over the terrain's full world-space
- * extent — each texel is exactly the same 0..1 wetness value
- * waterPresenceAt already computes per-point: bright near/under water,
- * dark on dry land, smoothly graded in between. Returns null if there's
- * no terrain to bake from (nothing to be near a shore of).
- */
-export function buildShoreWetnessTexture(chunks: TerrainChunkData[], waterLevel: number, size = 512): ShoreWetnessBake | null {
-  if (chunks.length === 0) return null;
+/** An additional wetness source rasterized on top of terrain wetness — used
+ * for a placed water object's "react to nearby objects" foam, where a
+ * nearby object's approximate XZ footprint (radius, not real collision
+ * geometry) contributes wetness the same way a shoreline does. */
+export type WetnessContributor = { x: number; z: number; radius: number };
 
-  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-  for (const chunk of chunks) {
-    const resolution = chunk.resolution || 33;
-    const spacing = chunk.spacing || 2;
-    const originX = chunk.origin?.[0] ?? 0;
-    const originZ = chunk.origin?.[1] ?? 0;
-    minX = Math.min(minX, originX);
-    minZ = Math.min(minZ, originZ);
-    maxX = Math.max(maxX, originX + (resolution - 1) * spacing);
-    maxZ = Math.max(maxZ, originZ + (resolution - 1) * spacing);
+/**
+ * Bakes one grayscale texture — either the terrain's full world-space
+ * extent (default, shared across every water mesh — the original
+ * behavior), or an explicit local `bounds` override (used for a single
+ * water object's own "react to nearby objects" bake, kept small/local
+ * rather than covering the whole terrain). Each texel is the same 0..1
+ * wetness value waterPresenceAt already computes per-point: bright
+ * near/under water, dark on dry land, smoothly graded in between, maxed
+ * against any `extraContributors` (object-footprint circles). Returns null
+ * if there's nothing to bake from (no terrain and no explicit bounds).
+ */
+export function buildShoreWetnessTexture(
+  chunks: TerrainChunkData[],
+  waterLevel: number,
+  size = 512,
+  options?: { bounds?: { minX: number; maxX: number; minZ: number; maxZ: number }; extraContributors?: WetnessContributor[] }
+): ShoreWetnessBake | null {
+  let minX: number, maxX: number, minZ: number, maxZ: number;
+  if (options?.bounds) {
+    ({ minX, maxX, minZ, maxZ } = options.bounds);
+  } else {
+    if (chunks.length === 0) return null;
+    minX = Infinity; maxX = -Infinity; minZ = Infinity; maxZ = -Infinity;
+    for (const chunk of chunks) {
+      const resolution = chunk.resolution || 33;
+      const spacing = chunk.spacing || 2;
+      const originX = chunk.origin?.[0] ?? 0;
+      const originZ = chunk.origin?.[1] ?? 0;
+      minX = Math.min(minX, originX);
+      minZ = Math.min(minZ, originZ);
+      maxX = Math.max(maxX, originX + (resolution - 1) * spacing);
+      maxZ = Math.max(maxZ, originZ + (resolution - 1) * spacing);
+    }
   }
   const worldSizeX = Math.max(1, maxX - minX);
   const worldSizeZ = Math.max(1, maxZ - minZ);
+  const extraContributors = options?.extraContributors ?? [];
 
   // Row 0 = minZ, matching DataTexture's default flipY=false (UV v=0 is
   // the first row of `data`) — so (worldZ - originZ)/worldSizeZ in the
@@ -111,7 +131,11 @@ export function buildShoreWetnessTexture(chunks: TerrainChunkData[], waterLevel:
     const z = minZ + (row / (size - 1)) * worldSizeZ;
     for (let col = 0; col < size; col++) {
       const x = minX + (col / (size - 1)) * worldSizeX;
-      const wetness = wetnessAt(chunks, x, z, waterLevel);
+      let wetness = wetnessAt(chunks, x, z, waterLevel);
+      for (const contributor of extraContributors) {
+        const distance = Math.hypot(x - contributor.x, z - contributor.z);
+        wetness = Math.max(wetness, clamp(1 - distance / Math.max(0.001, contributor.radius), 0, 1));
+      }
       const v = Math.round(clamp(wetness, 0, 1) * 255);
       const i = (row * size + col) * 4;
       data[i] = v; data[i + 1] = v; data[i + 2] = v; data[i + 3] = 255;

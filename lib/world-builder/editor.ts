@@ -37,16 +37,13 @@ import {
   TerrainDistrictSettings,
   TerrainShaderSettings,
   TerrainSpline,
-  WaterSurfaceSettings,
   GrassSettings,
   chunkIdForCoords,
   defaultSkyGradient,
   defaultTerrainSettings,
-  defaultWaterSettings,
   defaultGrassSettings,
   generateTerrainChunks,
   sampleTerrainHeight,
-  sampleWaterSurfaceOffset,
   sculptTerrainAt,
   TERRAIN_CHUNK_SIZE,
   TERRAIN_RESOLUTION,
@@ -79,6 +76,16 @@ const ASSET_CATALOG_CACHE_VERSION = 2;
 const DEFAULT_CONTENT_BASE = typeof window !== "undefined" ? window.location.origin : "";
 const DEFAULT_MANIFEST_URL = "/levels/home.level.json";
 const DEFAULT_ASSET_CATALOG_URL = "/api/assets";
+// Shore-foam look for placed water objects (spawnWaterObject) — previously
+// tunable via the removed terrain-wide Water Shader panel; fixed at its old
+// default values now that nothing edits them.
+const SHORE_FOAM_INTENSITY = 0.92;
+const SHORE_FOAM_THRESHOLD = 0.45;
+const SHORE_FOAM_CONTRAST = 0.82;
+// Fog density applied when the camera itself dips below the world's water
+// level (applySkyAndWater) — same fixed-default treatment as the foam
+// constants above.
+const UNDERWATER_FOG_DENSITY = 0.018;
 const FALLBACK_ASSET_CATALOG: AssetDefinition[] = [
   { category: "Characters", name: "Starfox", url: "/assets/Starfox.glb" },
   { category: "Characters", name: "Lasso", url: "/assets/Lasso.glb" },
@@ -117,7 +124,6 @@ type RuntimeState = {
   skyGradient: SkyGradientSettings;
   timeOfDay: number;
   playing: boolean;
-  water: WaterSurfaceSettings;
   grass: GrassSettings;
   lighting: LightingSettings;
   terrainMode: "select" | "sculpt" | "road";
@@ -232,7 +238,6 @@ const state: RuntimeState = {
   skyGradient: loadSkyGradient(),
   timeOfDay: 12,
   playing: false,
-  water: defaultWaterSettings(),
   grass: defaultGrassSettings(),
   lighting: loadLightingSettings(),
   terrainMode: "select",
@@ -325,11 +330,10 @@ const worldRoot = new THREE.Group();
 const terrainRoot = new THREE.Group();
 const roadRoot = new THREE.Group();
 const roadGuideGroup = new THREE.Group();
-const waterRoot = new THREE.Group();
 const grassRoot = new THREE.Group();
 const objectRoot = new THREE.Group();
 const skyRoot = new THREE.Group();
-scene.add(worldRoot, terrainRoot, roadRoot, waterRoot, grassRoot, objectRoot, skyRoot);
+scene.add(worldRoot, terrainRoot, roadRoot, grassRoot, objectRoot, skyRoot);
 scene.add(roadGuideGroup);
 
 const sunLight = new THREE.DirectionalLight(0xffffff, 2.4);
@@ -376,8 +380,6 @@ const assetRowById = new Map<string, AssetRow>();
 const signedUrlByAssetId = new Map<string, Promise<string>>();
 const CREATOR_ASSET_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const terrainMeshes: THREE.Object3D[] = [];
-const waterMeshes: THREE.Mesh[] = [];
-let waterSurfaceMesh: ThreeWater | null = null;
 const grassMeshes: THREE.InstancedMesh[] = [];
 const objectMeshes = new Map<string, THREE.Object3D>();
 // Currently-applied custom (Shaderade) shader materials — ticked each
@@ -390,9 +392,9 @@ const activeCustomShaderMaterials = new Set<THREE.ShaderMaterial>();
 // spawn, removed when the object is deleted (removeObjectMesh).
 const activeWaterMeshes = new Set<ThreeWater>();
 // Shared shore-wetness bake (see waterFoam.ts) — one texture covering the
-// whole terrain's world extent, referenced by every water mesh's shader
-// (both the terrain-wide ocean and individually placed water objects,
-// since they aren't terrain-grid-aligned and can't each bake their own).
+// whole terrain's world extent, referenced by every placed water object's
+// shader, since they aren't terrain-grid-aligned and can't each bake their
+// own.
 let shoreWetnessBake: ShoreWetnessBake | null = null;
 let shoreWetnessRebakeTimer: ReturnType<typeof setTimeout> | null = null;
 const selectedObjectIds = new Set<string>();
@@ -454,15 +456,6 @@ type MeshMaterialUserData = {
   customTextures?: THREE.Texture[];
 };
 
-type RoadTextureBundle = {
-  albedo: THREE.Texture;
-  ao: THREE.Texture;
-  normal: THREE.Texture;
-  roughness: THREE.Texture;
-  height: THREE.Texture;
-  metallic: THREE.Texture;
-};
-
 type TerrainTextureBundle = {
   albedo: THREE.Texture;
   ao: THREE.Texture;
@@ -477,46 +470,8 @@ type TerrainLayerSettings = {
   sand: TerrainShaderSettings;
 };
 
-const roadTextureLibrary: Partial<Record<"gravel" | "asphalt" | "highway-lanes", RoadTextureBundle>> = {};
 const terrainTextureLibrary: Partial<Record<"soil" | "sand-dunes1" | "gravel", TerrainTextureBundle>> = {};
 let currentTerrainLayerSettings = normalizeTerrainLayerSettings(defaultTerrainSettings().terrainLayers);
-const shaderBallMaterial = new THREE.MeshStandardMaterial({
-  color: 0xffffff,
-  roughness: 0.82,
-  metalness: 0,
-  map: fallbackTexture,
-});
-let shaderBallRenderer: THREE.WebGLRenderer | null = null;
-let shaderBallScene: THREE.Scene | null = null;
-let shaderBallCamera: THREE.PerspectiveCamera | null = null;
-let shaderBallMesh: THREE.Mesh | null = null;
-let waterShaderRenderer: THREE.WebGLRenderer | null = null;
-let waterShaderScene: THREE.Scene | null = null;
-let waterShaderCamera: THREE.PerspectiveCamera | null = null;
-let waterShaderMesh: THREE.Mesh | null = null;
-const waterSurfaceMaterial = new THREE.MeshPhysicalMaterial({
-  color: 0x2f82ad,
-  emissive: 0x112d42,
-  emissiveIntensity: 0.38,
-  specularColor: new THREE.Color(0xcfeeff),
-  roughness: 0.18,
-  metalness: 0,
-  clearcoat: 1,
-  clearcoatRoughness: 0.06,
-  transmission: 0.0,
-  thickness: 0.9,
-  ior: 1.333,
-  attenuationColor: new THREE.Color(0x2b7aa4),
-  attenuationDistance: 1.8,
-  transparent: false,
-  opacity: 1,
-  depthWrite: true,
-  depthTest: true,
-  fog: false,
-  side: THREE.DoubleSide,
-  vertexColors: true,
-});
-const waterPreviewMaterial = waterSurfaceMaterial.clone();
 let saveTimeoutId: number | null = null;
 
 function createTerrainBlendTexture(chunk: TerrainChunkData) {
@@ -761,149 +716,6 @@ const buildingDragGizmo = new THREE.Mesh(
 buildingDragGizmo.visible = false;
 scene.add(buildingDragGizmo);
 
-const waterMaterial = new THREE.ShaderMaterial({
-  transparent: true,
-  depthWrite: false,
-  depthTest: true,
-  fog: false,
-  blending: THREE.NormalBlending,
-  side: THREE.DoubleSide,
-  polygonOffset: true,
-  polygonOffsetFactor: -4,
-  polygonOffsetUnits: -4,
-  uniforms: {
-    time: { value: 0 },
-    waterOpacity: { value: state.water.opacity },
-    reflectivity: { value: state.water.reflectivity },
-    waveAmplitude: { value: state.water.waveAmplitude },
-    waveFrequency: { value: state.water.waveFrequency },
-    waveSpeed: { value: state.water.waveSpeed },
-    windSpeed: { value: state.water.windSpeed },
-    choppiness: { value: state.water.choppiness },
-    foamIntensity: { value: state.water.foamIntensity },
-    foamThreshold: { value: state.water.foamThreshold },
-    foamContrast: { value: state.water.foamContrast },
-    rainIntensity: { value: 0 },
-    waterLevel: { value: 0 },
-    cameraPosition: { value: new THREE.Vector3() },
-    deepColor: { value: new THREE.Color(0.02, 0.1, 0.2) },
-    shallowColor: { value: new THREE.Color(0.12, 0.42, 0.56) },
-    skyTint: { value: new THREE.Color(0.34, 0.5, 0.72) },
-    foamColor: { value: new THREE.Color(0.86, 0.94, 1.0) },
-  },
-  vertexShader: `
-    attribute vec4 color;
-    varying vec3 vWorldPosition;
-    varying vec3 vNormal;
-    varying float vDepthFactor;
-    varying float vWave;
-    varying float vFoamSeed;
-    uniform float time;
-    uniform float waveAmplitude;
-    uniform float waveFrequency;
-    uniform float waveSpeed;
-    uniform float windSpeed;
-    uniform float choppiness;
-
-    float hash(vec2 p) {
-      p = fract(p * vec2(123.34, 456.21));
-      p += dot(p, p + 45.32);
-      return fract(p.x * p.y);
-    }
-
-    float noise(vec2 p) {
-      vec2 i = floor(p);
-      vec2 f = fract(p);
-      vec2 u = f * f * (3.0 - 2.0 * f);
-      float a = hash(i);
-      float b = hash(i + vec2(1.0, 0.0));
-      float c = hash(i + vec2(0.0, 1.0));
-      float d = hash(i + vec2(1.0, 1.0));
-      return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-    }
-
-    float fbm(vec2 p) {
-      float value = 0.0;
-      float amplitude = 0.5;
-      for (int i = 0; i < 4; i++) {
-        value += amplitude * noise(p);
-        p *= 2.03;
-        amplitude *= 0.5;
-      }
-      return value;
-    }
-
-    float gerstnerWave(vec2 direction, float amplitude, float frequency, float speed, vec2 position, float t) {
-      vec2 dir = normalize(direction);
-      return sin(dot(position, dir) * frequency + t * speed) * amplitude;
-    }
-
-    void main() {
-      vec3 displaced = position;
-      vec4 world = modelMatrix * vec4(displaced, 1.0);
-      float amplitude = max(waveAmplitude, 0.0001);
-      float frequency = max(waveFrequency, 0.0001);
-      float wind = max(windSpeed, 0.0);
-      float chop = clamp(choppiness, 0.0, 1.5);
-      vec2 windDirection = normalize(vec2(0.84, 0.54));
-      vec2 windOffset = windDirection * time * wind * 0.08;
-      vec2 waveUv = world.xz * frequency + windOffset;
-      float largeWave = gerstnerWave(vec2(1.0, 0.35), amplitude * 0.55, 0.55, waveSpeed * (1.2 + wind * 0.12), waveUv, time);
-      float midWave = gerstnerWave(vec2(-0.42, 1.0), amplitude * 0.32, 1.15, waveSpeed * (1.85 + wind * 0.18), waveUv, time);
-      float chopWave = gerstnerWave(vec2(0.78, -0.62), amplitude * 0.15, 2.8, waveSpeed * (2.5 + wind * 0.24), waveUv, time);
-      float swell = fbm(waveUv * 1.45 + vec2(time * waveSpeed * 0.06, -time * waveSpeed * 0.04));
-      float detail = fbm(waveUv * (4.2 + chop * 1.2) + vec2(time * waveSpeed * 0.25, time * waveSpeed * 0.12));
-      vFoamSeed = fbm(waveUv * (7.4 + chop * 2.0) + vec2(time * waveSpeed * 0.18, -time * waveSpeed * 0.16));
-      float baseWave = largeWave + midWave + chopWave;
-      float choppyWave = mix(baseWave, sign(baseWave) * pow(abs(baseWave) / amplitude, 1.0 + chop * 1.6) * amplitude, clamp(chop * 0.55, 0.0, 1.0));
-      float micro = (swell - 0.5) * amplitude * 0.35 + (detail - 0.5) * amplitude * 0.16;
-      float wave = choppyWave + micro;
-      world.y += wave;
-      vWorldPosition = world.xyz;
-      vNormal = normalize(normalMatrix * normal);
-      vDepthFactor = clamp(color.a, 0.0, 1.0);
-      vWave = wave;
-      gl_Position = projectionMatrix * viewMatrix * world;
-    }
-  `,
-  fragmentShader: `
-    precision highp float;
-    varying vec3 vWorldPosition;
-    varying vec3 vNormal;
-    varying float vDepthFactor;
-    varying float vWave;
-    varying float vFoamSeed;
-    uniform float time;
-    uniform float waterOpacity;
-    uniform float reflectivity;
-    uniform float foamIntensity;
-    uniform float foamThreshold;
-    uniform float foamContrast;
-    uniform float choppiness;
-    uniform float rainIntensity;
-    uniform float waterLevel;
-    uniform vec3 cameraPosition;
-    uniform vec3 deepColor;
-    uniform vec3 shallowColor;
-    uniform vec3 skyTint;
-    uniform vec3 foamColor;
-
-    void main() {
-      vec3 normal = normalize(vNormal);
-      float depthMix = clamp(vDepthFactor, 0.0, 1.0);
-      vec3 viewDir = normalize(cameraPosition - vWorldPosition);
-      float fresnel = pow(1.0 - clamp(dot(normal, viewDir), 0.0, 1.0), 4.0);
-      float waveBands = clamp(abs(vWave) * 0.65 + vFoamSeed * 0.25, 0.0, 1.0);
-      float foamMask = pow(clamp(waveBands * foamThreshold + 0.15, 0.0, 1.0), foamContrast);
-      vec3 color = mix(shallowColor, deepColor, depthMix);
-      color = mix(color, skyTint, clamp(0.28 + fresnel * reflectivity * 1.4, 0.0, 0.98));
-      color += skyTint * fresnel * 0.22;
-      color += foamColor * foamMask * foamIntensity * 0.55;
-      color += vec3(0.04, 0.08, 0.12) * waveBands;
-      gl_FragColor = vec4(color, mix(0.78, 0.96, depthMix));
-    }
-  `,
-});
 const loader = new GLTFLoader();
 const fbxLoader = new FBXLoader();
 
@@ -923,20 +735,7 @@ const exportButton = topbar.querySelector<HTMLButtonElement>("#export-world")!;
 const statusEl = topbar.querySelector<HTMLSpanElement>("#status")!;
 const diagnosticsEl = topbar.querySelector<HTMLSpanElement>("#diagnostics")!;
 
-const waterControls = {
-  opacity: ui.waterOpacity,
-  reflectivity: ui.waterReflectivity,
-  foamThreshold: ui.foamThreshold,
-  foamContrast: ui.foamContrast,
-  level: ui.waterLevel,
-  waveAmplitude: ui.waveAmplitude,
-  waveFrequency: ui.waveFrequency,
-  waveSpeed: ui.waveSpeed,
-  windSpeed: ui.windSpeed,
-  choppiness: ui.choppiness,
-  underwaterFogDensity: ui.underwaterFogDensity,
-  foamIntensity: ui.foamIntensity,
-};
+const waterLevelInput = ui.waterLevel;
 const grassControls = {
   paint: ui.paintGrass,
   density: ui.grassDensity,
@@ -1285,24 +1084,11 @@ function normalizeLightingSettings(value: Partial<LightingSettings> | null | und
 }
 
 function normalizeRoadShaderSettings(value: Partial<RoadShaderSettings> | null | undefined): RoadShaderSettings {
-  const defaults: RoadShaderSettings = {
-    preset: "gravel",
-    repeat: 1.4,
-    aoStrength: 1,
-    normalStrength: 1,
-    bumpStrength: 0.05,
-    roughness: 0.96,
-    metalness: 0,
-  };
+  const defaults: RoadShaderSettings = { shaderAssetId: null, repeat: 1.4 };
   if (!value) return defaults;
   return {
-    preset: value.preset === "asphalt" || value.preset === "gravel" || value.preset === "highway-lanes" ? value.preset : "highway-lanes",
+    shaderAssetId: typeof value.shaderAssetId === "string" ? value.shaderAssetId : null,
     repeat: Math.max(0.1, Number(value.repeat) || defaults.repeat),
-    aoStrength: Math.max(0, Number(value.aoStrength) || defaults.aoStrength),
-    normalStrength: Math.max(0, Number(value.normalStrength) || defaults.normalStrength),
-    bumpStrength: Math.max(0, Number(value.bumpStrength) || defaults.bumpStrength),
-    roughness: Math.max(0, Number(value.roughness) || defaults.roughness),
-    metalness: Math.max(0, Number(value.metalness) || defaults.metalness),
   };
 }
 
@@ -1375,23 +1161,6 @@ function normalizeGrassSettings(next?: Partial<GrassSettings> | null): GrassSett
   return { ...defaultGrassSettings(), ...(next ?? {}) };
 }
 
-function normalizeWaterSettings(next?: Partial<WaterSurfaceSettings> | null): WaterSurfaceSettings {
-  const defaults = defaultWaterSettings();
-  const waveAmplitude = next?.waveAmplitude ?? next?.waveHeight ?? defaults.waveAmplitude;
-  const waveFrequency = next?.waveFrequency ?? next?.waveScale ?? defaults.waveFrequency;
-  const underwaterFogDensity = next?.underwaterFogDensity ?? defaults.underwaterFogDensity;
-  return {
-    ...defaults,
-    ...(next ?? {}),
-    waveAmplitude,
-    waveFrequency,
-    waveHeight: next?.waveHeight ?? waveAmplitude,
-    waveScale: next?.waveScale ?? waveFrequency,
-    opacity: clamp(next?.opacity ?? defaults.opacity, 0.4, 1.0),
-    underwaterFogDensity,
-  };
-}
-
 function createSolidTexture(rgba: [number, number, number, number]) {
   const texture = new THREE.DataTexture(new Uint8Array(rgba), 1, 1, THREE.RGBAFormat);
   texture.needsUpdate = true;
@@ -1399,86 +1168,6 @@ function createSolidTexture(rgba: [number, number, number, number]) {
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.RepeatWrapping;
   return texture;
-}
-
-function scaleRgb(color: [number, number, number], scale: number): [number, number, number] {
-  return [clamp(color[0] * scale, 0, 1), clamp(color[1] * scale, 0, 1), clamp(color[2] * scale, 0, 1)];
-}
-
-function configureWaterMaterial(material: THREE.MeshPhysicalMaterial, settings: WaterSurfaceSettings) {
-  const palette = skyPaletteForTime(state.timeOfDay);
-  const skyWaterBase = mixRgb(palette.midColor, palette.horizonColor, 0.58);
-  const shallowSky = mixRgb(palette.horizonColor, palette.topColor, 0.24);
-  const deepColor = scaleRgb(skyWaterBase, 0.38);
-  const shallowColor = scaleRgb(shallowSky, 0.62);
-  const skyTint = mixRgb(palette.topColor, palette.midColor, 0.28);
-  const surfaceOpacity = clamp(settings.opacity, 0.4, 1.0);
-  material.color.setRGB(...mixRgb(shallowColor, deepColor, 0.46));
-  material.emissive.setRGB(...mixRgb(skyTint, [0.06, 0.16, 0.24], 0.34));
-  material.emissiveIntensity = 0.36 + settings.foamIntensity * 0.05 + (1 - surfaceOpacity) * 0.12;
-  material.specularColor.setRGB(0.82, 0.92, 1.0);
-  material.roughness = clamp(0.08 + settings.choppiness * 0.12, 0.08, 0.36);
-  material.clearcoat = 1;
-  material.clearcoatRoughness = clamp(0.03 + settings.foamContrast * 0.02, 0.03, 0.16);
-  material.transmission = 0.0;
-  material.thickness = clamp(0.65 + settings.reflectivity * 0.2, 0.65, 1.4);
-  material.ior = 1.333;
-  material.attenuationColor.setRGB(...deepColor);
-  material.attenuationDistance = clamp(1.0 + surfaceOpacity * 2.0, 1.0, 4.0);
-  material.opacity = surfaceOpacity;
-  material.transparent = surfaceOpacity < 0.995;
-  material.depthWrite = surfaceOpacity >= 0.995;
-  material.depthTest = true;
-  material.fog = false;
-  material.side = THREE.DoubleSide;
-  material.vertexColors = true;
-  material.needsUpdate = true;
-}
-
-function configureWaterSurface(mesh: ThreeWater | null, settings: WaterSurfaceSettings) {
-  if (!mesh) return;
-  const palette = skyPaletteForTime(state.timeOfDay);
-  const paletteMid = new THREE.Color().setRGB(...palette.midColor);
-  const paletteTop = new THREE.Color().setRGB(...palette.topColor);
-  const paletteHorizon = new THREE.Color().setRGB(...palette.horizonColor);
-  const sunDirection = sunLight.position.clone().normalize();
-  const waterColor = paletteMid.clone().lerp(paletteHorizon, 0.35).multiplyScalar(0.55);
-  const sunColor = paletteTop.clone().lerp(new THREE.Color(0xffffff), 0.38);
-  const uniforms = (mesh.material as THREE.ShaderMaterial).uniforms;
-  uniforms.alpha.value = clamp(settings.opacity, 0.35, 1.0);
-  uniforms.time.value = performance.now() / 1000 * (0.14 + settings.waveSpeed * 0.3);
-  uniforms.size.value = Math.max(0.2, settings.waveFrequency * 26);
-  uniforms.distortionScale.value = 1.2 + settings.reflectivity * 5.5 + settings.choppiness * 3.5;
-  uniforms.sunDirection.value.copy(sunDirection);
-  uniforms.sunColor.value.copy(sunColor);
-  uniforms.waterColor.value.copy(waterColor);
-  uniforms.eye.value.copy(camera.position);
-  syncShoreFoamUniforms(mesh, settings);
-}
-
-function sampleWaterMotion(x: number, z: number, timeSeconds: number, settings: WaterSurfaceSettings) {
-  return sampleWaterSurfaceOffset(x, z, timeSeconds, settings);
-}
-
-function updateWaterSurfaceGeometry(mesh: THREE.Mesh | null, timeSeconds: number, settings: WaterSurfaceSettings, waterLevel: number) {
-  if (!mesh) return;
-  const geometry = mesh.geometry as THREE.BufferGeometry & { userData: { basePositions?: Float32Array } };
-  const position = geometry.getAttribute("position") as THREE.BufferAttribute;
-  const basePositions = geometry.userData.basePositions;
-  if (!basePositions || basePositions.length !== position.array.length) return;
-  const array = position.array as Float32Array;
-  for (let index = 0; index < position.count; index += 1) {
-    const baseIndex = index * 3;
-    const x = basePositions[baseIndex];
-    const z = basePositions[baseIndex + 1];
-    array[baseIndex] = x;
-    array[baseIndex + 1] = z;
-    const worldX = mesh.position.x + x;
-    const worldZ = mesh.position.z + z;
-    array[baseIndex + 2] = sampleWaterMotion(worldX, worldZ, timeSeconds, settings) * 0.9;
-  }
-  position.needsUpdate = true;
-  geometry.computeVertexNormals();
 }
 
 function rotateDirectionY(x: number, y: number, z: number, radians: number) {
@@ -1562,6 +1251,7 @@ async function loadWorldFromInputs() {
       // catalog and nothing else re-renders it, so it'd show "No saved
       // shaders" forever until reselected. Refresh it now that data exists.
       if (state.selectedObjectId) updateInspector();
+      syncRoadShaderAssetOptions();
       updateStatus(
         loadedRemoteCatalog
           ? `Loaded ${state.layout.name} and ${state.assetCatalog.length} assets`
@@ -1594,7 +1284,6 @@ async function loadWorldFromInputs() {
       worldLoadReport.loadedObjects = 0;
     }
     mergeSavedLocalLayout(state.layout);
-    state.water = normalizeWaterSettings(state.layout.terrain?.water);
     state.grass = normalizeGrassSettings(state.layout.terrain?.grass);
     state.skyGradient = normalizeSkyGradient(state.layout.skyGradient ?? defaultSkyGradient());
     state.lighting = normalizeLightingSettings((state.layout.lighting as LightingSettings | undefined) ?? loadLightingSettings());
@@ -1674,10 +1363,6 @@ function mergeSavedLocalLayout(layout: LevelLayout) {
       layout.terrain = layout.terrain ?? defaultTerrainSettings();
       layout.terrain.terrainLayers = normalizeTerrainLayerSettings(backup.terrain.terrainLayers as TerrainLayerSettings);
     }
-    if (backup.terrain?.water) {
-      layout.terrain = layout.terrain ?? defaultTerrainSettings();
-      layout.terrain.water = normalizeWaterSettings(backup.terrain.water);
-    }
     if (Array.isArray(backup.terrain?.splines)) {
       layout.terrain = layout.terrain ?? defaultTerrainSettings();
       layout.terrain.splines = backup.terrain.splines;
@@ -1735,7 +1420,7 @@ function requestUrlCandidates(url: string) {
 
 async function loadTerrainTextures() {
   try {
-    const [soilMap, sandMap, roadMap, sandDunesAlbedo, sandDunesAo, sandDunesHeight, sandDunesMetallic, sandDunesNormal, sandDunesRoughness, gravelAlbedo, gravelAo, gravelHeight, gravelMetallic, gravelNormal, gravelRoughness, asphaltStandard, asphaltCrackedNormal, highwayAlbedo, highwayAo, highwayHeight, highwayMetallic, highwayNormal, highwayRoughness] = await Promise.all([
+    const [soilMap, sandMap, roadMap, sandDunesAlbedo, sandDunesAo, sandDunesHeight, sandDunesMetallic, sandDunesNormal, sandDunesRoughness] = await Promise.all([
       loadTexture("soil_standard.png", true),
       loadTexture("sand.png", true),
       loadTexture("asphalt_standard.png", true),
@@ -1745,20 +1430,6 @@ async function loadTerrainTextures() {
       loadTexture("sand-dunes1_metallic.png", false),
       loadTexture("sand-dunes1_normal-dx.png", false),
       loadTexture("sand-dunes1_roughness.png", false),
-      loadTexture("gravel_albedo.png", true),
-      loadTexture("gravel_ao.png", false),
-      loadTexture("gravel_height.png", false),
-      loadTexture("gravel_metallic.png", false),
-      loadTexture("gravel_normal-dx.png", false),
-      loadTexture("gravel_roughness.png", false),
-      loadTexture("asphalt_standard.png", true),
-      loadTexture("asphalt_cracked_normal.png", false),
-      loadTexture("highway-lanes_albedo.png", true),
-      loadTexture("highway-lanes_ao.png", false),
-      loadTexture("highway-lanes_height.png", false),
-      loadTexture("highway-lanes_metallic.png", false),
-      loadTexture("highway-lanes_normal-dx.png", false),
-      loadTexture("highway-lanes_roughness.png", false),
     ]);
     terrainTextureUniforms.soilMap.value = soilMap;
     terrainTextureUniforms.sandMap.value = sandMap;
@@ -1781,34 +1452,8 @@ async function loadTerrainTextures() {
       normal: sandDunesNormal,
       roughness: sandDunesRoughness,
     };
-    roadTextureLibrary.gravel = {
-      albedo: gravelAlbedo,
-      ao: gravelAo,
-      height: gravelHeight,
-      metallic: gravelMetallic,
-      normal: gravelNormal,
-      roughness: gravelRoughness,
-    };
-    roadTextureLibrary.asphalt = {
-      albedo: asphaltStandard,
-      ao: gravelAo,
-      height: gravelHeight,
-      metallic: gravelMetallic,
-      normal: asphaltCrackedNormal,
-      roughness: gravelRoughness,
-    };
-    roadTextureLibrary["highway-lanes"] = {
-      albedo: highwayAlbedo,
-      ao: highwayAo,
-      height: highwayHeight,
-      metallic: highwayMetallic,
-      normal: highwayNormal,
-      roughness: highwayRoughness,
-    };
     applyTerrainShaderSettings();
-    applyRoadShaderSettings();
     applyTextureRepeats();
-    roadMaterial.needsUpdate = true;
   } catch (error) {
     console.warn("Failed to load terrain textures.", error);
   }
@@ -1827,7 +1472,6 @@ function applyTextureRepeats() {
   setTextureRepeat(terrainMaterial.map, terrainLayers.dirt.repeat);
   setTextureRepeat(sandMaterial.map, terrainLayers.sand.repeat);
   setTextureRepeat(roadMaterial.map, state.roadRepeat);
-  setTextureRepeat(shaderBallMaterial.map, state.roadRepeat);
 }
 
 function disposeMaterialTextureMap(material: THREE.MeshStandardMaterial) {
@@ -1859,44 +1503,43 @@ function applyTerrainShaderSettings() {
   currentTerrainLayerSettings = normalizeTerrainLayerSettings(state.layout.terrain?.terrainLayers ?? defaultTerrainSettings().terrainLayers);
 }
 
-function applyRoadShaderSettings() {
-  const roadShader = normalizeRoadShaderSettings(state.layout.terrain?.roadShader ?? null);
-  const bundle = roadTextureLibrary[roadShader.preset] ?? roadTextureLibrary["highway-lanes"] ?? roadTextureLibrary.gravel;
-  if (!bundle) return;
+// Replaces the old hardcoded gravel/asphalt/highway-lanes texture-preset
+// system (which pulled from public/assets/texture/ paths that never existed
+// in this repo, 404ing in production). A road spline now either renders
+// with the plain default roadMaterial (fallbackTexture, no PBR maps — no
+// 404 risk) or a picked Shaderade shader_graph asset from My Assets, same
+// mechanism objects already use via applyObjectShaderMode/
+// compileCustomShader/buildCustomShaderMaterial. All road meshes share one
+// material instance directly (rebuildRoadMeshes does `new THREE.Mesh(geometry,
+// roadMaterial)` — not cloned per-mesh, confirmed), so resolving the current
+// material once per rebuild and handing that single reference to every road
+// mesh is sufficient; no per-mesh material swapping needed.
+let compiledRoadMaterial: THREE.ShaderMaterial | null = null;
+let compiledRoadShaderAssetId: string | null = null;
 
-  roadMaterial.map = bundle.albedo;
-  roadMaterial.aoMap = bundle.ao;
-  roadMaterial.normalMap = bundle.normal;
-  roadMaterial.roughnessMap = bundle.roughness;
-  roadMaterial.bumpMap = bundle.height;
-  roadMaterial.metalnessMap = bundle.metallic;
-  roadMaterial.color.set(0xffffff);
-  roadMaterial.aoMapIntensity = roadShader.aoStrength;
-  roadMaterial.normalScale = new THREE.Vector2(roadShader.normalStrength, roadShader.normalStrength);
-  roadMaterial.bumpScale = roadShader.bumpStrength;
-  roadMaterial.roughness = roadShader.roughness;
-  roadMaterial.metalness = roadShader.metalness;
-  roadMaterial.needsUpdate = true;
-  shaderBallMaterial.copy(roadMaterial);
-  setTextureRepeat(bundle.albedo, 1);
-  setTextureRepeat(bundle.ao, 1);
-  setTextureRepeat(bundle.normal, 1);
-  setTextureRepeat(bundle.roughness, 1);
-  setTextureRepeat(bundle.height, 1);
-  setTextureRepeat(bundle.metallic, 1);
-  setTextureRepeat(shaderBallMaterial.map, 1);
-  shaderBallMaterial.aoMap = roadMaterial.aoMap;
-  shaderBallMaterial.normalMap = roadMaterial.normalMap;
-  shaderBallMaterial.roughnessMap = roadMaterial.roughnessMap;
-  shaderBallMaterial.bumpMap = roadMaterial.bumpMap;
-  shaderBallMaterial.metalnessMap = roadMaterial.metalnessMap;
-  shaderBallMaterial.aoMapIntensity = roadMaterial.aoMapIntensity;
-  shaderBallMaterial.normalScale = roadMaterial.normalScale.clone();
-  shaderBallMaterial.bumpScale = roadMaterial.bumpScale;
-  shaderBallMaterial.roughness = roadMaterial.roughness;
-  shaderBallMaterial.metalness = roadMaterial.metalness;
-  shaderBallMaterial.needsUpdate = true;
-  syncShaderBallPreviewMaterial();
+function resolveRoadMaterial(): THREE.Material {
+  const shaderAssetId = state.layout.terrain?.roadShader?.shaderAssetId ?? null;
+  if (!shaderAssetId) return roadMaterial;
+  if (compiledRoadShaderAssetId === shaderAssetId && compiledRoadMaterial) return compiledRoadMaterial;
+  void ensureRoadShaderCompiled(shaderAssetId);
+  return roadMaterial;
+}
+
+// Orchestrates the async fetch+compile+build for the road's picked shader,
+// mirroring applyCustomShaderAsync's pattern for objects. Re-checks the
+// selection is still current before applying, since this resolves well
+// after the triggering rebuildRoadMeshes() call — and re-triggers a rebuild
+// once the compiled material is ready so the new look actually appears.
+async function ensureRoadShaderCompiled(assetId: string) {
+  if (compiledRoadShaderAssetId === assetId && compiledRoadMaterial) return;
+  const compiled = await compileCustomShader(assetId);
+  if ((state.layout.terrain?.roadShader?.shaderAssetId ?? null) !== assetId) return;
+  if (!compiled) return;
+  const { material } = buildCustomShaderMaterial(compiled);
+  compiledRoadMaterial = material;
+  compiledRoadShaderAssetId = assetId;
+  activeCustomShaderMaterials.add(material);
+  rebuildRoadMeshes();
 }
 
 async function loadTexture(fileName: string, isColor: boolean) {
@@ -1936,15 +1579,11 @@ async function loadTexture(fileName: string, isColor: boolean) {
 
 function rebuildWorld() {
   applyTerrainShaderSettings();
-  applyRoadShaderSettings();
   applyTextureRepeats();
   clearGroup(terrainRoot);
   clearGroup(roadRoot);
-  clearGroup(waterRoot);
   clearGroup(objectRoot);
   terrainMeshes.length = 0;
-  waterMeshes.length = 0;
-  waterSurfaceMesh = null;
   objectMeshes.clear();
   selectableMeshes.length = 0;
 
@@ -1954,8 +1593,6 @@ function rebuildWorld() {
     terrainRoot.add(terrainMesh);
     terrainMeshes.push(terrainMesh);
   }
-  const waterSurface = createWaterSurfaceMesh(chunks);
-  if (waterSurface) waterRoot.add(waterSurface);
   scheduleShoreWetnessRebake();
   rebuildRoadMeshes();
   rebuildGrassInstances();
@@ -1975,17 +1612,12 @@ function rebuildWorld() {
 function rebuildTerrainSurfaces() {
   clearGroup(terrainRoot);
   clearGroup(roadRoot);
-  clearGroup(waterRoot);
   terrainMeshes.length = 0;
-  waterMeshes.length = 0;
-  waterSurfaceMesh = null;
   for (const chunk of terrainChunks()) {
     const terrainMesh = createTerrainMesh(chunk);
     terrainRoot.add(terrainMesh);
     terrainMeshes.push(terrainMesh);
   }
-  const waterSurface = createWaterSurfaceMesh(terrainChunks());
-  if (waterSurface) waterRoot.add(waterSurface);
   scheduleShoreWetnessRebake();
   rebuildRoadMeshes();
   rebuildGrassInstances();
@@ -2070,10 +1702,11 @@ function rebuildRoadMeshes() {
   clearGroup(roadGuideGroup);
   roadPointMarkers.clear();
   const roads = (state.layout.terrain?.splines ?? []).filter((spline) => spline.kind === "road" && spline.points.length >= 2);
+  const currentRoadMaterial = resolveRoadMaterial();
   for (const road of roads) {
     const geometry = buildRoadRibbonGeometry(road);
     if (!geometry) continue;
-    const mesh = new THREE.Mesh(geometry, roadMaterial);
+    const mesh = new THREE.Mesh(geometry, currentRoadMaterial);
     mesh.receiveShadow = true;
     roadRoot.add(mesh);
 
@@ -2473,70 +2106,6 @@ function rebuildGrassInstances() {
   }
 }
 
-function createWaterMesh(chunk: TerrainChunkData) {
-  const resolution = chunk.resolution || 33;
-  const spacing = chunk.spacing || 2;
-  const positions: number[] = [];
-  const colors: number[] = [];
-  const uvs: number[] = [];
-  const indices: number[] = [];
-  const heights = chunk.heights ?? [];
-  const waterMask = chunk.waterMask ?? [];
-  const originX = chunk.origin?.[0] ?? 0;
-  const originZ = chunk.origin?.[1] ?? 0;
-  const waterLevel = state.layout.terrain?.waterLevel ?? -1.35;
-
-  for (let z = 0; z < resolution - 1; z += 1) {
-    for (let x = 0; x < resolution - 1; x += 1) {
-      const index = z * resolution + x;
-      const left = originX + x * spacing;
-      const near = originZ + z * spacing;
-      const start = positions.length / 3;
-      const h0 = heights[index] ?? waterLevel;
-      const h1 = heights[index + 1] ?? h0;
-      const h2 = heights[index + resolution] ?? h0;
-      const h3 = heights[index + resolution + 1] ?? h0;
-      const submerged0 = Math.max(0, waterLevel - h0);
-      const submerged1 = Math.max(0, waterLevel - h1);
-      const submerged2 = Math.max(0, waterLevel - h2);
-      const submerged3 = Math.max(0, waterLevel - h3);
-      const mask0 = clamp((waterMask[index] ? 1 : 0) * 0.88 + submerged0 / 4.5, 0, 1);
-      const mask1 = clamp((waterMask[index + 1] ? 1 : 0) * 0.88 + submerged1 / 4.5, 0, 1);
-      const mask2 = clamp((waterMask[index + resolution] ? 1 : 0) * 0.88 + submerged2 / 4.5, 0, 1);
-      const mask3 = clamp((waterMask[index + resolution + 1] ? 1 : 0) * 0.88 + submerged3 / 4.5, 0, 1);
-
-      positions.push(
-        left, waterLevel + 0.14, near,
-        left + spacing, waterLevel + 0.14, near,
-        left, waterLevel + 0.14, near + spacing,
-        left + spacing, waterLevel + 0.14, near + spacing
-      );
-      colors.push(
-        1, 1, 1, mask0,
-        1, 1, 1, mask1,
-        1, 1, 1, mask2,
-        1, 1, 1, mask3
-      );
-      uvs.push(0, 0, 1, 0, 0, 1, 1, 1);
-      indices.push(start, start + 2, start + 1, start + 1, start + 2, start + 3);
-    }
-  }
-
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 4));
-  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
-  geometry.setIndex(indices);
-  geometry.computeVertexNormals();
-  geometry.userData.basePositions = new Float32Array(positions);
-
-  const mesh = new THREE.Mesh(geometry, waterMaterial);
-  mesh.renderOrder = 200;
-  mesh.frustumCulled = false;
-  mesh.userData = { kind: "water", chunkId: chunk.id };
-  return mesh;
-}
-
 // Neutral 1x1 stand-in for u_shoreWetness before any bake exists (or for a
 // water object with no nearby terrain) — same "always give a sampler a
 // real texture" discipline as buildCustomShaderMaterial's fallback,
@@ -2551,9 +2120,12 @@ const shoreWetnessFallbackTexture = createSolidTexture([255, 255, 255, 255]);
 // "vec3 outgoingLight = albedo;") are unique, verified lines in Water.js's
 // fragment shader; worldPosition is already a fragment-stage varying in
 // that shader, so no vertex-shader change is needed. Initial uniform
-// values are read from the live shoreWetnessBake/state.water at whatever
-// moment WebGL actually lazily compiles this material (its own closure,
-// not a snapshot) — subsequent changes are pushed by syncShoreFoamUniforms.
+// values are read from the live shoreWetnessBake at whatever moment WebGL
+// actually lazily compiles this material (its own closure, not a snapshot)
+// — subsequent changes are pushed by syncShoreFoamUniforms. Foam
+// intensity/threshold/contrast are fixed constants (SHORE_FOAM_*, see top of
+// file) — previously tunable via the removed terrain-wide Water Shader
+// panel, now fixed at their old default values.
 function attachShoreFoamShader(mesh: ThreeWater) {
   const material = mesh.material as THREE.ShaderMaterial;
   material.onBeforeCompile = (shader) => {
@@ -2562,9 +2134,9 @@ function attachShoreFoamShader(mesh: ThreeWater) {
     shader.uniforms.u_shoreOrigin = { value: new THREE.Vector2(bake ? bake.origin[0] : 0, bake ? bake.origin[1] : 0) };
     shader.uniforms.u_shoreWorldSize = { value: new THREE.Vector2(bake ? bake.worldSize[0] : 1, bake ? bake.worldSize[1] : 1) };
     shader.uniforms.u_hasShoreData = { value: bake ? 1 : 0 };
-    shader.uniforms.u_foamIntensity = { value: state.water.foamIntensity };
-    shader.uniforms.u_foamThreshold = { value: state.water.foamThreshold };
-    shader.uniforms.u_foamContrast = { value: state.water.foamContrast };
+    shader.uniforms.u_foamIntensity = { value: SHORE_FOAM_INTENSITY };
+    shader.uniforms.u_foamThreshold = { value: SHORE_FOAM_THRESHOLD };
+    shader.uniforms.u_foamContrast = { value: SHORE_FOAM_CONTRAST };
 
     shader.fragmentShader = shader.fragmentShader
       .replace(
@@ -2590,16 +2162,15 @@ function attachShoreFoamShader(mesh: ThreeWater) {
   };
 }
 
-// Pushes the current shore-wetness bake + foam slider settings into an
-// already-compiled water material's uniforms (onBeforeCompile only runs
-// once per material, at first render — this is the ongoing per-frame
-// update path, called from configureWaterSurface and
-// updateActiveWaterMeshes, the same two places that already sync this
-// mesh's other live uniforms). No-ops for a material that hasn't compiled
-// yet (uniforms not injected) or that got swapped to Toon/Custom/Outline
-// (not a Water shader at all) — same guard style as updateActiveWaterMeshes
-// already uses for time/sunDirection/eye.
-function syncShoreFoamUniforms(mesh: ThreeWater, settings: WaterSurfaceSettings) {
+// Pushes the current shore-wetness bake into an already-compiled water
+// material's uniforms (onBeforeCompile only runs once per material, at
+// first render — this is the ongoing per-frame update path, called from
+// updateActiveWaterMeshes). No-ops for a material that hasn't compiled yet
+// (uniforms not injected) or that got swapped to Toon/Custom/Outline (not a
+// Water shader at all) — same guard style as updateActiveWaterMeshes
+// already uses for time/sunDirection/eye. Foam intensity/threshold/contrast
+// are fixed constants (see attachShoreFoamShader).
+function syncShoreFoamUniforms(mesh: ThreeWater) {
   const uniforms = (mesh.material as THREE.ShaderMaterial).uniforms;
   if (!uniforms.u_shoreWetness) return;
   if (shoreWetnessBake) {
@@ -2610,9 +2181,9 @@ function syncShoreFoamUniforms(mesh: ThreeWater, settings: WaterSurfaceSettings)
   } else {
     uniforms.u_hasShoreData.value = 0;
   }
-  uniforms.u_foamIntensity.value = settings.foamIntensity;
-  uniforms.u_foamThreshold.value = settings.foamThreshold;
-  uniforms.u_foamContrast.value = settings.foamContrast;
+  uniforms.u_foamIntensity.value = SHORE_FOAM_INTENSITY;
+  uniforms.u_foamThreshold.value = SHORE_FOAM_THRESHOLD;
+  uniforms.u_foamContrast.value = SHORE_FOAM_CONTRAST;
 }
 
 // Rebuilds the shared shore-wetness texture from the current terrain
@@ -2641,55 +2212,6 @@ function scheduleShoreWetnessRebake() {
     shoreWetnessRebakeTimer = null;
     rebakeShoreWetness();
   }, 200);
-}
-
-function createWaterSurfaceMesh(chunks: TerrainChunkData[]) {
-  const hasVisibleWater = chunks.some((chunk) => (chunk.waterMask ?? []).some((value) => value > 0));
-  if (!hasVisibleWater) return null;
-  const terrain = state.layout.terrain ?? defaultTerrainSettings();
-  const waterLevel = terrain.waterLevel ?? -1.35;
-  const extentChunks = Math.max(1, terrain.extentChunks || 4);
-  const chunkSize = state.layout.chunkSize || 64;
-  const span = extentChunks * chunkSize;
-  const bounds = chunks.length > 0
-    ? {
-        minX: Math.min(...chunks.map((chunk) => chunk.origin?.[0] ?? 0)),
-        maxX: Math.max(...chunks.map((chunk) => (chunk.origin?.[0] ?? 0) + (chunk.resolution ?? 33) * (chunk.spacing ?? 2))),
-        minZ: Math.min(...chunks.map((chunk) => chunk.origin?.[1] ?? 0)),
-        maxZ: Math.max(...chunks.map((chunk) => (chunk.origin?.[1] ?? 0) + (chunk.resolution ?? 33) * (chunk.spacing ?? 2))),
-      }
-    : {
-        minX: -span * 0.5,
-        maxX: span * 0.5,
-        minZ: -span * 0.5,
-        maxZ: span * 0.5,
-      };
-  const width = Math.max(64, bounds.maxX - bounds.minX);
-  const depth = Math.max(64, bounds.maxZ - bounds.minZ);
-  const geometry = new THREE.PlaneGeometry(width, depth, 128, 128);
-  configureWaterMaterial(waterSurfaceMaterial, terrain.water ?? defaultWaterSettings());
-  configureWaterMaterial(waterPreviewMaterial, terrain.water ?? defaultWaterSettings());
-  const mesh = new ThreeWater(geometry, {
-    textureWidth: 1024,
-    textureHeight: 1024,
-    waterNormals: waterNormalMap,
-    alpha: clamp((terrain.water ?? defaultWaterSettings()).opacity, 0.35, 1.0),
-    sunDirection: sunLight.position.clone().normalize(),
-    sunColor: 0xffffff,
-    waterColor: 0x2f82ad,
-    distortionScale: 3.7,
-    fog: false,
-    side: THREE.DoubleSide,
-  });
-  attachShoreFoamShader(mesh);
-  mesh.rotation.x = -Math.PI / 2;
-  mesh.position.set((bounds.minX + bounds.maxX) * 0.5, waterLevel + 0.08, (bounds.minZ + bounds.maxZ) * 0.5);
-  mesh.renderOrder = 50;
-  mesh.frustumCulled = false;
-  mesh.userData = { kind: "water-surface" };
-  configureWaterSurface(mesh, terrain.water ?? defaultWaterSettings());
-  waterSurfaceMesh = mesh;
-  return mesh;
 }
 
 function waterPresenceAt(chunks: TerrainChunkData[], x: number, z: number, waterLevel: number) {
@@ -3772,10 +3294,9 @@ function spawnLightObject(object: PlacedObjectData) {
 // immediately; picking a saved Shaderade graph via the Material panel's
 // existing "Custom (Shaderade)" picker (unchanged — it already renders for
 // any non-light object) swaps in an animated shader on top of this.
-// Default look for a placed "Body of Water" — reuses the exact same
-// THREE.Water class + normals texture (waterNormalMap) the terrain-wide
-// ocean already uses (createWaterSurfaceMesh, above), instead of a flat
-// static material. THREE.Water's reflection is its own render-to-texture
+// Default look for a placed "Body of Water" — uses THREE.Water directly
+// with a normals texture (waterNormalMap), instead of a flat static
+// material. THREE.Water's reflection is its own render-to-texture
 // mirror-camera technique, not standard PBR envMap reflection — it looks
 // right without needing any environment map in the scene (there isn't
 // one anywhere in World Builder today). Picking a saved Shaderade graph
@@ -3803,9 +3324,8 @@ function spawnWaterObject(object: PlacedObjectData) {
   attachShoreFoamShader(mesh);
   // THREE.Water samples its normal map by world-space XZ position * the
   // "size" uniform (not mesh UVs, confirmed from the addon's own source)
-  // — not a constructor option, only settable post-construction (same
-  // pattern configureWaterSurface already uses for the terrain-wide
-  // ocean). Left at its default 1.0 this plane's compact 10x10 footprint
+  // — not a constructor option, only settable post-construction. Left at
+  // its default 1.0 this plane's compact 10x10 footprint
   // would repeat the texture roughly once per world unit (~10 tiles
   // across the whole plane); this smaller value makes the ripple pattern
   // read as a natural water scale instead of visibly tiled — a starting
@@ -3954,7 +3474,6 @@ function applySkyAndWater() {
   const sunForward = Math.cos(sunAngle);
   const sunDirection = rotateDirectionY(0.18, sunHeight, sunForward, skyRotation);
   const moonDirection = rotateDirectionY(-0.28, -sunHeight, -sunForward, skyRotation);
-  const waterSettings = state.water;
 
   skyMaterial.uniforms.sunSideColor.value.setRGB(...palette.sunSideColor);
   skyMaterial.uniforms.oppositeSideColor.value.setRGB(...palette.oppositeSideColor);
@@ -3987,7 +3506,6 @@ function applySkyAndWater() {
   horizonGlow.position.set(80 * Math.cos(skyRotation + state.timeOfDay / 24 * Math.PI * 2), 8, 80 * Math.sin(skyRotation + state.timeOfDay / 24 * Math.PI * 2));
   ambientLight.intensity = state.lighting.ambientIntensity * (1.7 * (0.035 + daylight * 0.965) + daylight * 0.42 + twilight * 0.12);
   scene.fog!.color.setRGB(palette.midColor[0] * 0.5, palette.midColor[1] * 0.55, palette.midColor[2] * 0.6);
-  configureWaterSurface(waterSurfaceMesh, waterSettings);
 
   const waterLevel = state.layout.terrain?.waterLevel ?? -1.35;
   const underwater = camera.position.y < waterLevel - 0.08;
@@ -4002,13 +3520,10 @@ function applySkyAndWater() {
       clamp(shallowColor[1] * 0.38 + 0.1, 0, 1),
       clamp(shallowColor[2] * 0.48 + 0.18, 0, 1)
     );
-    fog.density = waterSettings.underwaterFogDensity;
+    fog.density = UNDERWATER_FOG_DENSITY;
   } else {
     fog.color.setRGB(palette.midColor[0] * 0.5, palette.midColor[1] * 0.55, palette.midColor[2] * 0.6);
     fog.density = 0.0011;
-  }
-  if (!ui.waterShaderModal.classList.contains("is-hidden")) {
-    syncWaterShaderPreviewMaterial();
   }
 }
 
@@ -4615,7 +4130,6 @@ function undoLastChange() {
   try {
     const layout = JSON.parse(snapshot) as LevelLayout;
     state.layout = layout;
-    state.water = normalizeWaterSettings(layout.terrain?.water);
     state.grass = normalizeGrassSettings(layout.terrain?.grass);
     state.skyGradient = normalizeSkyGradient(layout.skyGradient ?? defaultSkyGradient());
     state.selectedObjectId = null;
@@ -4737,7 +4251,6 @@ async function handleSaveButtonClick() {
 
 function serializeLayout(): LevelLayout {
   const terrain = state.layout.terrain ?? defaultTerrainSettings();
-  terrain.water = normalizeWaterSettings(terrain.water);
   terrain.grass = normalizeGrassSettings(terrain.grass);
   terrain.roadShader = normalizeRoadShaderSettings(terrain.roadShader ?? defaultTerrainSettings().roadShader);
   const layout: LevelLayout = {
@@ -4892,7 +4405,6 @@ async function exportLayoutAsZip() {
 function syncUiFromState() {
   manifestInput.value = state.manifestUrl;
   catalogInput.value = state.assetCatalogUrl;
-  state.water = normalizeWaterSettings(state.layout.terrain?.water);
   state.grass = normalizeGrassSettings(state.layout.terrain?.grass);
   state.skyGradient = normalizeSkyGradient(state.layout.skyGradient ?? defaultSkyGradient());
   state.lighting = normalizeLightingSettings((state.layout.lighting as LightingSettings | undefined) ?? state.lighting);
@@ -4901,18 +4413,8 @@ function syncUiFromState() {
   state.sandRepeat = terrainLayers.sand.repeat;
   const roadShader = normalizeRoadShaderSettings(state.layout.terrain?.roadShader ?? defaultTerrainSettings().roadShader);
   state.roadRepeat = roadShader.repeat;
-  waterControls.opacity.value = String(state.water.opacity);
-  waterControls.reflectivity.value = String(state.water.reflectivity);
-  waterControls.foamThreshold.value = String(state.water.foamThreshold);
-  waterControls.foamContrast.value = String(state.water.foamContrast);
-  waterControls.level.value = String(state.layout.terrain?.waterLevel ?? -1.35);
-  waterControls.waveAmplitude.value = String(state.water.waveAmplitude);
-  waterControls.waveFrequency.value = String(state.water.waveFrequency);
-  waterControls.waveSpeed.value = String(state.water.waveSpeed);
-  waterControls.windSpeed.value = String(state.water.windSpeed);
-  waterControls.choppiness.value = String(state.water.choppiness);
-  waterControls.underwaterFogDensity.value = String(state.water.underwaterFogDensity);
-  waterControls.foamIntensity.value = String(state.water.foamIntensity);
+  syncRoadShaderAssetOptions();
+  waterLevelInput.value = String(state.layout.terrain?.waterLevel ?? -1.35);
   grassControls.density.value = String(state.grass.densityMultiplier);
   grassControls.height.value = String(state.grass.bladeHeight);
   grassControls.windSpeed.value = String(state.grass.windSpeed);
@@ -4940,7 +4442,7 @@ function syncUiFromState() {
   updateSceneOutliner();
   updateInspector();
   syncTerrainShaderUi();
-  syncRoadShaderUi();
+  syncRoadShaderAssetOptions();
 }
 
 function createNewWorld() {
@@ -4958,7 +4460,6 @@ function createNewWorld() {
   levelPicker.value = "";
   state.layout = emptyLayout(slug, districtFromManifest(manifestUrl));
   state.layout.terrainChunks = createFlatTerrainChunks(state.layout.terrain ?? blankTerrainSettings(), state.layout.district || "district_00");
-  state.water = normalizeWaterSettings(state.layout.terrain?.water);
   state.grass = normalizeGrassSettings(state.layout.terrain?.grass);
   state.skyGradient = normalizeSkyGradient(state.layout.skyGradient ?? defaultSkyGradient());
   state.activeRoadSplineId = null;
@@ -5004,7 +4505,7 @@ function updateDiagnostics() {
   const objectCount = state.layout.objects?.length ?? 0;
   const assetCount = state.assetCatalog?.length ?? 0;
   const terrainMeshCount = terrainMeshes.length;
-  const waterMeshCount = waterMeshes.length;
+  const waterMeshCount = activeWaterMeshes.size;
   const diagnosticsText = `manifest=${state.manifestUrl} chunks=${worldLoadReport.manifestChunks} terrain=${terrainCount} objects=${objectCount} assets=${assetCount} meshes=${terrainMeshCount} water=${waterMeshCount} failed=${worldLoadReport.failedTerrainChunks}`;
   diagnosticsEl.textContent = diagnosticsText;
   diagnosticsEl.title = diagnosticsText;
@@ -5039,18 +4540,7 @@ function bindUi() {
     void loadWorldFromInputs();
   });
 
-  waterControls.opacity.addEventListener("input", () => updateWaterControls());
-  waterControls.reflectivity.addEventListener("input", () => updateWaterControls());
-  waterControls.foamThreshold.addEventListener("input", () => updateWaterControls());
-  waterControls.foamContrast.addEventListener("input", () => updateWaterControls());
-  waterControls.level.addEventListener("change", () => updateWaterControls(true));
-  waterControls.waveAmplitude.addEventListener("input", () => updateWaterControls());
-  waterControls.waveFrequency.addEventListener("input", () => updateWaterControls());
-  waterControls.waveSpeed.addEventListener("input", () => updateWaterControls());
-  waterControls.windSpeed.addEventListener("input", () => updateWaterControls());
-  waterControls.choppiness.addEventListener("input", () => updateWaterControls());
-  waterControls.underwaterFogDensity.addEventListener("input", () => updateWaterControls());
-  waterControls.foamIntensity.addEventListener("input", () => updateWaterControls());
+  waterLevelInput.addEventListener("change", () => updateWaterLevel());
 
   grassControls.paint.addEventListener("click", () => {
     setTerrainMode("sculpt");
@@ -5135,63 +4625,7 @@ function bindUi() {
   timeControls.moonIntensity.addEventListener("input", () => updateLightingControls());
   timeControls.horizonGlow.addEventListener("input", () => updateLightingControls());
   timeControls.ambientIntensity.addEventListener("input", () => updateLightingControls());
-  ui.roadShaderOpen.addEventListener("click", () => openRoadShaderEditor());
-  ui.roadShaderClose.addEventListener("click", () => closeRoadShaderEditor());
-  ui.roadShaderReset.addEventListener("click", () => {
-    if (!state.layout.terrain) ensureTerrainSettings();
-    if (state.layout.terrain) {
-      const defaultRoadShader = normalizeRoadShaderSettings(defaultTerrainSettings().roadShader);
-      state.layout.terrain.roadShader = defaultRoadShader;
-      state.roadRepeat = defaultRoadShader.repeat;
-      syncRoadShaderUi();
-      saveLocalLayout();
-    }
-  });
-  ui.roadShaderModal.addEventListener("click", (event) => {
-    if (event.target === ui.roadShaderModal) closeRoadShaderEditor();
-  });
-  ui.waterShaderOpen.addEventListener("click", () => {
-    if (ui.waterShaderModal.classList.contains("is-hidden")) {
-      openWaterShaderEditor();
-    } else {
-      closeWaterShaderEditor();
-    }
-  });
-  ui.waterShaderClose.addEventListener("click", () => closeWaterShaderEditor());
-  ui.waterShaderReset.addEventListener("click", () => {
-    const defaults = normalizeWaterSettings(defaultWaterSettings());
-    state.water = defaults;
-    if (state.layout.terrain) {
-      state.layout.terrain.water = { ...defaults };
-      state.layout.terrain.waterLevel = state.layout.terrain.waterLevel ?? -1.35;
-    }
-    syncWaterShaderPreviewMaterial();
-    renderWaterShaderStack();
-    applySkyAndWater();
-    saveLocalLayout();
-  });
-  ui.shaderBallOpen.addEventListener("click", () => openShaderBallViewer());
-  ui.shaderBallClose.addEventListener("click", () => closeShaderBallViewer());
-  ui.shaderBallModal.addEventListener("click", (event) => {
-    if (event.target === ui.shaderBallModal) closeShaderBallViewer();
-  });
-  [ui.roadShaderPreset, ui.roadShaderRepeat, ui.roadShaderAO, ui.roadShaderNormal, ui.roadShaderBump, ui.roadShaderRoughness, ui.roadShaderMetalness].forEach((input) => {
-    input.addEventListener("input", () => updateRoadShaderFromInputs());
-  });
-  [
-    waterControls.opacity,
-    waterControls.reflectivity,
-    waterControls.foamThreshold,
-    waterControls.foamContrast,
-    waterControls.level,
-    waterControls.waveAmplitude,
-    waterControls.waveFrequency,
-    waterControls.waveSpeed,
-    waterControls.windSpeed,
-    waterControls.choppiness,
-    waterControls.underwaterFogDensity,
-    waterControls.foamIntensity,
-  ].forEach((input) => input.addEventListener("input", () => updateWaterControls(false)));
+  ui.roadShaderAsset.addEventListener("change", () => updateRoadShaderSelection());
   ui.skyClose.addEventListener("click", () => closeSkyEditor());
   ui.skyReset.addEventListener("click", () => {
     saveSkyGradient(defaultSkyGradient());
@@ -5378,7 +4812,6 @@ function updateTextureRepeatControls() {
       ...normalizeRoadShaderSettings(state.layout.terrain.roadShader ?? defaultTerrainSettings().roadShader),
       repeat: state.roadRepeat,
     };
-    applyRoadShaderSettings();
   }
 }
 
@@ -5387,7 +4820,6 @@ function ensureTerrainSettings() {
   state.layout.terrain = {
     ...fallback,
     ...(state.layout.terrain ?? {}),
-    water: normalizeWaterSettings(state.layout.terrain?.water),
     splines: state.layout.terrain?.splines ?? [],
     shoreline: state.layout.terrain?.shoreline ?? fallback.shoreline,
     terrainLayers: normalizeTerrainLayerSettings(state.layout.terrain?.terrainLayers ?? fallback.terrainLayers),
@@ -5465,7 +4897,6 @@ function regenerateTerrainFromSettings(recordHistory = true) {
   const terrain = ensureTerrainSettings();
   terrain.revision += 1;
   state.layout.terrainChunks = generateTerrainChunks(terrain, state.layout.district || "district_00");
-  state.water = normalizeWaterSettings(terrain.water);
   state.grass = normalizeGrassSettings(terrain.grass);
   rebuildWorld();
   syncUiFromState();
@@ -5596,148 +5027,6 @@ function renderSkyEditor() {
   applySkyAndWater();
 }
 
-function openRoadShaderEditor() {
-  syncRoadShaderUi();
-  ui.roadShaderModal.classList.remove("is-hidden");
-}
-
-function closeRoadShaderEditor() {
-  ui.roadShaderModal.classList.add("is-hidden");
-}
-
-function openWaterShaderEditor() {
-  initWaterShaderViewer();
-  syncWaterShaderPreviewMaterial();
-  renderWaterShaderStack();
-  ui.waterShaderModal.classList.remove("is-hidden");
-  resizeWaterShaderViewer();
-  ui.waterShaderOpen.textContent = "Hide Water Shader";
-}
-
-function closeWaterShaderEditor() {
-  ui.waterShaderModal.classList.add("is-hidden");
-  ui.waterShaderOpen.textContent = "Water Shader";
-}
-
-function openShaderBallViewer() {
-  initShaderBallViewer();
-  syncShaderBallPreviewMaterial();
-  ui.shaderBallModal.classList.remove("is-hidden");
-  resizeShaderBallViewer();
-}
-
-function closeShaderBallViewer() {
-  ui.shaderBallModal.classList.add("is-hidden");
-}
-
-function renderWaterShaderStack() {
-  if (!ui.waterShaderStack) return;
-  const w = normalizeWaterSettings(state.water);
-  ui.waterShaderStack.innerHTML = `
-    <div class="shader-node"><strong>Surface</strong><span>Visible water material</span></div>
-    <div class="shader-node"><strong>Opacity</strong><span>${w.opacity.toFixed(2)} affects surface blend</span></div>
-    <div class="shader-node"><strong>Reflection</strong><span>${w.reflectivity.toFixed(2)} sky response</span></div>
-    <div class="shader-node"><strong>Motion</strong><span>Amplitude ${w.waveAmplitude.toFixed(2)} | frequency ${w.waveFrequency.toFixed(2)} | speed ${w.waveSpeed.toFixed(2)}</span></div>
-    <div class="shader-node"><strong>Wind / Chop</strong><span>Wind ${w.windSpeed.toFixed(2)} | choppiness ${w.choppiness.toFixed(2)}</span></div>
-    <div class="shader-node"><strong>Foam</strong><span>Intensity ${w.foamIntensity.toFixed(2)} | threshold ${w.foamThreshold.toFixed(2)} | contrast ${w.foamContrast.toFixed(2)}</span></div>
-    <div class="shader-node"><strong>Underwater</strong><span>Fog density ${w.underwaterFogDensity.toFixed(3)}</span></div>
-  `;
-}
-
-function initWaterShaderViewer() {
-  if (waterShaderRenderer && waterShaderScene && waterShaderCamera && waterShaderMesh) return;
-  const canvas = ui.waterShaderPreview;
-  waterShaderRenderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: true });
-  waterShaderRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  waterShaderRenderer.setClearColor(0x07111e, 1);
-  waterShaderScene = new THREE.Scene();
-  waterShaderCamera = new THREE.PerspectiveCamera(35, 900 / 360, 0.1, 100);
-  waterShaderCamera.position.set(0, 4.8, 5.8);
-  waterShaderCamera.lookAt(0, 0, 0);
-  const ambient = new THREE.HemisphereLight(0xb7dbff, 0x1d2d3d, 1.3);
-  const key = new THREE.DirectionalLight(0xffffff, 1.8);
-  key.position.set(-2.8, 4.2, 3.4);
-  const rim = new THREE.DirectionalLight(0x6bb3ff, 0.7);
-  rim.position.set(3.2, 2.2, -2.8);
-  const sky = new THREE.Mesh(
-    new THREE.SphereGeometry(30, 32, 24),
-    new THREE.MeshBasicMaterial({ color: 0x0e2036, side: THREE.BackSide })
-  );
-  const plane = new THREE.Mesh(new THREE.PlaneGeometry(6.2, 6.2, 96, 96), waterPreviewMaterial);
-  plane.rotation.x = -Math.PI / 2;
-  plane.position.y = 0;
-  waterShaderScene.add(ambient, key, rim, sky, plane);
-  waterShaderMesh = plane;
-  resizeWaterShaderViewer();
-}
-
-function resizeWaterShaderViewer() {
-  if (!waterShaderRenderer || !waterShaderCamera) return;
-  const canvas = ui.waterShaderPreview;
-  const width = Math.max(1, canvas.clientWidth || canvas.width || 900);
-  const height = Math.max(1, canvas.clientHeight || canvas.height || 360);
-  waterShaderRenderer.setSize(width, height, false);
-  waterShaderCamera.aspect = width / height;
-  waterShaderCamera.updateProjectionMatrix();
-}
-
-function syncWaterShaderPreviewMaterial() {
-  const waterSettings = normalizeWaterSettings(state.water);
-  configureWaterMaterial(waterPreviewMaterial, waterSettings);
-}
-
-function updateWaterShaderFromInputs() {
-  const terrain = ensureTerrainSettings();
-  const next = normalizeWaterSettings(state.water);
-  const stack = ui.waterShaderStack;
-  const read = (suffix: string) => stack?.querySelector<HTMLInputElement>(`#water-shader-${suffix}`)?.value;
-  next.opacity = Math.max(0.4, Number(read("opacity")) || next.opacity);
-  next.reflectivity = Math.max(0, Number(read("reflectivity")) || next.reflectivity);
-  next.waveAmplitude = Math.max(0, Number(read("amplitude")) || next.waveAmplitude);
-  next.waveFrequency = Math.max(0.01, Number(read("frequency")) || next.waveFrequency);
-  next.waveSpeed = Math.max(0, Number(read("speed")) || next.waveSpeed);
-  next.windSpeed = Math.max(0, Number(read("wind")) || next.windSpeed);
-  next.choppiness = Math.max(0, Number(read("chop")) || next.choppiness);
-  next.foamIntensity = Math.max(0, Number(read("foam")) || next.foamIntensity);
-  next.foamThreshold = clamp(Number(read("foam-threshold")) || next.foamThreshold, 0, 1);
-  next.foamContrast = Math.max(0.4, Number(read("foam-contrast")) || next.foamContrast);
-  next.underwaterFogDensity = Math.max(0, Number(read("fog")) || next.underwaterFogDensity);
-  state.water = next;
-  terrain.water = { ...next };
-  state.layout.terrain = terrain;
-  state.layout.skyGradient = state.skyGradient;
-  saveLocalLayout();
-  syncWaterShaderPreviewMaterial();
-  applySkyAndWater();
-  if (!ui.waterShaderModal.classList.contains("is-hidden")) {
-    renderWaterShaderStack();
-    resizeWaterShaderViewer();
-  }
-}
-
-function renderWaterShaderViewer(timeSeconds: number) {
-  if (!waterShaderRenderer || !waterShaderScene || !waterShaderCamera || !waterShaderMesh) return;
-  if (ui.waterShaderModal.classList.contains("is-hidden")) return;
-  syncWaterShaderPreviewMaterial();
-  updateWaterSurfaceGeometry(waterShaderMesh, timeSeconds, normalizeWaterSettings(state.water), state.layout.terrain?.waterLevel ?? -1.35);
-  waterShaderCamera.lookAt(0, 0, 0);
-  waterShaderRenderer.render(waterShaderScene, waterShaderCamera);
-}
-
-function syncRoadShaderUi() {
-  const roadShader = normalizeRoadShaderSettings(state.layout.terrain?.roadShader ?? defaultTerrainSettings().roadShader);
-  if (ui.roadShaderPreset) ui.roadShaderPreset.value = roadShader.preset;
-  if (ui.roadShaderRepeat) ui.roadShaderRepeat.value = String(roadShader.repeat);
-  if (ui.roadShaderAO) ui.roadShaderAO.value = String(roadShader.aoStrength);
-  if (ui.roadShaderNormal) ui.roadShaderNormal.value = String(roadShader.normalStrength);
-  if (ui.roadShaderBump) ui.roadShaderBump.value = String(roadShader.bumpStrength);
-  if (ui.roadShaderRoughness) ui.roadShaderRoughness.value = String(roadShader.roughness);
-  if (ui.roadShaderMetalness) ui.roadShaderMetalness.value = String(roadShader.metalness);
-  drawRoadShaderPreview();
-  renderRoadShaderStack();
-  applyRoadShaderSettings();
-}
-
 function syncTerrainShaderUi() {
   const terrainLayers = normalizeTerrainLayerSettings(state.layout.terrain?.terrainLayers ?? defaultTerrainSettings().terrainLayers);
   if (ui.terrainDirtAO) ui.terrainDirtAO.value = String(terrainLayers.dirt.aoStrength);
@@ -5753,79 +5042,29 @@ function syncTerrainShaderUi() {
   applyTerrainShaderSettings();
 }
 
-function renderRoadShaderStack() {
-  const roadShader = normalizeRoadShaderSettings(state.layout.terrain?.roadShader ?? defaultTerrainSettings().roadShader);
-  const bundle = roadTextureLibrary[roadShader.preset] ?? roadTextureLibrary.gravel;
-  if (!ui.roadShaderStack) return;
-  ui.roadShaderStack.innerHTML = `
-    <div class="shader-node"><strong>Base Color</strong><span>${bundle ? nodeTextureName(bundle.albedo) : "loading"}</span></div>
-    <div class="shader-node"><strong>Ambient Occlusion</strong><span>${bundle ? nodeTextureName(bundle.ao) : "loading"}</span></div>
-    <div class="shader-node"><strong>Normal</strong><span>${bundle ? nodeTextureName(bundle.normal) : "loading"}</span></div>
-    <div class="shader-node"><strong>Bump</strong><span>${bundle ? nodeTextureName(bundle.height) : "loading"}</span></div>
-    <div class="shader-node"><strong>Roughness</strong><span>${bundle ? nodeTextureName(bundle.roughness) : "loading"}</span></div>
-    <div class="shader-node"><strong>Metalness</strong><span>${bundle ? nodeTextureName(bundle.metallic) : "loading"}</span></div>
-  `;
+// Rebuilds the #road-shader-asset <select>'s options from state.shaderCatalog
+// — same list/convention as the object Inspector's "Custom (Shaderade)"
+// dropdown (line ~3795). Called once catalog data exists (loadWorldFromInputs'
+// loadAssetCatalog callback) and after every terrain load/undo, since a
+// stale option list would silently drop the saved selection back to
+// "Default" the moment the user opened the dropdown.
+function syncRoadShaderAssetOptions() {
+  const currentId = state.layout.terrain?.roadShader?.shaderAssetId ?? "";
+  ui.roadShaderAsset.innerHTML = `<option value="">Default (no shader)</option>${state.shaderCatalog
+    .map((row) => `<option value="${row.id}" ${row.id === currentId ? "selected" : ""}>${row.name}</option>`)
+    .join("")}`;
 }
 
-function nodeTextureName(texture: THREE.Texture) {
-  const image = texture.image as HTMLImageElement | HTMLCanvasElement | undefined;
-  const src = image && "src" in image ? image.src : "";
-  const name = src.split("/").at(-1) ?? "";
-  return name || "texture";
-}
-
-function drawRoadShaderPreview() {
-  const canvas = ui.roadShaderPreview;
-  const context = canvas?.getContext("2d");
-  if (!canvas || !context) return;
-  const roadShader = normalizeRoadShaderSettings(state.layout.terrain?.roadShader ?? defaultTerrainSettings().roadShader);
-  const bundle = roadTextureLibrary[roadShader.preset] ?? roadTextureLibrary.gravel;
-  context.clearRect(0, 0, canvas.width, canvas.height);
-  context.fillStyle = "#0b1220";
-  context.fillRect(0, 0, canvas.width, canvas.height);
-  context.fillStyle = "#dbe6f4";
-  context.font = "bold 18px Arial";
-  context.fillText(`${roadShader.preset.toUpperCase()} ROAD`, 16, 28);
-  context.font = "12px Arial";
-  context.fillText(`repeat ${roadShader.repeat.toFixed(2)} | AO ${roadShader.aoStrength.toFixed(2)} | normal ${roadShader.normalStrength.toFixed(2)}`, 16, 48);
-
-  if (bundle) {
-    const image = bundle.albedo.image as HTMLImageElement | HTMLCanvasElement | undefined;
-    if (image) {
-      const tileSize = 72 / Math.max(0.1, roadShader.repeat);
-      for (let y = 64; y < canvas.height; y += tileSize) {
-        for (let x = 0; x < canvas.width; x += tileSize) {
-          context.drawImage(image, x, y, tileSize, tileSize);
-        }
-      }
-    }
-  }
-
-  const gradient = context.createLinearGradient(0, 0, 0, canvas.height);
-  gradient.addColorStop(0, "rgba(12,18,30,0.18)");
-  gradient.addColorStop(1, "rgba(8,10,16,0.68)");
-  context.fillStyle = gradient;
-  context.fillRect(0, 0, canvas.width, canvas.height);
-}
-
-function updateRoadShaderFromInputs() {
+// Sets the road's picked Shaderade shader (or null for the plain default
+// material) and rebuilds — replaces the old preset-picker's
+// updateRoadShaderFromInputs, called from the inline #road-shader-asset
+// <select> in the terrain panel (see buildUi's HTML template).
+function updateRoadShaderSelection() {
   const terrain = ensureTerrainSettings();
   const current = normalizeRoadShaderSettings(terrain.roadShader ?? defaultTerrainSettings().roadShader);
-  terrain.roadShader = {
-    preset: (ui.roadShaderPreset.value as RoadShaderSettings["preset"]) || current.preset,
-    repeat: Math.max(0.1, Number(ui.roadShaderRepeat.value) || current.repeat),
-    aoStrength: Math.max(0, Number(ui.roadShaderAO.value) || current.aoStrength),
-    normalStrength: Math.max(0, Number(ui.roadShaderNormal.value) || current.normalStrength),
-    bumpStrength: Math.max(0, Number(ui.roadShaderBump.value) || current.bumpStrength),
-    roughness: Math.max(0, Number(ui.roadShaderRoughness.value) || current.roughness),
-    metalness: Math.max(0, Number(ui.roadShaderMetalness.value) || current.metalness),
-  };
-  state.roadRepeat = terrain.roadShader.repeat;
-  terrainControls.roadRepeat.value = String(state.roadRepeat);
-  applyRoadShaderSettings();
-  applyTextureRepeats();
-  renderRoadShaderStack();
-  drawRoadShaderPreview();
+  const value = ui.roadShaderAsset.value;
+  terrain.roadShader = { ...current, shaderAssetId: value || null };
+  rebuildRoadMeshes();
   saveLocalLayout();
 }
 
@@ -5900,28 +5139,10 @@ function updateSkyEditorFromInputs() {
   renderSkyEditor();
 }
 
-function updateWaterControls(rebuild = false) {
-  state.water.opacity = clamp(Number(waterControls.opacity.value) || state.water.opacity, 0.4, 1.0);
-  state.water.reflectivity = Math.max(0, Number(waterControls.reflectivity.value) || state.water.reflectivity);
-  state.water.foamThreshold = clamp(Number(waterControls.foamThreshold.value) || state.water.foamThreshold, 0, 1);
-  state.water.foamContrast = Math.max(0.4, Number(waterControls.foamContrast.value) || state.water.foamContrast);
-  state.water.waveAmplitude = Math.max(0, Number(waterControls.waveAmplitude.value) || state.water.waveAmplitude);
-  state.water.waveHeight = state.water.waveAmplitude;
-  state.water.waveFrequency = Math.max(0.01, Number(waterControls.waveFrequency.value) || state.water.waveFrequency);
-  state.water.waveScale = state.water.waveFrequency;
-  state.water.waveSpeed = Math.max(0, Number(waterControls.waveSpeed.value) || state.water.waveSpeed);
-  state.water.windSpeed = Math.max(0, Number(waterControls.windSpeed.value) || state.water.windSpeed);
-  state.water.choppiness = Math.max(0, Number(waterControls.choppiness.value) || state.water.choppiness);
-  state.water.underwaterFogDensity = Math.max(0, Number(waterControls.underwaterFogDensity.value) || state.water.underwaterFogDensity);
-  state.water.foamIntensity = Math.max(0, Number(waterControls.foamIntensity.value) || state.water.foamIntensity);
+function updateWaterLevel() {
   if (state.layout.terrain) {
-    state.layout.terrain.waterLevel = Number(waterControls.level.value) || state.layout.terrain.waterLevel;
-    state.layout.terrain.water = { ...state.water };
-    if (rebuild) {
-      rebuildWorld();
-    } else {
-      applySkyAndWater();
-    }
+    state.layout.terrain.waterLevel = Number(waterLevelInput.value) || state.layout.terrain.waterLevel;
+    rebuildWorld();
     saveLocalLayout();
   }
 }
@@ -5958,62 +5179,11 @@ function onResize() {
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
   renderer.setSize(width, height);
-  resizeShaderBallViewer();
-  resizeWaterShaderViewer();
   // World panel's position/height (see applyPanelSizes) is computed from
   // concrete pixel measurements, not a live CSS calc() — needs recomputing
   // on viewport resize so it doesn't drift below the viewport or back into
   // overlapping the Inspector panel.
   applyPanelSizes();
-}
-
-function initShaderBallViewer() {
-  if (shaderBallRenderer && shaderBallScene && shaderBallCamera && shaderBallMesh) return;
-  const canvas = ui.shaderBallPreview;
-  shaderBallRenderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: true });
-  shaderBallRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  shaderBallRenderer.setClearColor(0x000000, 0);
-  shaderBallScene = new THREE.Scene();
-  shaderBallCamera = new THREE.PerspectiveCamera(35, 900 / 360, 0.1, 100);
-  shaderBallCamera.position.set(0, 0.8, 4.2);
-  const ambient = new THREE.HemisphereLight(0xffffff, 0x2c1d1a, 1.1);
-  const key = new THREE.DirectionalLight(0xffffff, 2.1);
-  key.position.set(2.8, 3.8, 3.6);
-  const rim = new THREE.DirectionalLight(0x9cc4ff, 0.85);
-  rim.position.set(-3.2, 1.5, -2.6);
-  const fill = new THREE.PointLight(0xff8844, 0.8, 12);
-  fill.position.set(0, 1.8, 4);
-  const sphere = new THREE.Mesh(new THREE.SphereGeometry(1.1, 96, 64), shaderBallMaterial);
-  sphere.castShadow = false;
-  sphere.receiveShadow = false;
-  shaderBallScene.add(ambient, key, rim, fill, sphere);
-  shaderBallMesh = sphere;
-  resizeShaderBallViewer();
-}
-
-function resizeShaderBallViewer() {
-  if (!shaderBallRenderer || !shaderBallCamera) return;
-  const canvas = ui.shaderBallPreview;
-  const width = Math.max(1, canvas.clientWidth || canvas.width || 900);
-  const height = Math.max(1, canvas.clientHeight || canvas.height || 360);
-  shaderBallRenderer.setSize(width, height, false);
-  shaderBallCamera.aspect = width / height;
-  shaderBallCamera.updateProjectionMatrix();
-}
-
-function renderShaderBallViewer(timeSeconds: number) {
-  if (!shaderBallRenderer || !shaderBallScene || !shaderBallCamera || !shaderBallMesh) return;
-  if (ui.shaderBallModal.classList.contains("is-hidden")) return;
-  shaderBallMesh.rotation.y = timeSeconds * 0.35;
-  shaderBallMesh.rotation.x = Math.sin(timeSeconds * 0.35) * 0.12;
-  shaderBallRenderer.render(shaderBallScene, shaderBallCamera);
-}
-
-function syncShaderBallPreviewMaterial() {
-  if (!shaderBallMesh) return;
-  shaderBallMaterial.copy(roadMaterial);
-  shaderBallMaterial.needsUpdate = true;
-  resizeShaderBallViewer();
 }
 
 function objectIdFromHit(node: THREE.Object3D | null) {
@@ -6486,7 +5656,7 @@ function updateActiveWaterMeshes(elapsedSeconds: number) {
     if (uniforms.time) uniforms.time.value = elapsedSeconds;
     if (uniforms.sunDirection) (uniforms.sunDirection.value as THREE.Vector3).copy(sunDirection);
     if (uniforms.eye) (uniforms.eye.value as THREE.Vector3).copy(camera.position);
-    syncShoreFoamUniforms(mesh, state.water);
+    syncShoreFoamUniforms(mesh);
   });
 }
 
@@ -6501,8 +5671,6 @@ function tick() {
 
   applySkyAndWater();
   const elapsedSeconds = performance.now() / 1000;
-  renderShaderBallViewer(elapsedSeconds);
-  renderWaterShaderViewer(elapsedSeconds);
   updateActiveCustomShaderUniforms(elapsedSeconds);
   updateActiveWaterMeshes(elapsedSeconds);
   syncGrassWindUniforms(elapsedSeconds);
@@ -6680,41 +5848,8 @@ function buildUi() {
           <label><span>Moon light</span><input id="moon-intensity" type="range" min="0" max="5" step="0.05" value="${state.lighting.moonIntensity}" /></label>
           <label><span>Horizon glow</span><input id="horizon-glow" type="range" min="0" max="8" step="0.05" value="${state.lighting.horizonGlow}" /></label>
           <label><span>Ambient light</span><input id="ambient-intensity" type="range" min="0" max="1" step="0.01" value="${state.lighting.ambientIntensity}" /></label>
-          <div class="btn-row">
-            <button id="road-shader" type="button">Road Shader</button>
-            <button id="water-shader" type="button">Water Shader</button>
-            <button id="shader-ball" type="button">Shader Ball</button>
-          </div>
-          <div id="water-shader-shelf" class="shader-shelf is-hidden">
-            <div class="sky-dialog-header">
-              <div>
-                <strong>Water Shader</strong>
-                <span>Preview the visible water surface and tune the live shader uniforms.</span>
-              </div>
-              <div class="btn-row">
-                <button id="water-shader-reset" type="button">Reset</button>
-                <button id="water-shader-close" type="button">Hide</button>
-              </div>
-            </div>
-            <canvas id="water-shader-preview" class="sky-preview" width="900" height="360"></canvas>
-            <div class="panel-subhead">Construction</div>
-            <div class="status">Base plane, layered wave displacement, fresnel reflection, shoreline foam, underwater fog.</div>
-            <div id="water-shader-stack" class="stack"></div>
-            <div class="water-form">
-              <label><span>Surface opacity</span><input id="water-opacity" type="range" min="0.4" max="1" step="0.01" value="1" /></label>
-              <label><span>Reflectivity</span><input id="water-reflectivity" type="range" min="0" max="1.4" step="0.01" value="0.72" /></label>
-              <label><span>Foam threshold</span><input id="water-foam-threshold" type="range" min="0" max="1" step="0.01" value="0.45" /></label>
-              <label><span>Foam contrast</span><input id="water-foam-contrast" type="range" min="0.4" max="2" step="0.01" value="0.82" /></label>
-              <label><span>Water level</span><input id="water-level" type="number" step="0.05" value="-1.35" /></label>
-              <label><span>Wave amplitude</span><input id="wave-amplitude" type="range" min="0" max="1.5" step="0.01" value="0.56" /></label>
-              <label><span>Wave frequency</span><input id="wave-frequency" type="range" min="0.01" max="0.2" step="0.01" value="0.08" /></label>
-              <label><span>Wave speed</span><input id="wave-speed" type="range" min="0" max="1.8" step="0.01" value="0.68" /></label>
-              <label><span>Wind speed</span><input id="wave-wind-speed" type="range" min="0" max="2.5" step="0.01" value="0.2" /></label>
-              <label><span>Choppiness</span><input id="wave-choppiness" type="range" min="0" max="1.5" step="0.01" value="0.72" /></label>
-              <label><span>Underwater fog</span><input id="water-fog-density" type="range" min="0" max="0.06" step="0.001" value="0.018" /></label>
-              <label><span>Foam intensity</span><input id="foam-intensity" type="range" min="0" max="2" step="0.01" value="0.92" /></label>
-            </div>
-          </div>
+          <label><span>Water level</span><input id="water-level" type="number" step="0.05" value="-1.35" /></label>
+          <label><span>Road Shader</span><select id="road-shader-asset"><option value="">Default (no shader)</option></select></label>
         </div>
         <div class="status">Click an asset, then click the terrain to place it. Select an object to edit position/rotation/scale.</div>
       </div>
@@ -6753,55 +5888,6 @@ function buildUi() {
     </div>
   `;
   root.appendChild(skyModal);
-
-  const roadShaderModal = document.createElement("div");
-  roadShaderModal.id = "road-shader-modal";
-  roadShaderModal.className = "sky-modal is-hidden";
-  roadShaderModal.innerHTML = `
-    <div class="sky-dialog">
-      <div class="sky-dialog-header">
-        <div>
-          <strong>Road Shader Builder</strong>
-          <span>Use gravel or asphalt textures, plus AO, normal, bump, and roughness controls.</span>
-        </div>
-        <div class="btn-row">
-          <button id="road-shader-reset" type="button">Reset</button>
-          <button id="road-shader-close" type="button">Close</button>
-        </div>
-      </div>
-      <canvas id="road-shader-preview" class="sky-preview" width="900" height="150"></canvas>
-      <div id="road-shader-stack" class="shader-stack"></div>
-      <div class="sky-form">
-        <label><span>Preset</span><select id="road-shader-preset"><option value="highway-lanes">Highway lanes</option><option value="gravel">Gravel</option><option value="asphalt">Asphalt</option></select></label>
-        <label><span>Texture repeat</span><input id="road-shader-repeat" type="number" min="0.1" max="6" step="0.05" value="1.4" /></label>
-        <label><span>AO strength</span><input id="road-shader-ao" type="range" min="0" max="2" step="0.01" value="1" /></label>
-        <label><span>Normal strength</span><input id="road-shader-normal" type="range" min="0" max="3" step="0.01" value="1" /></label>
-        <label><span>Bump strength</span><input id="road-shader-bump" type="range" min="0" max="0.2" step="0.001" value="0.05" /></label>
-        <label><span>Roughness</span><input id="road-shader-roughness" type="range" min="0" max="1.5" step="0.01" value="0.96" /></label>
-        <label><span>Metalness</span><input id="road-shader-metalness" type="range" min="0" max="1" step="0.01" value="0" /></label>
-      </div>
-    </div>
-  `;
-  root.appendChild(roadShaderModal);
-
-  const shaderBallModal = document.createElement("div");
-  shaderBallModal.id = "shader-ball-modal";
-  shaderBallModal.className = "sky-modal is-hidden";
-  shaderBallModal.innerHTML = `
-    <div class="sky-dialog">
-      <div class="sky-dialog-header">
-        <div>
-          <strong>Shader Ball Viewer</strong>
-          <span>Preview the current road shader on a lit sphere.</span>
-        </div>
-        <div class="btn-row">
-          <button id="shader-ball-close" type="button">Close</button>
-        </div>
-      </div>
-      <canvas id="shader-ball-preview" class="sky-preview" width="900" height="360"></canvas>
-    </div>
-  `;
-  root.appendChild(shaderBallModal);
 
   const hint = document.createElement("div");
   hint.className = "canvas-hint";
@@ -6875,18 +5961,7 @@ function buildUi() {
     moonIntensity: shell.querySelector<HTMLInputElement>("#moon-intensity")!,
     horizonGlow: shell.querySelector<HTMLInputElement>("#horizon-glow")!,
     ambientIntensity: shell.querySelector<HTMLInputElement>("#ambient-intensity")!,
-    waterOpacity: shell.querySelector<HTMLInputElement>("#water-opacity")!,
-    waterReflectivity: shell.querySelector<HTMLInputElement>("#water-reflectivity")!,
-    foamThreshold: shell.querySelector<HTMLInputElement>("#water-foam-threshold")!,
-    foamContrast: shell.querySelector<HTMLInputElement>("#water-foam-contrast")!,
     waterLevel: shell.querySelector<HTMLInputElement>("#water-level")!,
-    waveAmplitude: shell.querySelector<HTMLInputElement>("#wave-amplitude")!,
-    waveFrequency: shell.querySelector<HTMLInputElement>("#wave-frequency")!,
-    waveSpeed: shell.querySelector<HTMLInputElement>("#wave-speed")!,
-    windSpeed: shell.querySelector<HTMLInputElement>("#wave-wind-speed")!,
-    choppiness: shell.querySelector<HTMLInputElement>("#wave-choppiness")!,
-    underwaterFogDensity: shell.querySelector<HTMLInputElement>("#water-fog-density")!,
-    foamIntensity: shell.querySelector<HTMLInputElement>("#foam-intensity")!,
     skyModal,
     skyPreview: skyModal.querySelector<HTMLCanvasElement>("#sky-preview")!,
     skyStopList: skyModal.querySelector<HTMLDivElement>("#sky-stop-list")!,
@@ -6900,29 +5975,7 @@ function buildUi() {
     skyMoon: skyModal.querySelector<HTMLInputElement>("#sky-moon")!,
     skyReset: skyModal.querySelector<HTMLButtonElement>("#sky-reset")!,
     skyClose: skyModal.querySelector<HTMLButtonElement>("#sky-close")!,
-    roadShaderOpen: shell.querySelector<HTMLButtonElement>("#road-shader")!,
-    roadShaderModal,
-    roadShaderPreview: roadShaderModal.querySelector<HTMLCanvasElement>("#road-shader-preview")!,
-    roadShaderStack: roadShaderModal.querySelector<HTMLDivElement>("#road-shader-stack")!,
-    roadShaderPreset: roadShaderModal.querySelector<HTMLSelectElement>("#road-shader-preset")!,
-    roadShaderRepeat: roadShaderModal.querySelector<HTMLInputElement>("#road-shader-repeat")!,
-    roadShaderAO: roadShaderModal.querySelector<HTMLInputElement>("#road-shader-ao")!,
-    roadShaderNormal: roadShaderModal.querySelector<HTMLInputElement>("#road-shader-normal")!,
-    roadShaderBump: roadShaderModal.querySelector<HTMLInputElement>("#road-shader-bump")!,
-    roadShaderRoughness: roadShaderModal.querySelector<HTMLInputElement>("#road-shader-roughness")!,
-    roadShaderMetalness: roadShaderModal.querySelector<HTMLInputElement>("#road-shader-metalness")!,
-    roadShaderReset: roadShaderModal.querySelector<HTMLButtonElement>("#road-shader-reset")!,
-    roadShaderClose: roadShaderModal.querySelector<HTMLButtonElement>("#road-shader-close")!,
-    waterShaderOpen: shell.querySelector<HTMLButtonElement>("#water-shader")!,
-    waterShaderModal: shell.querySelector<HTMLDivElement>("#water-shader-shelf")!,
-    waterShaderPreview: shell.querySelector<HTMLCanvasElement>("#water-shader-preview")!,
-    waterShaderStack: shell.querySelector<HTMLDivElement>("#water-shader-stack")!,
-    waterShaderReset: shell.querySelector<HTMLButtonElement>("#water-shader-reset")!,
-    waterShaderClose: shell.querySelector<HTMLButtonElement>("#water-shader-close")!,
-    shaderBallOpen: shell.querySelector<HTMLButtonElement>("#shader-ball")!,
-    shaderBallModal,
-    shaderBallPreview: shaderBallModal.querySelector<HTMLCanvasElement>("#shader-ball-preview")!,
-    shaderBallClose: shaderBallModal.querySelector<HTMLButtonElement>("#shader-ball-close")!,
+    roadShaderAsset: shell.querySelector<HTMLSelectElement>("#road-shader-asset")!,
   };
 }
 

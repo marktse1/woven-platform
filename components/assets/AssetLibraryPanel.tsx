@@ -89,11 +89,13 @@ export default function AssetLibraryPanel() {
   // created_at-descending order) — the list has no server-side sort
   // control, and re-querying per sort mode isn't needed for what's
   // already in memory.
-  const [sortMode, setSortMode] = useState<"modified" | "created" | "name">("modified");
+  const [sortMode, setSortMode] = useState<"modified" | "created" | "name" | "type" | "size">("modified");
   const sortRows = useCallback((rows: AssetRow[]): AssetRow[] => {
     const sorted = [...rows];
     if (sortMode === "name") sorted.sort((a, b) => a.name.localeCompare(b.name));
     else if (sortMode === "created") sorted.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    else if (sortMode === "type") sorted.sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+    else if (sortMode === "size") sorted.sort((a, b) => b.file_bytes - a.file_bytes);
     else sorted.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
     return sorted;
   }, [sortMode]);
@@ -226,6 +228,8 @@ export default function AssetLibraryPanel() {
                 <option value="modified">Last modified</option>
                 <option value="created">Date created</option>
                 <option value="name">Name A–Z</option>
+                <option value="type">Type</option>
+                <option value="size">File size</option>
               </select>
               <button
                 onClick={toggleSelectMode}

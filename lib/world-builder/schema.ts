@@ -127,14 +127,15 @@ export type TerrainSpline = {
   points: TerrainControlPoint[];
 };
 
+// A saved Shaderade shader_graph asset id (mirrors PlacedObjectData's own
+// customShaderAssetId), or null to fall back to a plain default material —
+// replaces the old hardcoded texture-preset system, which pulled from
+// public/assets/texture/ paths that never existed in this repo (404ing in
+// production). repeat is still meaningful independent of which shader is
+// picked: it scales the ribbon's U coordinate along the road's length.
 export type RoadShaderSettings = {
-  preset: "asphalt" | "gravel" | "highway-lanes";
+  shaderAssetId: string | null;
   repeat: number;
-  aoStrength: number;
-  normalStrength: number;
-  bumpStrength: number;
-  roughness: number;
-  metalness: number;
 };
 
 export type TerrainShaderSettings = {
@@ -144,24 +145,6 @@ export type TerrainShaderSettings = {
   normalStrength: number;
   roughness: number;
   metalness: number;
-};
-
-export type WaterSurfaceSettings = {
-  waveAmplitude: number;
-  waveFrequency: number;
-  waveSpeed: number;
-  windSpeed: number;
-  choppiness: number;
-  waveHeight: number;
-  waveScale: number;
-  foamIntensity: number;
-  buoyancy: number;
-  drift: number;
-  opacity: number;
-  reflectivity: number;
-  foamThreshold: number;
-  foamContrast: number;
-  underwaterFogDensity: number;
 };
 
 // Instanced grass-blade scattering (lib/world-builder/editor.ts's
@@ -181,7 +164,6 @@ export type TerrainDistrictSettings = {
   revision: number;
   extentChunks: number;
   waterLevel: number;
-  water: WaterSurfaceSettings;
   grass: GrassSettings;
   shoreline: TerrainControlPoint[];
   splines: TerrainSpline[];
@@ -255,26 +237,6 @@ export type LevelLayout = {
   objects: PlacedObjectData[];
 };
 
-export function defaultWaterSettings(): WaterSurfaceSettings {
-  return {
-    waveAmplitude: 0.56,
-    waveFrequency: 0.08,
-    waveSpeed: 0.68,
-    windSpeed: 0.2,
-    choppiness: 0.72,
-    waveHeight: 0.56,
-    waveScale: 0.08,
-    foamIntensity: 0.92,
-    buoyancy: 0.24,
-    drift: 0.12,
-    opacity: 1,
-    reflectivity: 0.72,
-    foamThreshold: 0.45,
-    foamContrast: 0.82,
-    underwaterFogDensity: 0.018,
-  };
-}
-
 export function defaultGrassSettings(): GrassSettings {
   return {
     densityMultiplier: 1,
@@ -295,7 +257,6 @@ export function defaultTerrainSettings(): TerrainDistrictSettings {
     revision: 1,
     extentChunks: 4,
     waterLevel: -1.35,
-    water: defaultWaterSettings(),
     grass: defaultGrassSettings(),
     shoreline: [
       { x: -52, z: -96 },
@@ -329,13 +290,8 @@ export function defaultTerrainSettings(): TerrainDistrictSettings {
       },
     ],
     roadShader: {
-      preset: "highway-lanes",
+      shaderAssetId: null,
       repeat: 1.4,
-      aoStrength: 1,
-      normalStrength: 1,
-      bumpStrength: 0.05,
-      roughness: 0.96,
-      metalness: 0,
     },
     terrainLayers: {
       dirt: {
@@ -561,24 +517,6 @@ export function sculptTerrainAt(
   return touchedChunks;
 }
 
-export function sampleWaterSurfaceOffset(x: number, z: number, timeSeconds: number, settings: WaterSurfaceSettings) {
-  const amplitude = settings.waveAmplitude ?? settings.waveHeight;
-  const frequency = settings.waveFrequency ?? settings.waveScale;
-  const speed = settings.waveSpeed;
-  const wind = settings.windSpeed;
-  const choppiness = settings.choppiness;
-  const driftX = Math.cos(0.72) * wind * timeSeconds * 0.08;
-  const driftZ = Math.sin(0.72) * wind * timeSeconds * 0.08;
-  const waveUvX = x * frequency + timeSeconds * speed * 0.04 + driftX;
-  const waveUvZ = z * frequency - timeSeconds * speed * 0.03 + driftZ;
-  const swell = (
-    Math.sin(waveUvX * 1.4 + timeSeconds * speed * (0.95 + wind * 0.25)) * 0.5 +
-    Math.cos(waveUvZ * 1.8 - timeSeconds * speed * (1.15 + wind * 0.15)) * 0.35
-  ) * amplitude;
-  const ripple = Math.sin((x + z) * (0.032 + frequency * 0.12) + timeSeconds * speed * (1.3 + wind * 0.2)) * amplitude * 0.12;
-  const chop = Math.pow(Math.abs(Math.sin(waveUvX * 2.2 + waveUvZ * 1.7 + timeSeconds * speed * (1.7 + wind * 0.3))), 1.0 + choppiness * 3.0);
-  return swell + ripple + (chop - 0.5) * amplitude * choppiness * 0.24;
-}
 
 export function defaultSkyGradient(): SkyGradientSettings {
   return {

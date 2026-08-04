@@ -938,6 +938,7 @@ const waterControls = {
   foamIntensity: ui.foamIntensity,
 };
 const grassControls = {
+  paint: ui.paintGrass,
   density: ui.grassDensity,
   height: ui.grassHeight,
   windSpeed: ui.grassWindSpeed,
@@ -5036,6 +5037,12 @@ function bindUi() {
   waterControls.underwaterFogDensity.addEventListener("input", () => updateWaterControls());
   waterControls.foamIntensity.addEventListener("input", () => updateWaterControls());
 
+  grassControls.paint.addEventListener("click", () => {
+    setTerrainMode("sculpt");
+    terrainControls.brushMode.value = "grass";
+    updateTerrainToolSettings();
+    updateStatus("Paint Tall Grass: drag on the terrain to place grass. Alt-drag erases.");
+  });
   grassControls.density.addEventListener("input", () => updateGrassControls());
   grassControls.height.addEventListener("input", () => updateGrassControls());
   grassControls.windSpeed.addEventListener("input", () => updateGrassControls());
@@ -5330,6 +5337,7 @@ function updateTerrainToolSettings() {
   state.brushStrength = clamp(Number(terrainControls.brushStrength.value) || state.brushStrength, 0.05, 8);
   state.brushFalloff = clamp(Number(terrainControls.brushFalloff.value), 0, 1);
   state.flattenHeight = Number(terrainControls.flattenHeight.value) || 0;
+  grassControls.paint.classList.toggle("is-active", state.brushMode === "grass");
 }
 
 function updateTerrainLayerButtons() {
@@ -6633,7 +6641,10 @@ function buildUi() {
             <div class="status">Choose Soil or Sand Dunes, then use Paint Shader to place that material on the terrain.</div>
           </div>
           <div class="shader-shelf terrain-grass-shelf">
-            <div class="panel-subhead">Paint Tall Grass</div>
+            <div class="panel-subhead">Grass Blades</div>
+            <div class="btn-row">
+              <button id="terrain-paint-grass" type="button" class="terrain-layer-button">Paint Tall Grass</button>
+            </div>
             <label><span>Density</span><input id="grass-density" type="range" min="0" max="3" step="0.05" value="1" /></label>
             <label><span>Blade height</span><input id="grass-height" type="range" min="0.002" max="0.03" step="0.001" value="0.01" /></label>
             <label><span>Wind speed</span><input id="grass-wind-speed" type="range" min="0" max="2.5" step="0.01" value="0.6" /></label>
@@ -6641,7 +6652,7 @@ function buildUi() {
             <div class="btn-row">
               <button id="terrain-clear-grass" type="button">Clear Grass</button>
             </div>
-            <div class="status">Set Brush mode to Paint Tall Grass above, then paint on the terrain (must be in Sculpt mode). Alt-drag erases.</div>
+            <div class="status">Click Paint Tall Grass, then drag on the terrain to place grass. Alt-drag erases.</div>
           </div>
           <div class="btn-row">
             <button id="terrain-regenerate" type="button">Regenerate Base</button>
@@ -6813,6 +6824,7 @@ function buildUi() {
     terrainSandRoughness: shell.querySelector<HTMLInputElement>("#terrain-sand-roughness")!,
     terrainSandMetalness: shell.querySelector<HTMLInputElement>("#terrain-sand-metalness")!,
     terrainLayerButtons: Array.from(shell.querySelectorAll<HTMLButtonElement>("[data-terrain-layer]")),
+    paintGrass: shell.querySelector<HTMLButtonElement>("#terrain-paint-grass")!,
     grassDensity: shell.querySelector<HTMLInputElement>("#grass-density")!,
     grassHeight: shell.querySelector<HTMLInputElement>("#grass-height")!,
     grassWindSpeed: shell.querySelector<HTMLInputElement>("#grass-wind-speed")!,

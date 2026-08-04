@@ -6585,7 +6585,7 @@ function buildUi() {
             <button id="terrain-sculpt" type="button">Sculpt</button>
             <button id="terrain-road" type="button">Roads</button>
           </div>
-          <label><span>Brush mode</span><select id="terrain-brush-mode"><option value="raise">Raise</option><option value="lower">Lower</option><option value="smooth">Smooth</option><option value="flatten">Flatten</option><option value="blend">Paint Shader</option><option value="grass">Grass Blades</option></select></label>
+          <label><span>Brush mode</span><select id="terrain-brush-mode"><option value="raise">Raise</option><option value="lower">Lower</option><option value="smooth">Smooth</option><option value="flatten">Flatten</option><option value="blend">Paint Shader</option><option value="grass">Paint Tall Grass</option></select></label>
           <label><span>Brush radius</span><input id="terrain-brush-radius" type="number" min="1" max="40" step="1" value="8" /></label>
           <label><span>Strength</span><input id="terrain-brush-strength" type="number" min="0.05" max="8" step="0.05" value="0.15" /></label>
           <label><span>Falloff</span><input id="terrain-brush-falloff" type="range" min="0" max="1" step="0.05" value="0.7" /></label>
@@ -6625,7 +6625,7 @@ function buildUi() {
             <div class="status">Choose Soil or Sand Dunes, then use Paint Shader to place that material on the terrain.</div>
           </div>
           <div class="shader-shelf terrain-grass-shelf">
-            <div class="panel-subhead">Grass Blades</div>
+            <div class="panel-subhead">Paint Tall Grass</div>
             <label><span>Density</span><input id="grass-density" type="range" min="0" max="3" step="0.05" value="1" /></label>
             <label><span>Blade height</span><input id="grass-height" type="range" min="0.002" max="0.03" step="0.001" value="0.01" /></label>
             <label><span>Wind speed</span><input id="grass-wind-speed" type="range" min="0" max="2.5" step="0.01" value="0.6" /></label>
@@ -6633,7 +6633,7 @@ function buildUi() {
             <div class="btn-row">
               <button id="terrain-clear-grass" type="button">Clear Grass</button>
             </div>
-            <div class="status">Set Brush mode to Grass Blades above, then paint on the terrain. Alt-drag erases.</div>
+            <div class="status">Set Brush mode to Paint Tall Grass above, then paint on the terrain (must be in Sculpt mode). Alt-drag erases.</div>
           </div>
           <div class="btn-row">
             <button id="terrain-regenerate" type="button">Regenerate Base</button>

@@ -42,10 +42,22 @@ export function distanceToSegment2d(px: number, pz: number, ax: number, az: numb
   return Math.hypot(px - x, pz - z);
 }
 
+// chunk.heights?.length ?? 0 (not chunk.heights.length) throughout this
+// file's mask/density initializers — a "chunk" can legitimately have no
+// heightfield at all: saveRemoteLayout (editor.ts) writes a
+// `terrain: {}` shell row for any placed object that falls outside
+// every generated terrain chunk's bounds (so the object isn't silently
+// dropped), and reloading that produces a TerrainChunkData with
+// `objects` but no heights/resolution/spacing. Every paint-brush
+// function keys its per-vertex loop off chunk.resolution (undefined
+// for a shell chunk, so those loops already no-op correctly on their
+// own) — the actual crash was these initializers reading
+// chunk.heights.length before ever reaching that guard, confirmed
+// directly from a live TypeError report.
 export function layerMaskForChunk(chunk: TerrainChunkData) {
   chunk.paintMask ??= {};
-  chunk.paintMask.grass ??= new Array(chunk.heights.length).fill(0);
-  chunk.paintMask.sand ??= new Array(chunk.heights.length).fill(0);
+  chunk.paintMask.grass ??= new Array(chunk.heights?.length ?? 0).fill(0);
+  chunk.paintMask.sand ??= new Array(chunk.heights?.length ?? 0).fill(0);
   return chunk.paintMask;
 }
 
@@ -53,7 +65,7 @@ export function layerMaskForChunk(chunk: TerrainChunkData) {
  * layerMaskForChunk's paintMask.grass (a flat color tint, no geometry).
  * Same lazy-init convention. */
 export function grassDensityForChunk(chunk: TerrainChunkData) {
-  chunk.grassDensity ??= new Array(chunk.heights.length).fill(0);
+  chunk.grassDensity ??= new Array(chunk.heights?.length ?? 0).fill(0);
   return chunk.grassDensity;
 }
 

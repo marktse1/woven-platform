@@ -275,11 +275,19 @@ const worldLoadReport: WorldLoadReport = {
 const panelState = loadPanelState();
 const panelSizes = loadPanelSizes();
 const ui = buildUi();
+// topbar mounts first — a normal in-flow banner sitting above the
+// viewport (appRoot is now `display:flex;flex-direction:column`), not a
+// floating overlay inside it (see buildUi's comment at its own
+// definition). Every canvas/renderer size measurement below reads from
+// ui.root (the .viewport box, flex:1 — the real remaining area below the
+// banner), not appRoot itself (which now also includes the banner's own
+// height).
+appRoot.appendChild(ui.topbar);
 appRoot.appendChild(ui.root);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.setSize(appRoot.clientWidth || 1, appRoot.clientHeight || 1);
+renderer.setSize(ui.root.clientWidth || 1, ui.root.clientHeight || 1);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -293,7 +301,7 @@ ui.viewport.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x0a1020, 0.0011);
 
-const camera = new THREE.PerspectiveCamera(55, (appRoot.clientWidth || 1) / (appRoot.clientHeight || 1), 0.1, 4000);
+const camera = new THREE.PerspectiveCamera(55, (ui.root.clientWidth || 1) / (ui.root.clientHeight || 1), 0.1, 4000);
 camera.position.set(54, 42, 54);
 
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -3963,6 +3971,14 @@ function updateInspector() {
   // picker's own visibility was gated on a value that requires a graph
   // to already be picked.
   const uiShaderMode = object.shaderMode ?? "standard";
+  // The RESOLVED mode (custom only counts once a graph is actually
+  // picked) — same distinction applyObjectShaderMode itself uses to
+  // decide what's really rendering. Used only to decide whether the
+  // water sliders below are worth showing at all: once a custom shader
+  // is actually active, it fully replaces the material, and none of
+  // alpha/distortionScale/u_reflectivity/u_foamIntensity exist on it —
+  // the sliders would be dead controls.
+  const resolvedShaderMode = getObjectShaderMode(object);
   const shaderSettings = normalizeObjectShaderSettings(object.shaderSettings);
   inspector.innerHTML = `
     <div class="stack">
@@ -3982,13 +3998,17 @@ function updateInspector() {
       ${isLight ? "" : `
         ${isWater ? `
           <div class="panel-subhead">Water</div>
-          <div class="split">
-            <label><span>Wave Amplitude</span><input id="water-wave-amplitude" type="range" min="0" max="8" step="0.1" value="${object.waveAmplitude ?? 2.2}" /></label>
-            <label><span>Reflectivity</span><input id="water-reflectivity" type="range" min="0" max="1.5" step="0.01" value="${object.reflectivity ?? 1}" /></label>
-            <label><span>Opacity</span><input id="water-opacity" type="range" min="0.2" max="1" step="0.01" value="${object.waterOpacity ?? 0.85}" /></label>
-            <label><span>Foam Strength</span><input id="water-foam-strength" type="range" min="0" max="2" step="0.01" value="${object.foamStrength ?? SHORE_FOAM_INTENSITY}" /></label>
-            <label><span>React to Nearby Objects</span><input id="water-react-nearby" type="checkbox" ${object.reactToNearbyObjects ? "checked" : ""} /></label>
-          </div>
+          ${resolvedShaderMode === "custom" ? `
+            <div class="status">Look is controlled by the custom shader — switch Shader back to "Current" below to use these instead.</div>
+          ` : `
+            <div class="split">
+              <label><span>Wave Amplitude</span><input id="water-wave-amplitude" type="range" min="0" max="8" step="0.1" value="${object.waveAmplitude ?? 2.2}" /></label>
+              <label><span>Reflectivity</span><input id="water-reflectivity" type="range" min="0" max="1.5" step="0.01" value="${object.reflectivity ?? 1}" /></label>
+              <label><span>Opacity</span><input id="water-opacity" type="range" min="0.2" max="1" step="0.01" value="${object.waterOpacity ?? 0.85}" /></label>
+              <label><span>Foam Strength</span><input id="water-foam-strength" type="range" min="0" max="2" step="0.01" value="${object.foamStrength ?? SHORE_FOAM_INTENSITY}" /></label>
+              <label><span>React to Nearby Objects</span><input id="water-react-nearby" type="checkbox" ${object.reactToNearbyObjects ? "checked" : ""} /></label>
+            </div>
+          `}
         ` : ""}
         <div class="panel-subhead">Material</div>
         <div class="split">
@@ -5004,7 +5024,9 @@ function applyPanelSizes() {
   if (assetsPanel) {
     const collapsed = assetsPanel.classList.contains("is-collapsed");
     assetsPanel.style.width = collapsed ? "132px" : `${panelSizes.assetsWidth}px`;
-    assetsPanel.style.height = `calc(100vh - 124px)`;
+    // Height deliberately left alone — .panel-assets's own CSS (top:0;
+    // bottom:0; height:auto) already fills exactly the right space with
+    // no vh-math needed, for both the collapsed and expanded case.
   }
   if (inspectorPanel) {
     const collapsed = inspectorPanel.classList.contains("is-collapsed");
@@ -5511,8 +5533,8 @@ function clearGrassPaint() {
 }
 
 function onResize() {
-  const width = appRoot.clientWidth || 1;
-  const height = appRoot.clientHeight || 1;
+  const width = ui.root.clientWidth || 1;
+  const height = ui.root.clientHeight || 1;
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
   renderer.setSize(width, height);
@@ -6100,7 +6122,11 @@ function buildUi() {
       <button id="topbar-transform-scale" type="button" title="Scale (R)"><img src="/scale.png" width="64" height="64" alt="Scale" /></button>
     </div>
   `;
-  root.appendChild(topbar);
+  // Deliberately NOT appended into `root` (the .viewport div the canvas
+  // also fills) — topbar is mounted directly into appRoot instead (see the
+  // module-scope appRoot.appendChild(ui.topbar) call), as a normal in-flow
+  // banner sitting above the viewport rather than a floating overlay on
+  // top of it.
 
   const shell = document.createElement("div");
   shell.className = "shell";

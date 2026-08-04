@@ -2277,12 +2277,27 @@ function ensureGrassAssetLoaded(onReady: () => void) {
   loader.load(
     GRASS_ASSET_URL,
     (gltf) => {
+      gltf.scene.updateMatrixWorld(true);
       let geometry: THREE.BufferGeometry | null = null;
       let material: THREE.MeshStandardMaterial | null = null;
       gltf.scene.traverse((o) => {
         const mesh = o as THREE.Mesh;
         if (mesh.isMesh && !geometry) {
-          geometry = mesh.geometry;
+          // blue_reeds.glb (a Sketchfab FBX->glTF conversion, like many)
+          // bakes a Z-up-to-Y-up corrective rotation AND a compounding
+          // scale into ANCESTOR nodes above the mesh, not into the
+          // mesh's own geometry — confirmed directly by parsing the
+          // file's node hierarchy (Sketchfab_model and smd_mesh both
+          // carry a ~-90°-about-X rotation matrix; two more nodes carry
+          // a 0.01 and 0.1 scale). Baking mesh.matrixWorld into the
+          // geometry once, here, is what actually applies those
+          // corrections — skipping this left every instance using the
+          // raw, uncorrected geometry: lying on its side and ~1000x
+          // larger than intended, confirmed via a standalone script
+          // (raw bbox ~26x40x63, correctly-baked bbox ~0.027x0.063x0.04
+          // with Y — the tall axis — now the largest, as it should be).
+          geometry = mesh.geometry.clone();
+          geometry.applyMatrix4(mesh.matrixWorld);
           const meshMaterial = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
           material = (meshMaterial as THREE.MeshStandardMaterial).clone();
         }
@@ -5913,7 +5928,7 @@ function updateWaterControls(rebuild = false) {
 
 function updateGrassControls() {
   state.grass.densityMultiplier = Math.max(0, Number(grassControls.density.value) || state.grass.densityMultiplier);
-  state.grass.bladeHeight = Math.max(0.0001, Number(grassControls.height.value) || state.grass.bladeHeight);
+  state.grass.bladeHeight = Math.max(0.1, Number(grassControls.height.value) || state.grass.bladeHeight);
   state.grass.windSpeed = Math.max(0, Number(grassControls.windSpeed.value) || state.grass.windSpeed);
   state.grass.windStrength = Math.max(0, Number(grassControls.windStrength.value) || state.grass.windStrength);
   if (state.layout.terrain) {
@@ -6646,7 +6661,7 @@ function buildUi() {
               <button id="terrain-paint-grass" type="button" class="terrain-layer-button">Paint Tall Grass</button>
             </div>
             <label><span>Density</span><input id="grass-density" type="range" min="0" max="3" step="0.05" value="1" /></label>
-            <label><span>Blade height</span><input id="grass-height" type="range" min="0.002" max="0.03" step="0.001" value="0.01" /></label>
+            <label><span>Blade height</span><input id="grass-height" type="range" min="1" max="20" step="0.5" value="8" /></label>
             <label><span>Wind speed</span><input id="grass-wind-speed" type="range" min="0" max="2.5" step="0.01" value="0.6" /></label>
             <label><span>Wind strength</span><input id="grass-wind-strength" type="range" min="0" max="1.5" step="0.01" value="0.35" /></label>
             <div class="btn-row">

@@ -278,10 +278,12 @@ export function defaultWaterSettings(): WaterSurfaceSettings {
 export function defaultGrassSettings(): GrassSettings {
   return {
     densityMultiplier: 1,
-    // blue_reeds.glb's bounds (~26x40x63 units) suggest it was
-    // authored in centimeters — 0.01 brings a blade to roughly
-    // half-a-meter tall, a reasonable "tall grass" starting point.
-    bladeHeight: 0.01,
+    // ensureGrassAssetLoaded (editor.ts) now bakes blue_reeds.glb's
+    // node-hierarchy transform into its geometry, so a blade's natural
+    // baked height is ~0.063 world units — bladeHeight is a multiplier
+    // on that, not an absolute scale factor. 8x brings a blade to
+    // roughly half-a-meter tall, a reasonable "tall grass" starting point.
+    bladeHeight: 8,
     windSpeed: 0.6,
     windStrength: 0.35,
   };

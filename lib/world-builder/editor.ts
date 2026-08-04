@@ -845,6 +845,30 @@ void (async () => {
 addWindowListener("resize", onResize);
 const containerResizeObserver = new ResizeObserver(() => onResize());
 containerResizeObserver.observe(appRoot);
+
+// WebKit has no ::-moz-range-progress equivalent (Firefox's own "filled
+// track" pseudo-element, already handled in editor.css with no JS needed)
+// — this fakes the same look there via a --range-fill CSS custom property
+// the track's gradient reads (see editor.css). Delegated + a
+// MutationObserver instead of wiring each slider individually, since
+// range inputs are injected via innerHTML across many different render
+// functions (updateInspector, buildUi, terrain/sky panels, etc.).
+function updateRangeFill(input: HTMLInputElement) {
+  const min = Number(input.min) || 0;
+  const max = Number(input.max) || 100;
+  const value = Number(input.value) || 0;
+  const pct = max > min ? clamp(((value - min) / (max - min)) * 100, 0, 100) : 0;
+  input.style.setProperty("--range-fill", `${pct}%`);
+}
+appRoot.querySelectorAll<HTMLInputElement>('input[type="range"]').forEach(updateRangeFill);
+appRoot.addEventListener("input", (event) => {
+  const target = event.target as HTMLElement;
+  if (target instanceof HTMLInputElement && target.type === "range") updateRangeFill(target);
+});
+const rangeFillObserver = new MutationObserver(() => {
+  appRoot.querySelectorAll<HTMLInputElement>('input[type="range"]').forEach(updateRangeFill);
+});
+rangeFillObserver.observe(appRoot, { childList: true, subtree: true });
 renderer.domElement.addEventListener("pointerdown", onPointerDown);
 renderer.domElement.addEventListener("pointermove", onPointerMove);
 renderer.domElement.addEventListener("pointerup", onPointerUp);
@@ -6405,6 +6429,7 @@ const cleanup = function cleanup() {
   disposed = true;
   cancelAnimationFrame(rafId);
   containerResizeObserver.disconnect();
+  rangeFillObserver.disconnect();
   controls.dispose();
   transformControls.dispose();
   for (const listener of trackedListeners) {

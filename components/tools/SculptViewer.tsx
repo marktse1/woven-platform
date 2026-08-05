@@ -1795,6 +1795,18 @@ export default function SculptViewer({
     ikPoleTransformControlsRef.current = ikPoleTransformControls;
     ikPoleTransformHelperRef.current = ikPoleTransformHelper;
 
+    // Resolves a chain's bones by name — used to snapshot pre-drag pose for
+    // undo before either IK gizmo mutates them (see dragging-changed below).
+    function ikChainBones(entry: SculptMeshEntry, chainId: string): THREE.Bone[] {
+      const chain = entry.poseAnimation?.ikChains.find((c) => c.id === chainId);
+      const skeleton = entry.skeleton;
+      if (!chain || !skeleton) return [];
+      const names = [...chain.links, chain.effectorBone];
+      return names
+        .map((name) => skeleton.bones.find((b) => b.name === name))
+        .filter((b): b is THREE.Bone => !!b);
+    }
+
     // Shared by both gizmos' objectChange — resolves the chain's actual
     // root/mid/effector bones and picks the analytic solve (2-link chains
     // with a pole bone) or falls back to the CCD solver otherwise.
@@ -1865,6 +1877,17 @@ export default function SculptViewer({
 
     ikTransformControls.addEventListener("dragging-changed", (event) => {
       controls.enabled = !event.value;
+      // Snapshot the chain's bones before the drag mutates them via
+      // solveIKChain — same trigger point poseTransformControls uses for
+      // direct FK bone drags (see its own dragging-changed above).
+      if (event.value) {
+        const entry = selectedIKEntryRef.current;
+        const chainId = selectedIKChainIdRef.current;
+        if (entry && chainId) {
+          const bones = ikChainBones(entry, chainId);
+          if (bones.length) undoRef.current.pushPose(bones);
+        }
+      }
     });
     ikTransformControls.addEventListener("objectChange", () => {
       // Solving mutates the actual chain bones' quaternions — the same
@@ -1878,6 +1901,14 @@ export default function SculptViewer({
 
     ikPoleTransformControls.addEventListener("dragging-changed", (event) => {
       controls.enabled = !event.value;
+      if (event.value) {
+        const entry = selectedIKEntryRef.current;
+        const chainId = selectedIKChainIdRef.current;
+        if (entry && chainId) {
+          const bones = ikChainBones(entry, chainId);
+          if (bones.length) undoRef.current.pushPose(bones);
+        }
+      }
     });
     ikPoleTransformControls.addEventListener("objectChange", () => {
       const entry = selectedIKEntryRef.current;

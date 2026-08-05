@@ -1728,8 +1728,8 @@ function buildRoadRibbonGeometry(road: TerrainSpline) {
       leftX, y, leftZ,
       rightPosX, y, rightPosZ
     );
-    const u = pathDistance * Math.max(0.1, road.repeat ?? state.roadRepeat ?? 1);
-    uvs.push(0, u, 1, u);
+    const v = (pathDistance / width) * Math.max(0.1, road.repeat ?? state.roadRepeat ?? 1);
+    uvs.push(0, v, 1, v);
     if (index < samples.length - 1) {
       const nextPoint = samples[index + 1];
       pathDistance += Math.hypot(nextPoint.x - current.x, nextPoint.z - current.z);
@@ -3170,11 +3170,15 @@ function buildCustomShaderMaterial(compiled: CompiledShaderResult): { material: 
         if (url.startsWith("data:") || url.startsWith("blob:")) {
           const tex = new THREE.TextureLoader().load(url);
           tex.flipY = false;
+          tex.wrapS = THREE.RepeatWrapping;
+          tex.wrapT = THREE.RepeatWrapping;
           textures.push(tex);
           uniforms[name] = { value: tex };
         } else {
           const tex = new THREE.Texture();
           tex.flipY = false;
+          tex.wrapS = THREE.RepeatWrapping;
+          tex.wrapT = THREE.RepeatWrapping;
           textures.push(tex);
           fetch(url)
             .then((r) => {
@@ -3559,6 +3563,34 @@ async function compileCustomShader(assetId: string): Promise<CompiledShaderResul
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const parsed = JSON.parse(await res.text()) as { nodes?: ShaderGraphNode[]; edges?: ShaderGraphEdge[] };
       if (!parsed.nodes || !parsed.edges) throw new Error("Saved shader is missing nodes/edges");
+
+      // Texture URLs baked into node data at save time are signed and
+      // expire (1hr default) — reopening a saved shader after that leaves
+      // every texture-backed channel silently sampling as black (no throw,
+      // just a failed fetch buildCustomShaderMaterial already tolerates).
+      // Same fix as ShaderadeClient.tsx's handleLoad: re-resolve a fresh
+      // URL for any Texture2D node we still have an assetId for.
+      const freshUrlCache = new Map<string, string>();
+      for (const node of parsed.nodes) {
+        if (node.type !== "Texture2D") continue;
+        const data = node.data as Record<string, unknown> | undefined;
+        const texAssetId = data?.assetId as string | undefined;
+        if (!texAssetId) continue;
+        try {
+          let freshUrl = freshUrlCache.get(texAssetId);
+          if (!freshUrl) {
+            const texAsset = assetRowById.get(texAssetId) ?? (await getAsset(texAssetId));
+            if (!texAsset) continue;
+            freshUrl = await signedAssetUrl(texAsset.storage_path);
+            freshUrlCache.set(texAssetId, freshUrl);
+          }
+          node.data = { ...data, imageUrl: freshUrl };
+        } catch {
+          // Non-fatal — leave the stale URL in place rather than blocking
+          // the whole compile; worst case that one texture renders black.
+        }
+      }
+
       const result = compile({ nodes: parsed.nodes, edges: parsed.edges });
       if (!result.ok) {
         console.warn(`Custom shader ${assetId} failed to compile: ${result.error}`);

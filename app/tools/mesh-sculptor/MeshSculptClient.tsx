@@ -253,9 +253,26 @@ export default function MeshSculptClient() {
   // Rig mode: manually-placed joints (lib/sculpt/rig.ts) — distinct from
   // `bones` above (an imported skeleton). Starts empty on every mesh;
   // populated as the user places joints in the viewport.
-  const [joints, setJoints] = useState<Array<{ entryId: string; id: string; name: string; depth: number }>>([]);
+  const [joints, setJoints] = useState<Array<{ entryId: string; id: string; name: string; depth: number; hasCircle: boolean }>>([]);
   const [selectedJointId, setSelectedJointId] = useState<string | null>(null);
   const [editingJointId, setEditingJointId] = useState<string | null>(null);
+  // Maya-style parenting: Shift-click a second joint to mark it as the
+  // parent-designate (without changing the primary/gizmo selection), then
+  // press P to commit via reparentJoint, Shift+P to un-parent.
+  const [pendingParentJointId, setPendingParentJointId] = useState<string | null>(null);
+  const [rigMsg, setRigMsg] = useState("");
+
+  // Rig mode: which control-circle CV (if any) currently has the gizmo
+  // attached — only used to gate Backspace/Delete between removing a CV
+  // point vs. a joint (lib/sculpt/curve.ts's ControlCurve, one per joint,
+  // surfaced via each joint's own `hasCircle` flag, not a separate list).
+  const [selectedCurveId, setSelectedCurveId] = useState<string | null>(null);
+
+  // Bind Skin: converts the placed joints into a real posable skeleton
+  // (lib/sculpt/skinning.ts's two weighting algorithms). rigBindInfo is
+  // null when the primary rig entry has no joints at all (nothing to bind).
+  const [bindAlgorithm, setBindAlgorithm] = useState<"distance" | "diffusion">("distance");
+  const [rigBindInfo, setRigBindInfo] = useState<{ jointCount: number; bound: boolean; boneCount: number } | null>(null);
 
   const viewerHandleRef = useRef<SculptViewerHandle | null>(null);
   const navigatorBarRef = useRef<HTMLDivElement | null>(null);
@@ -592,12 +609,27 @@ export default function MeshSculptClient() {
   const refreshJoints = useCallback(() => {
     const handle = viewerHandleRef.current;
     const entries = handle?.getMeshEntries() ?? [];
-    const all: Array<{ entryId: string; id: string; name: string; depth: number }> = [];
+    const all: Array<{ entryId: string; id: string; name: string; depth: number; hasCircle: boolean }> = [];
     for (const entry of entries) {
       for (const joint of handle?.getJoints(entry.id) ?? []) all.push({ entryId: entry.id, ...joint });
     }
     setJoints(all);
   }, []);
+
+  // The single entry Bind Skin operates on for v1 — same "first entry"
+  // simplification primaryPoseEntryId already makes for the pose timeline.
+  const primaryRigEntryId = useCallback((): string | null => joints[0]?.entryId ?? null, [joints]);
+
+  const refreshRigBindInfo = useCallback(() => {
+    const handle = viewerHandleRef.current;
+    const entryId = primaryRigEntryId();
+    setRigBindInfo(handle && entryId ? handle.getRigBindInfo(entryId) ?? null : null);
+  }, [primaryRigEntryId]);
+
+  // Re-derive whenever `joints` changes (a joint placed/deleted) — same
+  // "effect reacts to the dependent state, not a synchronous call right
+  // after setJoints" reasoning as refreshPoseClips below.
+  useEffect(() => { refreshRigBindInfo(); }, [joints, refreshRigBindInfo]);
 
   // The single entry the pose timeline operates on for v1 — same
   // "first skinned entry" simplification `bones` already makes by
@@ -780,13 +812,89 @@ export default function MeshSculptClient() {
     refreshJoints();
   }, [refreshJoints]);
 
+  // Shift-click in the viewport or the Joints list marks a second joint as
+  // the parent-designate — mirrors Maya's "select child(ren), then
+  // shift-select the parent last" order, committed on P (see the keydown
+  // handler below).
+  const handleMarkPendingParent = useCallback((jointId: string) => {
+    setRigMsg("");
+    setPendingParentJointId((cur) => (cur === jointId ? null : jointId));
+  }, []);
+
+  const handleParentJoint = useCallback((unparent: boolean) => {
+    if (!selectedJointId) return;
+    const child = joints.find((jt) => jt.id === selectedJointId);
+    if (!child) return;
+    if (unparent) {
+      viewerHandleRef.current?.reparentJoint(child.entryId, child.id, null);
+      setRigMsg("");
+      refreshJoints();
+      return;
+    }
+    if (!pendingParentJointId || pendingParentJointId === selectedJointId) return;
+    const parent = joints.find((jt) => jt.id === pendingParentJointId);
+    if (!parent || parent.entryId !== child.entryId) {
+      setRigMsg("Parent must be a joint on the same mesh.");
+      return;
+    }
+    const result = viewerHandleRef.current?.reparentJoint(child.entryId, child.id, parent.id);
+    if (result && !result.ok) {
+      setRigMsg(result.reason ?? "Couldn't reparent.");
+      return;
+    }
+    setRigMsg("");
+    setPendingParentJointId(null);
+    refreshJoints();
+  }, [selectedJointId, pendingParentJointId, joints, refreshJoints]);
+
   // A selection change in the viewport can also mean a NEW joint was just
   // created (click-to-place auto-selects it) — refresh the list either
   // way rather than needing a separate "a joint was created" event.
   const handleJointSelectionChange = useCallback((jointId: string | null) => {
     setSelectedJointId(jointId);
+    setPendingParentJointId(null);
+    setRigMsg("");
     refreshJoints();
   }, [refreshJoints]);
+
+  const handleAddControlCircle = useCallback((entryId: string, jointId: string) => {
+    const result = viewerHandleRef.current?.addControlCircle(entryId, jointId);
+    if (result && !result.ok) setRigMsg(result.reason ?? "Couldn't add control circle.");
+    else setRigMsg("");
+    refreshJoints();
+  }, [refreshJoints]);
+
+  const handleRemoveControlCircle = useCallback((entryId: string, jointId: string) => {
+    viewerHandleRef.current?.removeControlCircle(entryId, jointId);
+    refreshJoints();
+  }, [refreshJoints]);
+
+  // Fired whenever a control-circle CV gets selected/deselected (viewport
+  // click) — only used to gate Backspace/Delete below between removing a
+  // CV point vs. a joint.
+  const handleCurveSelectionChange = useCallback((curveId: string | null) => {
+    setSelectedCurveId(curveId);
+  }, []);
+
+  const handleBindSkin = useCallback(() => {
+    const entryId = primaryRigEntryId();
+    if (!entryId) return;
+    const result = viewerHandleRef.current?.bindSkin(entryId, bindAlgorithm);
+    if (result && !result.ok) setRigMsg(result.reason ?? "Couldn't bind skin.");
+    else setRigMsg("");
+    refreshRigBindInfo();
+    refreshBones();
+  }, [primaryRigEntryId, bindAlgorithm, refreshRigBindInfo, refreshBones]);
+
+  const handleUnbindSkin = useCallback(() => {
+    const entryId = primaryRigEntryId();
+    if (!entryId) return;
+    const result = viewerHandleRef.current?.unbindSkin(entryId);
+    if (result && !result.ok) setRigMsg(result.reason ?? "Couldn't unbind.");
+    else setRigMsg("");
+    refreshRigBindInfo();
+    refreshBones();
+  }, [primaryRigEntryId, refreshRigBindInfo, refreshBones]);
 
   // "Human" is special-cased to load the real public/human_low_poly.obj
   // asset instead of buildHumanBase()'s crude placeholder (22 merged
@@ -897,6 +1005,20 @@ export default function MeshSculptClient() {
           const j = joints.find((jt) => jt.id === selectedJointId);
           if (j) handleDeleteJoint(j.entryId, j.id);
         }
+        // Deletes whichever control-circle CV currently has the gizmo
+        // attached (not the whole circle) — mirrors the joint branch
+        // above, but the point-level selection lives only in the viewer,
+        // so this always delegates rather than looking it up here.
+        else if (editMode === "rig" && selectedCurveId && !selectedJointId && (e.key === "Backspace" || e.key === "Delete")) {
+          e.preventDefault();
+          viewerHandleRef.current?.deleteSelectedCurvePoint();
+        }
+        // Maya's own key for this exact gesture: select child, shift-select
+        // parent last, press P. Shift+P un-parents. Reserved — don't rebind.
+        else if (editMode === "rig" && selectedJointId && e.key.toLowerCase() === "p") {
+          e.preventDefault();
+          handleParentJoint(e.shiftKey);
+        }
         else if (e.key.toLowerCase() === "w") setTransformMode("translate");
         else if (e.key.toLowerCase() === "e") setTransformMode("rotate");
         else if (e.key.toLowerCase() === "r") setTransformMode("scale");
@@ -918,7 +1040,7 @@ export default function MeshSculptClient() {
     window.addEventListener("keydown", onDown);
     window.addEventListener("keyup", onUp);
     return () => { window.removeEventListener("keydown", onDown); window.removeEventListener("keyup", onUp); };
-  }, [editMode, brushMode, handleClearMask, selectedJointId, joints, handleDeleteJoint]);
+  }, [editMode, brushMode, handleClearMask, selectedJointId, joints, handleDeleteJoint, handleParentJoint, selectedCurveId]);
 
   const handleToggleSubmeshVisible = useCallback((id: string, visible: boolean) => {
     viewerHandleRef.current?.setEntryVisible(id, visible);
@@ -1216,11 +1338,50 @@ export default function MeshSculptClient() {
                 <div className="mt-2">
                   <p className="text-[10.5px] mb-3" style={{ color: "#6a8098" }}>
                     Click the mesh to place a joint (click again from a
-                    selected joint to chain the next one). To isolate a
-                    region for a joint to scale/rotate/move, paint it with
-                    the Mask brush first (Sculpt mode) — the same mask
-                    Extract/Detach use.
+                    selected joint to chain the next one). Select a joint
+                    and hit "+ Circle" to add a control circle — a bigger,
+                    Maya-style click target for that joint; drag its own
+                    points to reshape it, or click anywhere on the ring to
+                    select/pose the joint. To isolate a region for an
+                    unbound joint to scale/rotate/move, paint it with the
+                    Mask brush first (Sculpt mode).
                   </p>
+
+                  {joints.length > 0 && (
+                    <div className="mb-3 pb-3 border-b border-[#2a2320]">
+                      <p className="text-[10px] text-dim uppercase tracking-wide mb-1.5">Bind Skin</p>
+                      <p className="text-[10.5px] mb-2" style={{ color: "#6a8098" }}>
+                        Turns the placed joints into a real posable
+                        skeleton with automatically-computed weights —
+                        pose it afterward in Pose mode.
+                      </p>
+                      <div className="flex gap-1 mb-2">
+                        {([["distance", "Distance"], ["diffusion", "Diffusion"]] as [typeof bindAlgorithm, string][]).map(([a, label]) => (
+                          <button key={a} onClick={() => setBindAlgorithm(a)}
+                            disabled={!!rigBindInfo?.bound}
+                            title={a === "distance"
+                              ? "Nearest bone segments by inverse distance — fast, but can bleed across thin gaps (fingers, straps)"
+                              : "Mesh-aware: spreads influence along the mesh surface graph, not straight-line distance — slower, but respects thin gaps"}
+                            className="flex-1 py-1.5 rounded text-[11px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            style={{ background: bindAlgorithm === a ? "rgba(196,123,232,.22)" : "#1e1a17", color: bindAlgorithm === a ? PURPLE : "#8aa0b4" }}>
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                      <button
+                        onClick={rigBindInfo?.bound ? handleUnbindSkin : handleBindSkin}
+                        className="w-full py-1.5 rounded text-[11px] font-semibold text-white transition-colors"
+                        style={{ background: rigBindInfo?.bound ? "#8a3a3a" : PURPLE }}>
+                        {rigBindInfo?.bound ? "Unbind" : "Bind Skin"}
+                      </button>
+                      {rigBindInfo?.bound && (
+                        <p className="text-[10.5px] mt-1.5" style={{ color: "#8ee85a" }}>
+                          Bound — {rigBindInfo.boneCount} bone{rigBindInfo.boneCount === 1 ? "" : "s"} · pose it in Pose mode
+                        </p>
+                      )}
+                    </div>
+                  )}
+
                   <p className="text-[10px] text-dim uppercase tracking-wide mb-1.5">Joints</p>
                   {joints.length === 0 && (
                     <p className="text-[10.5px]" style={{ color: "#4a4040" }}>No joints yet — click the mesh to place one.</p>
@@ -1242,14 +1403,30 @@ export default function MeshSculptClient() {
                           />
                         ) : (
                           <button
-                            onClick={() => handleSelectJoint(joint.entryId, joint.id === selectedJointId ? null : joint.id)}
+                            onClick={(e) => {
+                              if (e.shiftKey && selectedJointId && joint.id !== selectedJointId) {
+                                handleMarkPendingParent(joint.id);
+                                return;
+                              }
+                              handleSelectJoint(joint.entryId, joint.id === selectedJointId ? null : joint.id);
+                            }}
                             onDoubleClick={() => setEditingJointId(joint.id)}
-                            style={{ background: selectedJointId === joint.id ? "rgba(196,123,232,.22)" : "transparent", color: selectedJointId === joint.id ? PURPLE : "#8aa0b4" }}
+                            style={{
+                              background: pendingParentJointId === joint.id ? "rgba(232,168,63,.22)" : selectedJointId === joint.id ? "rgba(196,123,232,.22)" : "transparent",
+                              color: pendingParentJointId === joint.id ? "#e8a83f" : selectedJointId === joint.id ? PURPLE : "#8aa0b4",
+                            }}
                             className="flex-1 text-left py-1 px-1.5 rounded text-[11px] truncate transition-colors hover:bg-[#1e1a17]"
-                            title="Click to select · Double-click to rename">
+                            title="Click to select · Shift-click to mark as parent (press P) · Double-click to rename">
                             {joint.name}
                           </button>
                         )}
+                        <button
+                          onClick={() => joint.hasCircle ? handleRemoveControlCircle(joint.entryId, joint.id) : handleAddControlCircle(joint.entryId, joint.id)}
+                          title={joint.hasCircle ? "Remove control circle" : "Add a control circle (Maya-style rig control) at this joint"}
+                          className="text-[10px] px-1.5 py-0.5 rounded transition-colors whitespace-nowrap"
+                          style={{ color: joint.hasCircle ? "#5ac8e8" : "#8aa0b4", border: "1px solid #3a3530" }}>
+                          {joint.hasCircle ? "− Circle" : "+ Circle"}
+                        </button>
                         <button
                           onClick={() => handleDeleteJoint(joint.entryId, joint.id)}
                           title="Delete joint (children reparent up)"
@@ -1259,8 +1436,16 @@ export default function MeshSculptClient() {
                       </div>
                     ))}
                   </div>
-                  <p className="text-[10.5px] mt-2" style={{ color: selectedJointId ? PURPLE : "#6a8098" }}>
-                    {selectedJointId ? "Drag the gizmo to reposition the joint, or transform the masked region around it" : "Click a joint (in the list or viewport) to select it"}
+                  <p className="text-[10.5px] mt-2" style={{ color: rigMsg ? "#e05a4e" : pendingParentJointId ? "#e8a83f" : selectedCurveId ? "#5ac8e8" : selectedJointId ? PURPLE : "#6a8098" }}>
+                    {rigMsg
+                      ? rigMsg
+                      : pendingParentJointId
+                        ? "Press P to parent the selected joint under this one (Shift+P to un-parent)"
+                        : selectedCurveId
+                          ? "Drag a control-circle point to reshape it · Backspace/Delete removes the selected point"
+                          : selectedJointId
+                            ? "Drag the gizmo to reposition · Shift-click another joint (list or viewport) to mark it as parent, then press P"
+                            : "Click a joint (in the list or viewport) to select it"}
                   </p>
                 </div>
               )}
@@ -1823,6 +2008,9 @@ export default function MeshSculptClient() {
             onLoopPreview={handleLoopPreview}
             onBoneSelect={setSelectedBoneId}
             onJointSelect={handleJointSelectionChange}
+            onJointShiftClick={(_entryId, jointId) => handleMarkPendingParent(jointId)}
+            onCurveSelect={handleCurveSelectionChange}
+            onRequestPoseMode={() => setEditMode("pose")}
             onProjectionChange={setIsOrthographic}
             onPoseTimeChange={handlePoseTimeChange}
             paintColor={paintColor}

@@ -22,7 +22,7 @@ import { buildTopology, walkEdgeLoop, type MeshTopology, type EdgeLoop } from "@
 import { extrudeFaces as extrudeFacesLib, extrudeEdgeLoop as extrudeEdgeLoopLib, findGeometryIssues, type ExtrudeFace } from "@/lib/sculpt/extrude";
 import { buildMirrorData, type MirrorData } from "@/lib/sculpt/mirror";
 import { createBone, nextBoneName, renameBone as renameRigBone, deleteBone as deleteRigBone, reparentBone, type RigBone, type RigSkeleton } from "@/lib/sculpt/rig";
-import { createControlCurve, nextCurveName, findCurveForJoint, removeCurvePoint, deleteCurve, deleteCurvesForJoint, type ControlCurve } from "@/lib/sculpt/curve";
+import { createControlCurve, nextControlName, findControlForAttachment, findControl, removeCurvePoint, deleteControl, deleteControlsForAttachment, type ControlCurve, type ControlAttachment } from "@/lib/sculpt/curve";
 import { computeDistanceWeights, computeDiffusionWeights, buildAdjacency, type BoneSegment } from "@/lib/sculpt/skinning";
 import { conformToReference as conformMeshToReference } from "@/lib/sculpt/conform";
 import { createPoseAnimationState, createClip, findClip, renameClip as renameClipData, duplicateClip as duplicateClipData, deleteClip as deleteClipData, insertWholePoseKeyframe, removeKeyframeAtTime, sampleChannelLinear, getKeyframeTimes as getKeyframeTimesData, setClipLength as setClipLengthData, detectBipedControls, DEFAULT_FRAME_RATE, type PoseAnimationState, type AnimationClipData } from "@/lib/sculpt/animation";
@@ -82,17 +82,13 @@ type SculptMeshEntry = {
    * mask-weighted region transforms. Lazily created on first joint
    * placement, same "absent until used" convention as mask/topology/mirror. */
   rig?: RigSkeleton;
-  /** Rig-mode control circles (lib/sculpt/curve.ts) — Maya-style rig
-   * controls, each attached to one joint in `rig` above and following its
-   * position. Lazily created on first "Add Control Circle" click, same
-   * "absent until used" convention as rig. */
+  /** Pose-mode control circles (lib/sculpt/curve.ts) — Maya-style rig
+   * controls, each a visual skin over a real bone (FK) or IK target/pole
+   * (IK) — selecting/posing/keying a control IS selecting/posing/keying
+   * the thing it's attached to, via the same mechanism as always. Lazily
+   * created on first control (auto biped-detection or manual "+ Control"),
+   * same "absent until used" convention as rig/skeleton. */
   curves?: ControlCurve[];
-  /** Set only after "Bind Skin" — RigBone.id -> its real, live THREE.Bone
-   * in `skeleton` below. Lets control circles resolve their joint's
-   * current POSED position (Pose mode moves these bones, not the frozen
-   * `rig` data) instead of the stale pre-bind position. Cleared on
-   * Unbind; `rig` itself is never touched by bind/unbind either way. */
-  boundJointBones?: Map<string, THREE.Bone>;
   /** Pose-mode keyframeable animation clips + IK chains (lib/sculpt/
    * animation.ts) — only meaningful alongside `skeleton` above. Lazily
    * created on first keyframe insert, same "absent until used"
@@ -655,23 +651,24 @@ export type SculptViewerHandle = {
   /** Manually-placed Rig-mode joints for a given entry (empty until the
    * user places one — most entries won't have any), depth-indented for
    * the Rig-mode Bones list. Distinct from getBones above — these are
-   * plain pivot markers, not an imported skeleton. `hasCircle` reflects
-   * whether a control circle (see below) is attached to that joint. */
-  getJoints: (entryId: string) => Array<{ id: string; name: string; depth: number; hasCircle: boolean }>;
+   * plain pivot markers, not an imported skeleton. */
+  getJoints: (entryId: string) => Array<{ id: string; name: string; depth: number }>;
   /** Attaches the rig gizmo to a joint by id, or detaches it if jointId is null. */
   selectJoint: (entryId: string, jointId: string | null) => void;
   renameJoint: (entryId: string, jointId: string, name: string) => void;
   /** Removes a joint; its own children reparent to its parent (never
-   * deleted or orphaned) — mirrors lib/sculpt/rig.ts's deleteBone. Also
-   * removes that joint's control circle, if any. */
+   * deleted or orphaned) — mirrors lib/sculpt/rig.ts's deleteBone. */
   deleteJoint: (entryId: string, jointId: string) => void;
   /** Maya-style parenting: sets jointId's parent to newParentId (null to
    * un-parent). Rejected (ok: false) if it would create a cycle. */
   reparentJoint: (entryId: string, jointId: string, newParentId: string | null) => { ok: boolean; reason?: string };
-  /** Rig mode's control circles (lib/sculpt/curve.ts) — Maya-style rig
-   * controls, one per joint. Fails if the joint already has one. */
-  addControlCircle: (entryId: string, jointId: string) => { ok: boolean; reason?: string };
-  removeControlCircle: (entryId: string, jointId: string) => void;
+  /** Pose-mode control circles (lib/sculpt/curve.ts) — a visual skin over
+   * a real bone or IK target/pole; selecting/posing/keying a control IS
+   * selecting/posing/keying whatever it's attached to. One per attachment. */
+  getControls: (entryId: string) => Array<{ id: string; name: string; attachment: ControlAttachment }>;
+  addControlToBone: (entryId: string, boneUuid: string) => { ok: boolean; reason?: string };
+  addControlToIKChain: (entryId: string, chainId: string, part: "target" | "pole") => { ok: boolean; reason?: string };
+  removeControl: (entryId: string, controlId: string) => void;
   /** Removes the currently gizmo-selected control-circle point (CV), if any. */
   deleteSelectedCurvePoint: () => void;
   /** Converts a Rig-mode joint hierarchy into a real THREE.Skeleton with
@@ -683,6 +680,11 @@ export type SculptViewerHandle = {
   unbindSkin: (entryId: string) => { ok: boolean; reason?: string };
   /** Null if the entry has no Rig-mode joints at all (nothing to bind). */
   getRigBindInfo: (entryId: string) => { jointCount: number; bound: boolean; boneCount: number } | null;
+  /** Real Channel Box editing for whatever's currently selected (a bone,
+   * or an IK target) — commits one or more Position/Rotation/Scale fields
+   * at once (multi-field batch edit from Shift-selecting several Channel
+   * Box rows), pushing a single undo snapshot for the whole batch. */
+  setSelectedTransformFields: (entryId: string, fields: Partial<Record<TransformField, number>>) => void;
 };
 
 export type ViewMode = "combined" | "clay" | "wireframe" | "albedo" | "ao";
@@ -691,6 +693,8 @@ export type PrimitiveType = "sphere" | "box" | "cylinder" | "cone" | "torus" | "
 // (pair with xrayEnabled to see through). "onTop": always visible,
 // ignores mesh depth — matches the existing Pose/Rig edit-mode look.
 export type BoneViewerMode = "off" | "on" | "onTop";
+/** One Channel Box row — matches Maya's own Translate/Rotate/Scale XYZ set. */
+export type TransformField = "px" | "py" | "pz" | "rx" | "ry" | "rz" | "sx" | "sy" | "sz";
 
 // ── MatCap clay texture generator (CPU / canvas) ──────────────────────────────
 // Generates a 256×256 sphere image on a canvas using view-space lighting.
@@ -861,12 +865,14 @@ type Props = {
    * selected, or a curve picked in the list) — same "event, not polled
    * ref" reasoning as onJointSelect. */
   onCurveSelect?: (curveId: string | null) => void;
-  /** Fired when clicking a bound joint (its dot or its control circle's
-   * ring) in Rig mode — posing a bound rig happens in Pose mode via its
-   * real bone, not Rig mode's mask-drag gizmo, so this asks the outer
-   * component to switch editMode to "pose" (the bone selection itself is
-   * already applied by the time this fires). */
-  onRequestPoseMode?: () => void;
+  /** Fired whenever the currently-selected bone/IK-target's transform
+   * changes (selection change, or live during a drag) — LOCAL (parent-
+   * relative) position/rotation(Euler degrees)/scale for a real,
+   * editable Channel-Box panel. `kind` tells the UI which fields are
+   * meaningful: an IK target has no real rotation/scale (rotationDeg is
+   * always 0, scale always 1 — shown for type-shape convenience, not
+   * meant to be editable for that kind). Null when nothing's selected. */
+  onSelectedTransformChange?: (info: { kind: "bone" | "ikTarget"; position: [number, number, number]; rotationDeg: [number, number, number]; scale: [number, number, number] } | null) => void;
   /** Fired whenever the Perspective/Ortho projection toggle switches, so
    * the toggle button can show which mode is currently active. */
   onProjectionChange?: (isOrthographic: boolean) => void;
@@ -908,7 +914,7 @@ export default function SculptViewer({
   onJointSelect,
   onJointShiftClick,
   onCurveSelect,
-  onRequestPoseMode,
+  onSelectedTransformChange,
   onProjectionChange,
   onPoseTimeChange,
   handleRef,
@@ -1020,7 +1026,7 @@ export default function SculptViewer({
   const onJointSelectRef = useRef(onJointSelect);
   const onJointShiftClickRef = useRef(onJointShiftClick);
   const onCurveSelectRef = useRef(onCurveSelect);
-  const onRequestPoseModeRef = useRef(onRequestPoseMode);
+  const onSelectedTransformChangeRef = useRef(onSelectedTransformChange);
   const onProjectionChangeRef = useRef(onProjectionChange);
   const onPoseTimeChangeRef = useRef(onPoseTimeChange);
   useEffect(() => { onModelLoadedRef.current = onModelLoaded; }, [onModelLoaded]);
@@ -1031,7 +1037,7 @@ export default function SculptViewer({
   useEffect(() => { onJointSelectRef.current = onJointSelect; }, [onJointSelect]);
   useEffect(() => { onJointShiftClickRef.current = onJointShiftClick; }, [onJointShiftClick]);
   useEffect(() => { onCurveSelectRef.current = onCurveSelect; }, [onCurveSelect]);
-  useEffect(() => { onRequestPoseModeRef.current = onRequestPoseMode; }, [onRequestPoseMode]);
+  useEffect(() => { onSelectedTransformChangeRef.current = onSelectedTransformChange; }, [onSelectedTransformChange]);
   useEffect(() => { onProjectionChangeRef.current = onProjectionChange; }, [onProjectionChange]);
   useEffect(() => { onPoseTimeChangeRef.current = onPoseTimeChange; }, [onPoseTimeChange]);
 
@@ -1142,10 +1148,10 @@ export default function SculptViewer({
   const selectedCurvePointIndexRef = useRef<number | null>(null);
   const updateCurveHandlesRef = useRef<() => void>(() => {});
   const selectCurvePointRef = useRef<(entry: SculptMeshEntry | null, curve: ControlCurve | null, index: number | null) => void>(() => {});
-  const addControlCircleRef = useRef<(entry: SculptMeshEntry, bone: RigBone) => ControlCurve | null>(() => null);
+  const addControlRef = useRef<(entry: SculptMeshEntry, attachment: ControlAttachment) => ControlCurve | null>(() => null);
   const getCurvePointHitFromEventRef = useRef<(e: PointerEvent) => { entry: SculptMeshEntry; curve: ControlCurve; index: number } | null>(() => null);
-  const getControlCircleHitFromEventRef = useRef<(e: PointerEvent) => { entry: SculptMeshEntry; jointId: string } | null>(() => null);
-  const selectJointOrRedirectToPoseRef = useRef<(entry: SculptMeshEntry, jointId: string) => void>(() => {});
+  const getControlCircleHitFromEventRef = useRef<(e: PointerEvent) => { entry: SculptMeshEntry; attachment: ControlAttachment } | null>(() => null);
+  const selectControlAttachmentRef = useRef<(entry: SculptMeshEntry, attachment: ControlAttachment) => void>(() => {});
 
   // ── IK target dragging ─────────────────────────────────────────────────
   // A dedicated TransformControls, same pattern as poseTransformControls/
@@ -1167,6 +1173,8 @@ export default function SculptViewer({
   const selectedIKChainIdRef = useRef<string | null>(null);
   const selectedIKEntryRef = useRef<SculptMeshEntry | null>(null);
   const selectIKChainRef = useRef<(entry: SculptMeshEntry | null, chainId: string | null) => void>(() => {});
+  const solveIKChainRef = useRef<(entry: SculptMeshEntry, chainId: string) => void>(() => {});
+  const setSelectedTransformFieldsRef = useRef<(entry: SculptMeshEntry, fields: Partial<Record<TransformField, number>>) => void>(() => {});
 
   useEffect(() => {
     boneViewerModeRef.current = boneViewerMode;
@@ -1187,22 +1195,22 @@ export default function SculptViewer({
     }
     if (editMode === "pose") {
       updateBoneHandlesRef.current();
+      updateCurveHandlesRef.current();
     } else {
       selectBoneRef.current(null, null);
       selectIKChainRef.current(null, null);
       if (boneHandlesRef.current) boneHandlesRef.current.visible = false;
       if (boneLinksRef.current) boneLinksRef.current.visible = false;
+      selectCurvePointRef.current(null, null, null);
+      if (curveHandlesRef.current) curveHandlesRef.current.visible = false;
+      if (curveLinesRef.current) curveLinesRef.current.visible = false;
     }
     if (editMode === "rig") {
       updateJointHandlesRef.current();
-      updateCurveHandlesRef.current();
     } else {
       selectJointRef.current(null, null);
       if (jointHandlesRef.current) jointHandlesRef.current.visible = false;
       if (jointLinksRef.current) jointLinksRef.current.visible = false;
-      selectCurvePointRef.current(null, null, null);
-      if (curveHandlesRef.current) curveHandlesRef.current.visible = false;
-      if (curveLinesRef.current) curveLinesRef.current.visible = false;
     }
   }, [editMode]);
   useEffect(() => {
@@ -1563,6 +1571,85 @@ export default function SculptViewer({
     poseTransformControlsRef.current = poseTransformControls;
     poseTransformHelperRef.current = poseTransformHelper;
 
+    // Channel-Box-style numeric readout for whatever's currently selected
+    // (a bone or an IK chain's target) — fired on selection change and on
+    // every drag, so the UI's Position/Rotation fields update live rather
+    // than only settling after a drag ends.
+    // Channel-Box values are LOCAL (parent-relative) — matches what Maya's
+    // own Channel Box actually shows, and (unlike world space) writes
+    // straight back to bone.position/quaternion/scale with no matrix math.
+    function emitSelectedTransform() {
+      const cb = onSelectedTransformChangeRef.current;
+      if (!cb) return;
+      const bone = selectedBoneRef.current;
+      if (bone) {
+        const euler = new THREE.Euler().setFromQuaternion(bone.quaternion, "XYZ");
+        cb({
+          kind: "bone",
+          position: [bone.position.x, bone.position.y, bone.position.z],
+          rotationDeg: [THREE.MathUtils.radToDeg(euler.x), THREE.MathUtils.radToDeg(euler.y), THREE.MathUtils.radToDeg(euler.z)],
+          scale: [bone.scale.x, bone.scale.y, bone.scale.z],
+        });
+        return;
+      }
+      const chainId = selectedIKChainIdRef.current;
+      const ikEntry = selectedIKEntryRef.current;
+      const targetBone = chainId ? ikEntry?.ikTargetBones?.get(chainId) : undefined;
+      if (targetBone) {
+        cb({
+          kind: "ikTarget",
+          position: [targetBone.position.x, targetBone.position.y, targetBone.position.z],
+          rotationDeg: [0, 0, 0],
+          scale: [1, 1, 1],
+        });
+        return;
+      }
+      cb(null);
+    }
+
+    // Real Channel Box commit — one or more fields at once (a multi-field
+    // Shift-select batch, or just one), one undo snapshot for the whole
+    // batch (matching the drag-start snapshot convention, just triggered
+    // by Enter/blur instead of dragging-changed).
+    function setSelectedTransformFields(entry: SculptMeshEntry, fields: Partial<Record<TransformField, number>>) {
+      if (selectedBoneEntryRef.current === entry && selectedBoneRef.current) {
+        const bone = selectedBoneRef.current;
+        undoRef.current.pushPose([bone]);
+        if (fields.px !== undefined) bone.position.x = fields.px;
+        if (fields.py !== undefined) bone.position.y = fields.py;
+        if (fields.pz !== undefined) bone.position.z = fields.pz;
+        if (fields.rx !== undefined || fields.ry !== undefined || fields.rz !== undefined) {
+          const euler = new THREE.Euler().setFromQuaternion(bone.quaternion, "XYZ");
+          if (fields.rx !== undefined) euler.x = THREE.MathUtils.degToRad(fields.rx);
+          if (fields.ry !== undefined) euler.y = THREE.MathUtils.degToRad(fields.ry);
+          if (fields.rz !== undefined) euler.z = THREE.MathUtils.degToRad(fields.rz);
+          bone.quaternion.setFromEuler(euler);
+        }
+        if (fields.sx !== undefined) bone.scale.x = fields.sx;
+        if (fields.sy !== undefined) bone.scale.y = fields.sy;
+        if (fields.sz !== undefined) bone.scale.z = fields.sz;
+        bone.updateMatrixWorld(true);
+        updateBoneHandlesRef.current();
+        updateCurveHandlesRef.current();
+        emitSelectedTransform();
+        return;
+      }
+      const chainId = selectedIKChainIdRef.current;
+      if (selectedIKEntryRef.current === entry && chainId) {
+        const targetBone = entry.ikTargetBones?.get(chainId);
+        if (!targetBone) return;
+        undoRef.current.pushPose([...ikChainBones(entry, chainId), targetBone]);
+        if (fields.px !== undefined) targetBone.position.x = fields.px;
+        if (fields.py !== undefined) targetBone.position.y = fields.py;
+        if (fields.pz !== undefined) targetBone.position.z = fields.pz;
+        targetBone.updateMatrixWorld(true);
+        solveIKChain(entry, chainId);
+        updateCurveHandlesRef.current();
+        emitSelectedTransform();
+      }
+    }
+    setSelectedTransformFieldsRef.current = setSelectedTransformFields;
+
     poseTransformControls.addEventListener("dragging-changed", (event) => {
       controls.enabled = !event.value;
       // Snapshot the bone's pre-drag transform for undo — same trigger
@@ -1593,6 +1680,10 @@ export default function SculptViewer({
           if (entry.ikTargetBones?.has(chain.id)) solveIKChain(entry, chain.id);
         }
       }
+      // Any control ring attached to this (or a re-solved) bone needs to
+      // visually follow live, not just after the drag ends.
+      updateCurveHandlesRef.current();
+      emitSelectedTransform();
     });
 
     // World position of every bone across every skinned entry, in the same
@@ -1668,6 +1759,7 @@ export default function SculptViewer({
         if (helper) helper.visible = true;
       }
       onBoneSelectRef.current?.(bone?.uuid ?? null);
+      emitSelectedTransform();
     }
     selectBoneRef.current = selectBone;
 
@@ -1953,6 +2045,7 @@ export default function SculptViewer({
       }
       updateBoneHandlesRef.current();
     }
+    solveIKChainRef.current = solveIKChain;
 
     function selectIKChain(entry: SculptMeshEntry | null, chainId: string | null) {
       // Selecting an IK target deselects any manually-selected pose
@@ -1966,6 +2059,7 @@ export default function SculptViewer({
       }
       selectedIKEntryRef.current = entry;
       selectedIKChainIdRef.current = chainId;
+      emitSelectedTransform();
       const tc = ikTransformControlsRef.current;
       const helper = ikTransformHelperRef.current;
       const poleTc = ikPoleTransformControlsRef.current;
@@ -2001,12 +2095,17 @@ export default function SculptViewer({
       controls.enabled = !event.value;
       // Snapshot the chain's bones before the drag mutates them via
       // solveIKChain — same trigger point poseTransformControls uses for
-      // direct FK bone drags (see its own dragging-changed above).
+      // direct FK bone drags (see its own dragging-changed above). The
+      // target bone's OWN position joins the same snapshot as the limb it
+      // drives, so one undo restores both together — previously only the
+      // limb was captured, leaving the handle visually stuck post-undo.
       if (event.value) {
         const entry = selectedIKEntryRef.current;
         const chainId = selectedIKChainIdRef.current;
         if (entry && chainId) {
+          const targetBone = entry.ikTargetBones?.get(chainId);
           const bones = ikChainBones(entry, chainId);
+          if (targetBone) bones.push(targetBone);
           if (bones.length) undoRef.current.pushPose(bones);
         }
       }
@@ -2019,6 +2118,8 @@ export default function SculptViewer({
       const entry = selectedIKEntryRef.current;
       const chainId = selectedIKChainIdRef.current;
       if (entry && chainId) solveIKChain(entry, chainId);
+      updateCurveHandlesRef.current();
+      emitSelectedTransform();
     });
 
     ikPoleTransformControls.addEventListener("dragging-changed", (event) => {
@@ -2027,7 +2128,9 @@ export default function SculptViewer({
         const entry = selectedIKEntryRef.current;
         const chainId = selectedIKChainIdRef.current;
         if (entry && chainId) {
+          const poleBone = entry.ikPoleBones?.get(chainId);
           const bones = ikChainBones(entry, chainId);
+          if (poleBone) bones.push(poleBone);
           if (bones.length) undoRef.current.pushPose(bones);
         }
       }
@@ -2036,6 +2139,8 @@ export default function SculptViewer({
       const entry = selectedIKEntryRef.current;
       const chainId = selectedIKChainIdRef.current;
       if (entry && chainId) solveIKChain(entry, chainId);
+      updateCurveHandlesRef.current();
+      emitSelectedTransform();
     });
 
     // World position of every joint across every entry with a `rig`, in
@@ -2224,7 +2329,7 @@ export default function SculptViewer({
     });
     rigTransformControls.addEventListener("objectChange", applyRigDrag);
 
-    // ── control curves: Maya-style rig controls attached to a joint ───────
+    // ── control circles: Pose-mode skin over real bones/IK targets ────────
     // Same "flat buffer + parallel index array for screen-space picking"
     // shape as jointHandleIndex/getJointHitFromEvent above, for the CVs.
     // The ring itself is hit-tested separately (getControlCircleHitFromEvent
@@ -2233,26 +2338,28 @@ export default function SculptViewer({
     const CIRCLE_SEGMENTS = 12;
     const CIRCLE_RADIUS = 0.25;
 
-    // A curve's points are stored as LOCAL offsets from its joint's
-    // position (lib/sculpt/curve.ts) — this resolves them to world space,
-    // the single source of truth every render/pick/drag path below uses,
-    // so a circle automatically follows wherever its joint moves. Once
-    // bound (see bindSkin), Pose mode moves the real THREE.Bone, not the
-    // frozen RigBone data — boundJointBones is checked first so a circle
-    // keeps following the LIVE posed position instead of going stale.
-    // Returns null if the joint no longer exists (deleteJoint cleans up
-    // its curves, so this shouldn't happen — a safe guard costs nothing).
+    // Resolves the live Object3D a control is attached to — a real
+    // skeleton bone (FK) or an IK chain's target/pole bone (IK). This is
+    // always the SAME object Pose mode's own selection/gizmo/keyframe
+    // system already operates on — a control has no transform of its own,
+    // it's a skin, so there's nothing to keep in sync separately.
+    function resolveAttachmentObject(entry: SculptMeshEntry, attachment: ControlAttachment): THREE.Object3D | null {
+      if (attachment.kind === "bone") return entry.skeleton?.bones.find((b) => b.uuid === attachment.boneUuid) ?? null;
+      if (attachment.kind === "ikTarget") return entry.ikTargetBones?.get(attachment.chainId) ?? null;
+      return entry.ikPoleBones?.get(attachment.chainId) ?? null;
+    }
+
+    // A curve's points are stored as LOCAL offsets from its attached
+    // object's position (lib/sculpt/curve.ts) — resolved fresh to world
+    // space every call, so a ring automatically follows the bone/IK-target
+    // as it's posed, live. Returns null if the attachment no longer
+    // resolves (bone/chain deleted — unbindSkin cleans up its controls, so
+    // this shouldn't happen; a safe guard costs nothing).
     function curveWorldPoints(entry: SculptMeshEntry, curve: ControlCurve): THREE.Vector3[] | null {
-      const boundBone = entry.boundJointBones?.get(curve.jointId);
-      let base: THREE.Vector3;
-      if (boundBone) {
-        base = new THREE.Vector3();
-        boundBone.getWorldPosition(base);
-      } else {
-        const bone = entry.rig?.bones.find((b) => b.id === curve.jointId);
-        if (!bone) return null;
-        base = new THREE.Vector3(bone.position[0], bone.position[1], bone.position[2]);
-      }
+      const obj = resolveAttachmentObject(entry, curve.attachment);
+      if (!obj) return null;
+      const base = new THREE.Vector3();
+      obj.getWorldPosition(base);
       return curve.points.map((p) => base.clone().add(new THREE.Vector3(p[0], p[1], p[2])));
     }
 
@@ -2265,8 +2372,8 @@ export default function SculptViewer({
       const handles = curveHandlesRef.current;
       const lines = curveLinesRef.current;
       if (!handles || !lines) return;
-      const inRigMode = editModeRef.current === "rig";
-      const depthTest = !inRigMode && boneViewerModeRef.current === "on";
+      const inPoseMode = editModeRef.current === "pose";
+      const depthTest = !inPoseMode && boneViewerModeRef.current === "on";
       curveHandleMat.depthTest = depthTest;
       curveLineMat.depthTest = depthTest;
       curveHandleIndex = [];
@@ -2294,17 +2401,17 @@ export default function SculptViewer({
       handles.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3));
       handles.geometry.attributes.position.needsUpdate = true;
       handles.geometry.computeBoundingSphere();
-      handles.visible = boneViewerModeRef.current !== "off" && positions.length > 0;
+      handles.visible = inPoseMode && positions.length > 0;
       lines.geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(linePositions), 3));
       lines.geometry.attributes.position.needsUpdate = true;
       lines.geometry.computeBoundingSphere();
-      lines.visible = boneViewerModeRef.current !== "off" && linePositions.length > 0;
+      lines.visible = inPoseMode && linePositions.length > 0;
     }
     updateCurveHandlesRef.current = updateCurveHandles;
 
     // Sets which specific CV has the gizmo attached (index null = none —
-    // e.g. when the ring itself was clicked, which selects the joint
-    // instead, via getControlCircleHitFromEvent below).
+    // e.g. when the ring itself was clicked, which selects the attached
+    // bone/IK-target instead, via getControlCircleHitFromEvent below).
     function selectCurvePoint(entry: SculptMeshEntry | null, curve: ControlCurve | null, index: number | null) {
       selectedCurveEntryRef.current = entry;
       selectedCurveRef.current = curve;
@@ -2331,24 +2438,42 @@ export default function SculptViewer({
     }
     selectCurvePointRef.current = selectCurvePoint;
 
-    // Creates a control circle at the given joint, billboarded to face the
-    // current camera — Rig-mode joints are position-only (no orientation
-    // to align a fixed plane to), so facing the camera at creation time
-    // guarantees it reads as a visible ring from the view you're already
-    // in, instead of risking an edge-on line. Points are stored as local
-    // offsets from the joint (curveWorldPoints resolves them), so the
-    // circle automatically follows the joint with no separate parenting
-    // step. One circle per joint for v1 — returns null if it already has one.
-    function addControlCircle(entry: SculptMeshEntry, bone: RigBone): ControlCurve | null {
-      if (findCurveForJoint(entry.curves ?? [], bone.id)) return null;
+    // Creates a control ring on a real bone/IK-target, oriented
+    // PERPENDICULAR TO THE LIMB rather than the camera: for an FK bone,
+    // the ring's normal is the bone's own world-space local-Y axis (the
+    // glTF/three.js convention — the direction it points toward its
+    // child); for an IK target/pole, the normal is the chain's last
+    // segment direction (effector <- mid bone, e.g. foot <- calf, hand <-
+    // forearm) — so a foot/wrist control reads as a ring you'd slide onto
+    // that limb, matching standard biped rig-control convention. One
+    // control per attachment — returns null if it already has one.
+    function addControl(entry: SculptMeshEntry, attachment: ControlAttachment): ControlCurve | null {
+      if (findControlForAttachment(entry.curves ?? [], attachment)) return null;
+      const obj = resolveAttachmentObject(entry, attachment);
+      if (!obj) return null;
       if (!entry.curves) entry.curves = [];
-      const camDir = new THREE.Vector3();
-      camera.getWorldDirection(camDir);
+
       const worldUp = new THREE.Vector3(0, 1, 0);
-      let right = new THREE.Vector3().crossVectors(worldUp, camDir);
-      if (right.lengthSq() < 1e-6) right = new THREE.Vector3(1, 0, 0);
-      right.normalize();
-      const up = new THREE.Vector3().crossVectors(camDir, right).normalize();
+      let normal = worldUp.clone();
+      if (attachment.kind === "bone") {
+        normal.applyQuaternion(obj.getWorldQuaternion(new THREE.Quaternion()));
+      } else {
+        const chain = entry.poseAnimation?.ikChains.find((c) => c.id === attachment.chainId);
+        const midBone = chain ? entry.skeleton?.bones.find((b) => b.name === chain.links[0]) : undefined;
+        const effectorBone = chain ? entry.skeleton?.bones.find((b) => b.name === chain.effectorBone) : undefined;
+        if (midBone && effectorBone) {
+          const midPos = new THREE.Vector3(); midBone.getWorldPosition(midPos);
+          const effPos = new THREE.Vector3(); effectorBone.getWorldPosition(effPos);
+          const dir = effPos.clone().sub(midPos);
+          if (dir.lengthSq() > 1e-8) normal = dir.normalize();
+        }
+      }
+      if (normal.lengthSq() < 1e-8) normal = worldUp.clone();
+
+      const notParallel = Math.abs(normal.dot(worldUp)) < 0.999 ? worldUp : new THREE.Vector3(0, 0, 1);
+      const right = new THREE.Vector3().crossVectors(notParallel, normal).normalize();
+      const up = new THREE.Vector3().crossVectors(normal, right).normalize();
+
       const points: [number, number, number][] = [];
       for (let i = 0; i < CIRCLE_SEGMENTS; i++) {
         const t = (i / CIRCLE_SEGMENTS) * Math.PI * 2;
@@ -2356,12 +2481,12 @@ export default function SculptViewer({
           .add(up.clone().multiplyScalar(Math.sin(t) * CIRCLE_RADIUS));
         points.push([offset.x, offset.y, offset.z]);
       }
-      const curve = createControlCurve(nextCurveName(entry.curves), bone.id, points);
+      const curve = createControlCurve(nextControlName(entry.curves), attachment, points);
       entry.curves.push(curve);
       updateCurveHandles();
       return curve;
     }
-    addControlCircleRef.current = addControlCircle;
+    addControlRef.current = addControl;
 
     function getCurvePointHitFromEvent(e: PointerEvent): { entry: SculptMeshEntry; curve: ControlCurve; index: number } | null {
       if (curveHandleIndex.length === 0) return null;
@@ -2394,14 +2519,13 @@ export default function SculptViewer({
       return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
     }
 
-    // Clicking anywhere on a control circle's rendered ring selects the
-    // joint it belongs to — a bigger, friendlier click target than the
-    // joint's own dot, resolving to the SAME selectJoint the dot/list use,
-    // so posing works identically either way; no separate posing
-    // mechanism for circles.
-    function getControlCircleHitFromEvent(e: PointerEvent): { entry: SculptMeshEntry; jointId: string } | null {
+    // Clicking anywhere on a control ring selects whatever it's attached
+    // to — a bigger, friendlier click target than the bone/IK-target's
+    // own dot, resolving to the exact same selectBone/selectIKChain the
+    // dot/lists use, so posing and keyframing work identically either way.
+    function getControlCircleHitFromEvent(e: PointerEvent): { entry: SculptMeshEntry; attachment: ControlAttachment } | null {
       const rect = renderer.domElement.getBoundingClientRect();
-      let best: { entry: SculptMeshEntry; jointId: string } | null = null;
+      let best: { entry: SculptMeshEntry; attachment: ControlAttachment } | null = null;
       let bestDist = 14; // px — tighter than the CV-dot radius so precise CV clicks still win
       const project = (v: THREE.Vector3) => {
         const p = v.clone().project(camera);
@@ -2410,8 +2534,6 @@ export default function SculptViewer({
       for (const entry of meshEntriesRef.current) {
         if (!entry.curves) continue;
         for (const curve of entry.curves) {
-          const jointExists = entry.rig?.bones.some((b) => b.id === curve.jointId) || entry.boundJointBones?.has(curve.jointId);
-          if (!jointExists) continue;
           const worldPoints = curveWorldPoints(entry, curve);
           if (!worldPoints || worldPoints.length < 3) continue;
           const samples = sampleCurveWorld(worldPoints).map(project);
@@ -2419,7 +2541,7 @@ export default function SculptViewer({
             const a = samples[i];
             const b = samples[(i + 1) % samples.length];
             const d = distToSegment(e.clientX, e.clientY, a.x, a.y, b.x, b.y);
-            if (d < bestDist) { bestDist = d; best = { entry, jointId: curve.jointId }; }
+            if (d < bestDist) { bestDist = d; best = { entry, attachment: curve.attachment }; }
           }
         }
       }
@@ -2427,30 +2549,27 @@ export default function SculptViewer({
     }
     getControlCircleHitFromEventRef.current = getControlCircleHitFromEvent;
 
-    // Shared by the joint-dot and control-circle-ring click handlers below:
-    // an unbound joint attaches Rig mode's own mask-drag gizmo as always;
-    // a bound one has a real posable bone instead, so posing it happens in
-    // Pose mode via its actual THREE.Bone, not Rig mode's gizmo (which
-    // only makes sense pre-bind, since it deforms geometry by an editable
-    // mask rather than moving a real skeleton).
-    function selectJointOrRedirectToPose(entry: SculptMeshEntry, jointId: string) {
-      const boundBone = entry.boundJointBones?.get(jointId);
-      if (boundBone) {
-        selectBoneRef.current(entry, boundBone);
-        onRequestPoseModeRef.current?.();
-        return;
+    // Dispatches a ring click to the exact selection function the
+    // attachment kind already uses elsewhere (bone dot / IK-chain
+    // quick-select) — a control has no selection state of its own.
+    function selectControlAttachment(entry: SculptMeshEntry, attachment: ControlAttachment) {
+      if (attachment.kind === "bone") {
+        const bone = entry.skeleton?.bones.find((b) => b.uuid === attachment.boneUuid);
+        if (bone) selectBoneRef.current(entry, bone);
+      } else {
+        selectIKChainRef.current(entry, attachment.chainId);
       }
-      const rigBone = entry.rig?.bones.find((b) => b.id === jointId);
-      if (rigBone) selectJointRef.current(entry, rigBone);
     }
-    selectJointOrRedirectToPoseRef.current = selectJointOrRedirectToPose;
+    selectControlAttachmentRef.current = selectControlAttachment;
 
-    // CV dragging just writes the point back (as a local offset from the
-    // joint) and re-samples — no mesh deformation, so unlike
-    // beginRigDrag/applyRigDrag there's nothing to snapshot for undo (pure
-    // authoring data, not geometry).
+    // CV dragging writes the point back (as a local offset from the
+    // attached bone/IK-target) and re-samples — snapshot for undo at drag
+    // start, same trigger point every other drag-undo push in this file uses.
     curveTransformControls.addEventListener("dragging-changed", (event) => {
       controls.enabled = !event.value;
+      if (event.value && selectedCurveRef.current) {
+        undoRef.current.pushCurve([selectedCurveRef.current]);
+      }
     });
     curveTransformControls.addEventListener("objectChange", () => {
       const pivot = curveGizmoPivotRef.current;
@@ -2458,13 +2577,11 @@ export default function SculptViewer({
       const curve = selectedCurveRef.current;
       const index = selectedCurvePointIndexRef.current;
       if (!pivot || !entry || !curve || index === null) return;
-      const bone = entry.rig?.bones.find((b) => b.id === curve.jointId);
-      if (!bone) return;
-      curve.points[index] = [
-        pivot.position.x - bone.position[0],
-        pivot.position.y - bone.position[1],
-        pivot.position.z - bone.position[2],
-      ];
+      const obj = resolveAttachmentObject(entry, curve.attachment);
+      if (!obj) return;
+      const base = new THREE.Vector3();
+      obj.getWorldPosition(base);
+      curve.points[index] = [pivot.position.x - base.x, pivot.position.y - base.y, pivot.position.z - base.z];
       updateCurveHandles();
     });
 
@@ -2908,7 +3025,8 @@ export default function SculptViewer({
             const poleBone = new THREE.Bone();
             poleBone.name = `__ikPole_${chain.id}`;
             group.add(poleBone);
-            poleBone.position.copy(midPos).addScaledVector(bendDir, len1 * 1.5);
+            const poleWorldPos = midPos.clone().addScaledVector(bendDir, len1 * 1.5);
+            poleBone.position.copy(poleWorldPos);
             group.worldToLocal(poleBone.position);
             poleBone.updateMatrixWorld(true);
             skinned.skeleton.bones.push(poleBone);
@@ -2933,6 +3051,18 @@ export default function SculptViewer({
         }
         meshEntriesRef.current.push({ id: crypto.randomUUID(), name: entryName, mesh, seams, baseEdgeLen, quadIndices, ...paintEntry, ...skeletonEntry });
         totalVerts += mesh.geometry.attributes.position.count;
+
+        // Auto-populate standard biped controls — COG (hip), feet and
+        // wrists (every detected leg/arm IK chain's target) — for any
+        // rig detectBipedControls recognized. A custom creature with no
+        // detected chains gets nothing here; controls are added manually.
+        if (skeletonEntry.poseAnimation) {
+          const pushedEntry = meshEntriesRef.current[meshEntriesRef.current.length - 1];
+          const { ikChains, hipBoneName } = skeletonEntry.poseAnimation;
+          const hipBone = hipBoneName ? pushedEntry.skeleton?.bones.find((b) => b.name === hipBoneName) : undefined;
+          if (hipBone) addControlRef.current(pushedEntry, { kind: "bone", boneUuid: hipBone.uuid });
+          for (const chain of ikChains) addControlRef.current(pushedEntry, { kind: "ikTarget", chainId: chain.id });
+        }
 
         // Wireframe overlay — excluded from GLB export, hidden by default
         const wire = buildWireOverlay(mesh.geometry, wireMatRef.current!);
@@ -3616,12 +3746,12 @@ export default function SculptViewer({
         return;
       }
       if (editModeRef.current === "pose") {
-        if (poseTransformControlsRef.current?.dragging) return;
+        if (poseTransformControlsRef.current?.dragging || curveTransformControlsRef.current?.dragging) return;
         poseDownPos = { x: e.clientX, y: e.clientY };
         return;
       }
       if (editModeRef.current === "rig") {
-        if (rigTransformControlsRef.current?.dragging || curveTransformControlsRef.current?.dragging) return;
+        if (rigTransformControlsRef.current?.dragging) return;
         rigDownPos = { x: e.clientX, y: e.clientY };
         return;
       }
@@ -3802,16 +3932,32 @@ export default function SculptViewer({
       if (editModeRef.current === "pose") {
         const down = poseDownPos;
         poseDownPos = null;
-        if (poseTransformControlsRef.current?.dragging) return;
+        if (poseTransformControlsRef.current?.dragging || curveTransformControlsRef.current?.dragging) return;
         if (!down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return;
+        // Clicking a control's own CV reshapes it — mutually exclusive
+        // with clicking the ring itself (which selects the attached
+        // bone/IK-target) or a bone dot directly.
+        const curveHit = getCurvePointHitFromEventRef.current(e);
+        if (curveHit) {
+          selectCurvePointRef.current(curveHit.entry, curveHit.curve, curveHit.index);
+          selectBoneRef.current(null, null);
+          return;
+        }
+        const circleHit = getControlCircleHitFromEventRef.current(e);
+        if (circleHit) {
+          selectControlAttachmentRef.current(circleHit.entry, circleHit.attachment);
+          selectCurvePointRef.current(null, null, null);
+          return;
+        }
         const hit = getBoneHitFromEventRef.current(e);
         selectBoneRef.current(hit?.entry ?? null, hit?.bone ?? null);
+        selectCurvePointRef.current(null, null, null);
         return;
       }
       if (editModeRef.current === "rig") {
         const down = rigDownPos;
         rigDownPos = null;
-        if (rigTransformControlsRef.current?.dragging || curveTransformControlsRef.current?.dragging) return;
+        if (rigTransformControlsRef.current?.dragging) return;
         if (!down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return;
         // Clicking an existing joint handle selects it; otherwise a mesh
         // hit creates a new one there (chained to the selected joint, or
@@ -3825,25 +3971,7 @@ export default function SculptViewer({
             onJointShiftClickRef.current?.(jointHit.entry.id, jointHit.bone.id);
             return;
           }
-          selectJointOrRedirectToPoseRef.current(jointHit.entry, jointHit.bone.id);
-          selectCurvePointRef.current(null, null, null);
-          return;
-        }
-        // Same click-to-select shape, for a control circle's own CVs —
-        // mutually exclusive with joint selection (each clears the other).
-        const curveHit = getCurvePointHitFromEventRef.current(e);
-        if (curveHit) {
-          selectCurvePointRef.current(curveHit.entry, curveHit.curve, curveHit.index);
-          selectJointRef.current(null, null);
-          return;
-        }
-        // Clicking anywhere else on a control circle's ring selects the
-        // joint it belongs to — same selectJoint the dot/list use, just a
-        // bigger/friendlier click target.
-        const circleHit = getControlCircleHitFromEventRef.current(e);
-        if (circleHit) {
-          selectJointOrRedirectToPoseRef.current(circleHit.entry, circleHit.jointId);
-          selectCurvePointRef.current(null, null, null);
+          selectJointRef.current(jointHit.entry, jointHit.bone);
           return;
         }
         const nearest = raycastMeshes(e);
@@ -3991,12 +4119,19 @@ export default function SculptViewer({
       // the stale, pre-undo shape/position after the mesh reverts.
       updateSelectionHighlightPointsRef.current();
       repositionGizmoToSelectionRef.current();
-    } else {
-      for (const { bone, position, quaternion } of entry.snapshots) {
+    } else if (entry.kind === "pose") {
+      for (const { bone, position, quaternion, scale } of entry.snapshots) {
         bone.position.copy(position);
         bone.quaternion.copy(quaternion);
+        bone.scale.copy(scale);
       }
       updateBoneHandlesRef.current();
+      updateCurveHandlesRef.current();
+    } else {
+      for (const { curve, points } of entry.snapshots) {
+        curve.points = points.map((p) => [p[0], p[1], p[2]]);
+      }
+      updateCurveHandlesRef.current();
     }
   }, []);
 
@@ -4011,12 +4146,19 @@ export default function SculptViewer({
       }
       updateSelectionHighlightPointsRef.current();
       repositionGizmoToSelectionRef.current();
-    } else {
-      for (const { bone, position, quaternion } of entry.snapshots) {
+    } else if (entry.kind === "pose") {
+      for (const { bone, position, quaternion, scale } of entry.snapshots) {
         bone.position.copy(position);
         bone.quaternion.copy(quaternion);
+        bone.scale.copy(scale);
       }
       updateBoneHandlesRef.current();
+      updateCurveHandlesRef.current();
+    } else {
+      for (const { curve, points } of entry.snapshots) {
+        curve.points = points.map((p) => [p[0], p[1], p[2]]);
+      }
+      updateCurveHandlesRef.current();
     }
   }, []);
 
@@ -4760,6 +4902,11 @@ export default function SculptViewer({
     if (entry && bone) resetBoneRef.current(entry, bone);
   }, []);
 
+  const setSelectedTransformFields = useCallback((entryId: string, fields: Partial<Record<TransformField, number>>) => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    if (entry) setSelectedTransformFieldsRef.current(entry, fields);
+  }, []);
+
   const setPoseTime = useCallback((entryId: string, time: number) => {
     const entry = meshEntriesRef.current.find((e) => e.id === entryId);
     if (entry) setPoseTimeRef.current(entry, time);
@@ -4912,7 +5059,7 @@ export default function SculptViewer({
     toggleProjectionRef.current();
   }, []);
 
-  const getJoints = useCallback((entryId: string): Array<{ id: string; name: string; depth: number; hasCircle: boolean }> => {
+  const getJoints = useCallback((entryId: string): Array<{ id: string; name: string; depth: number }> => {
     const entry = meshEntriesRef.current.find((e) => e.id === entryId);
     if (!entry?.rig) return [];
     const rig = entry.rig;
@@ -4923,8 +5070,7 @@ export default function SculptViewer({
         depth++;
         parentId = rig.bones.find((b) => b.id === parentId)?.parentId ?? null;
       }
-      const hasCircle = !!findCurveForJoint(entry.curves ?? [], bone.id);
-      return { id: bone.id, name: bone.name, depth, hasCircle };
+      return { id: bone.id, name: bone.name, depth };
     });
   }, []);
 
@@ -4950,15 +5096,7 @@ export default function SculptViewer({
     if (!entry?.rig) return;
     deleteRigBone(entry.rig, jointId);
     if (selectedJointRef.current?.id === jointId) selectJointRef.current(null, null);
-    // A joint's control circle (if any) has nothing to attach to once the
-    // joint is gone — remove it too rather than leave a dangling jointId.
-    if (entry.curves) {
-      const hadMatch = entry.curves.some((c) => c.jointId === jointId);
-      entry.curves = deleteCurvesForJoint(entry.curves, jointId);
-      if (hadMatch && selectedCurveRef.current?.jointId === jointId) selectCurvePointRef.current(null, null, null);
-    }
     updateJointHandlesRef.current();
-    updateCurveHandlesRef.current();
   }, []);
 
   // Maya-style "select child, shift-select parent, press P" — the graph
@@ -4972,25 +5110,37 @@ export default function SculptViewer({
     return result;
   }, []);
 
-  // Adds a control circle to a joint (one per joint for v1) — the button
-  // in the Joints list' primary entry point. Fails silently (returns null)
-  // if the joint already has one; the button toggles to "Remove" in that
-  // case instead of calling this again.
-  const addControlCircleToJoint = useCallback((entryId: string, jointId: string): { ok: boolean; reason?: string } => {
+  // Lists every control on an entry, generic over attachment kind — the
+  // UI uses this to know which bones/IK-chains already have one (to show
+  // "+ Control" vs "Remove" per row) without duplicating attachment logic.
+  const getControls = useCallback((entryId: string): Array<{ id: string; name: string; attachment: ControlAttachment }> => {
     const entry = meshEntriesRef.current.find((e) => e.id === entryId);
-    const bone = entry?.rig?.bones.find((b) => b.id === jointId);
-    if (!entry || !bone) return { ok: false, reason: "Joint not found." };
-    const curve = addControlCircleRef.current(entry, bone);
-    return curve ? { ok: true } : { ok: false, reason: "This joint already has a control circle." };
+    return (entry?.curves ?? []).map((c) => ({ id: c.id, name: c.name, attachment: c.attachment }));
   }, []);
 
-  const removeControlCircleFromJoint = useCallback((entryId: string, jointId: string) => {
+  // One control per bone/IK-target/IK-pole for v1. Fails (ok: false) if
+  // that attachment already has one; the button toggles to "Remove" then
+  // instead of calling this again.
+  const addControlToBone = useCallback((entryId: string, boneUuid: string): { ok: boolean; reason?: string } => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    if (!entry) return { ok: false, reason: "No mesh loaded." };
+    const curve = addControlRef.current(entry, { kind: "bone", boneUuid });
+    return curve ? { ok: true } : { ok: false, reason: "This bone already has a control, or has no live position yet." };
+  }, []);
+
+  const addControlToIKChain = useCallback((entryId: string, chainId: string, part: "target" | "pole"): { ok: boolean; reason?: string } => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    if (!entry) return { ok: false, reason: "No mesh loaded." };
+    const attachment: ControlAttachment = part === "target" ? { kind: "ikTarget", chainId } : { kind: "ikPole", chainId };
+    const curve = addControlRef.current(entry, attachment);
+    return curve ? { ok: true } : { ok: false, reason: "This already has a control." };
+  }, []);
+
+  const removeControl = useCallback((entryId: string, controlId: string) => {
     const entry = meshEntriesRef.current.find((e) => e.id === entryId);
     if (!entry?.curves) return;
-    const curve = findCurveForJoint(entry.curves, jointId);
-    if (!curve) return;
-    entry.curves = deleteCurve(entry.curves, curve.id);
-    if (selectedCurveRef.current?.id === curve.id) selectCurvePointRef.current(null, null, null);
+    entry.curves = deleteControl(entry.curves, controlId);
+    if (selectedCurveRef.current?.id === controlId) selectCurvePointRef.current(null, null, null);
     updateCurveHandlesRef.current();
   }, []);
 
@@ -5088,7 +5238,6 @@ export default function SculptViewer({
     entry.mesh = skinnedMesh;
     entry.skeleton = skeleton;
     entry.bindPose = bindPose;
-    entry.boundJointBones = threeBoneById;
     entry.poseAnimation = createPoseAnimationState();
     entry.ikSolver = undefined;
     entry.ikTargetBones = undefined;
@@ -5136,13 +5285,17 @@ export default function SculptViewer({
     entry.mesh = plainMesh;
     entry.skeleton = undefined;
     entry.bindPose = undefined;
-    entry.boundJointBones = undefined;
     entry.poseAnimation = undefined;
     entry.ikSolver = undefined;
     entry.ikTargetBones = undefined;
     entry.ikPoleBones = undefined;
+    // Every control on this entry was attached to a bone or IK target/pole
+    // that no longer exists once unbound — nothing left to resolve.
+    entry.curves = undefined;
 
     selectBoneRef.current(null, null);
+    selectIKChainRef.current(null, null);
+    selectCurvePointRef.current(null, null, null);
     updateJointHandlesRef.current();
     updateCurveHandlesRef.current();
     updateBoneHandlesRef.current();
@@ -5215,14 +5368,14 @@ export default function SculptViewer({
         extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb,
         getBones, selectBone: selectBoneById, resetPose, resetBone, recenterView, toggleProjection, conformToReference,
         getJoints, selectJoint: selectJointById, renameJoint, deleteJoint, reparentJoint,
-        addControlCircle: addControlCircleToJoint, removeControlCircle: removeControlCircleFromJoint, deleteSelectedCurvePoint,
-        bindSkin, unbindSkin, getRigBindInfo,
+        getControls, addControlToBone, addControlToIKChain, removeControl, deleteSelectedCurvePoint,
+        bindSkin, unbindSkin, getRigBindInfo, setSelectedTransformFields,
         getClips, getActiveClipId, setActiveClip, createAnimationClip, renameAnimationClip,
         duplicateAnimationClip, deleteAnimationClip, insertKeyframe, removeKeyframe,
         setPoseTime, setPosePlaying, getKeyframeTimes, setClipLength, getIKChains, getHipBoneId, selectIKChain,
       };
     }
-  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance, extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb, getBones, selectBoneById, resetPose, resetBone, recenterView, toggleProjection, conformToReference, getJoints, selectJointById, renameJoint, deleteJoint, reparentJoint, addControlCircleToJoint, removeControlCircleFromJoint, deleteSelectedCurvePoint, bindSkin, unbindSkin, getRigBindInfo, getClips, getActiveClipId, setActiveClip, createAnimationClip, renameAnimationClip, duplicateAnimationClip, deleteAnimationClip, insertKeyframe, removeKeyframe, setPoseTime, setPosePlaying, getKeyframeTimes, setClipLength, getIKChains, getHipBoneId, selectIKChain]);
+  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance, extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb, getBones, selectBoneById, resetPose, resetBone, recenterView, toggleProjection, conformToReference, getJoints, selectJointById, renameJoint, deleteJoint, reparentJoint, getControls, addControlToBone, addControlToIKChain, removeControl, deleteSelectedCurvePoint, bindSkin, unbindSkin, getRigBindInfo, setSelectedTransformFields, getClips, getActiveClipId, setActiveClip, createAnimationClip, renameAnimationClip, duplicateAnimationClip, deleteAnimationClip, insertKeyframe, removeKeyframe, setPoseTime, setPosePlaying, getKeyframeTimes, setClipLength, getIKChains, getHipBoneId, selectIKChain]);
 
   return <div ref={mountRef} className="w-full h-full" style={{ touchAction: "none" }} />;
 }

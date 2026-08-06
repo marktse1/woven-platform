@@ -13,7 +13,8 @@ import {
   signedAssetUrl,
   type AssetRow,
 } from "@/lib/assets";
-import type { SculptViewerHandle, ViewMode, PrimitiveType, EditMode, SelectMode, PolyEditSelectTool, TransformMode, HighlightMode, BoneViewerMode } from "@/components/tools/SculptViewer";
+import type { SculptViewerHandle, ViewMode, PrimitiveType, EditMode, SelectMode, PolyEditSelectTool, TransformMode, HighlightMode, BoneViewerMode, TransformField } from "@/components/tools/SculptViewer";
+import type { ControlAttachment } from "@/lib/sculpt/curve";
 import type { BrushMode } from "@/lib/sculpt/brushes";
 import type * as THREE from "three";
 
@@ -216,6 +217,15 @@ export default function MeshSculptClient() {
   // matching neither known naming convention; that's fine, manual bone
   // selection still works.
   const [detectedControls, setDetectedControls] = useState<Array<{ entryId: string; kind: "bone" | "ik"; id: string; label: string }>>([]);
+  // Pose-mode control circles (lib/sculpt/curve.ts) — a visual ring skin
+  // over a real bone or IK target, auto-populated for detected bipeds
+  // (hip/feet/wrists), addable manually for anything else.
+  const [controls, setControls] = useState<Array<{ entryId: string; id: string; name: string; attachment: ControlAttachment }>>([]);
+  const [controlMsg, setControlMsg] = useState("");
+  // Real Channel Box for whatever's currently selected — local Position/
+  // Rotation/Scale, editable, multi-select-then-batch-type like Maya's own.
+  const [selectedTransform, setSelectedTransform] = useState<{ kind: "bone" | "ikTarget"; position: [number, number, number]; rotationDeg: [number, number, number]; scale: [number, number, number] } | null>(null);
+  const [channelSelection, setChannelSelection] = useState<Set<TransformField>>(new Set());
   const [selectedBoneId, setSelectedBoneId] = useState<string | null>(null);
   // "ik" controls select via SculptViewerHandle.selectIKChain (id =
   // chain id) instead of selectBone (id = bone uuid) — local UI state
@@ -253,7 +263,7 @@ export default function MeshSculptClient() {
   // Rig mode: manually-placed joints (lib/sculpt/rig.ts) — distinct from
   // `bones` above (an imported skeleton). Starts empty on every mesh;
   // populated as the user places joints in the viewport.
-  const [joints, setJoints] = useState<Array<{ entryId: string; id: string; name: string; depth: number; hasCircle: boolean }>>([]);
+  const [joints, setJoints] = useState<Array<{ entryId: string; id: string; name: string; depth: number }>>([]);
   const [selectedJointId, setSelectedJointId] = useState<string | null>(null);
   const [editingJointId, setEditingJointId] = useState<string | null>(null);
   // Maya-style parenting: Shift-click a second joint to mark it as the
@@ -609,11 +619,22 @@ export default function MeshSculptClient() {
   const refreshJoints = useCallback(() => {
     const handle = viewerHandleRef.current;
     const entries = handle?.getMeshEntries() ?? [];
-    const all: Array<{ entryId: string; id: string; name: string; depth: number; hasCircle: boolean }> = [];
+    const all: Array<{ entryId: string; id: string; name: string; depth: number }> = [];
     for (const entry of entries) {
       for (const joint of handle?.getJoints(entry.id) ?? []) all.push({ entryId: entry.id, ...joint });
     }
     setJoints(all);
+  }, []);
+
+  // Same combining pattern, for Pose mode's control circles.
+  const refreshControls = useCallback(() => {
+    const handle = viewerHandleRef.current;
+    const entries = handle?.getMeshEntries() ?? [];
+    const all: Array<{ entryId: string; id: string; name: string; attachment: ControlAttachment }> = [];
+    for (const entry of entries) {
+      for (const control of handle?.getControls(entry.id) ?? []) all.push({ entryId: entry.id, ...control });
+    }
+    setControls(all);
   }, []);
 
   // The single entry Bind Skin operates on for v1 — same "first entry"
@@ -658,7 +679,16 @@ export default function MeshSculptClient() {
     refreshBones();
     refreshDetectedControls();
     refreshJoints();
-  }, [refreshSubmeshes, refreshBones, refreshDetectedControls, refreshJoints]);
+    refreshControls();
+  }, [refreshSubmeshes, refreshBones, refreshDetectedControls, refreshJoints, refreshControls]);
+
+  const handleSelectedTransformChange = useCallback((info: { kind: "bone" | "ikTarget"; position: [number, number, number]; rotationDeg: [number, number, number]; scale: [number, number, number] } | null) => {
+    setSelectedTransform(info);
+  }, []);
+
+  // A different selection shouldn't inherit the previous one's multi-field
+  // Channel Box selection.
+  useEffect(() => { setChannelSelection(new Set()); }, [selectedBoneId, selectedIKChainId]);
 
   // SculptViewer.tsx's onPoseTimeChange — fired every frame during
   // playback plus once on any scrub/keyframe/clip-switch, so this is
@@ -857,24 +887,59 @@ export default function MeshSculptClient() {
     refreshJoints();
   }, [refreshJoints]);
 
-  const handleAddControlCircle = useCallback((entryId: string, jointId: string) => {
-    const result = viewerHandleRef.current?.addControlCircle(entryId, jointId);
-    if (result && !result.ok) setRigMsg(result.reason ?? "Couldn't add control circle.");
-    else setRigMsg("");
-    refreshJoints();
-  }, [refreshJoints]);
+  const handleAddControlToBone = useCallback((entryId: string, boneUuid: string) => {
+    const result = viewerHandleRef.current?.addControlToBone(entryId, boneUuid);
+    if (result && !result.ok) setControlMsg(result.reason ?? "Couldn't add control.");
+    else setControlMsg("");
+    refreshControls();
+  }, [refreshControls]);
 
-  const handleRemoveControlCircle = useCallback((entryId: string, jointId: string) => {
-    viewerHandleRef.current?.removeControlCircle(entryId, jointId);
-    refreshJoints();
-  }, [refreshJoints]);
+  const handleAddControlToIKChain = useCallback((entryId: string, chainId: string) => {
+    const result = viewerHandleRef.current?.addControlToIKChain(entryId, chainId, "target");
+    if (result && !result.ok) setControlMsg(result.reason ?? "Couldn't add control.");
+    else setControlMsg("");
+    refreshControls();
+  }, [refreshControls]);
 
-  // Fired whenever a control-circle CV gets selected/deselected (viewport
+  const handleRemoveControl = useCallback((entryId: string, controlId: string) => {
+    viewerHandleRef.current?.removeControl(entryId, controlId);
+    refreshControls();
+  }, [refreshControls]);
+
+  // Fired whenever a control's CV gets selected/deselected (viewport
   // click) — only used to gate Backspace/Delete below between removing a
-  // CV point vs. a joint.
+  // CV point vs. something else.
   const handleCurveSelectionChange = useCallback((curveId: string | null) => {
     setSelectedCurveId(curveId);
   }, []);
+
+  // Click a Channel Box field's label to select just it; Shift-click
+  // adds/removes it from the selection — exact Maya gesture, so typing a
+  // value into any selected field can apply to all of them at once.
+  const handleChannelLabelClick = useCallback((field: TransformField, shiftKey: boolean) => {
+    setChannelSelection((cur) => {
+      if (shiftKey) {
+        const next = new Set(cur);
+        if (next.has(field)) next.delete(field); else next.add(field);
+        return next;
+      }
+      return new Set([field]);
+    });
+  }, []);
+
+  // Enter/blur on a field commits it. If that field is part of a
+  // multi-field selection (2+), the typed value applies to every selected
+  // field in one batch (one undo snapshot); otherwise just that field.
+  const handleCommitChannel = useCallback((field: TransformField, raw: string) => {
+    const value = Number.parseFloat(raw);
+    if (Number.isNaN(value)) return;
+    const entryId = primaryPoseEntryId();
+    if (!entryId) return;
+    const targets = channelSelection.has(field) && channelSelection.size > 1 ? Array.from(channelSelection) : [field];
+    const fields: Partial<Record<TransformField, number>> = {};
+    for (const f of targets) fields[f] = value;
+    viewerHandleRef.current?.setSelectedTransformFields(entryId, fields);
+  }, [primaryPoseEntryId, channelSelection]);
 
   const handleBindSkin = useCallback(() => {
     const entryId = primaryRigEntryId();
@@ -1005,11 +1070,12 @@ export default function MeshSculptClient() {
           const j = joints.find((jt) => jt.id === selectedJointId);
           if (j) handleDeleteJoint(j.entryId, j.id);
         }
-        // Deletes whichever control-circle CV currently has the gizmo
-        // attached (not the whole circle) — mirrors the joint branch
-        // above, but the point-level selection lives only in the viewer,
-        // so this always delegates rather than looking it up here.
-        else if (editMode === "rig" && selectedCurveId && !selectedJointId && (e.key === "Backspace" || e.key === "Delete")) {
+        // Deletes whichever control's CV currently has the gizmo attached
+        // (not the whole control) — the point-level selection lives only
+        // in the viewer, so this always delegates rather than looking it
+        // up here. Controls live in Pose mode now (they skin a real bone/
+        // IK-target, not a Rig-mode joint).
+        else if (editMode === "pose" && selectedCurveId && (e.key === "Backspace" || e.key === "Delete")) {
           e.preventDefault();
           viewerHandleRef.current?.deleteSelectedCurvePoint();
         }
@@ -1284,23 +1350,35 @@ export default function MeshSculptClient() {
 
                   {detectedControls.length > 0 && (
                     <div className="pb-3 mb-3 border-b border-[#2a2320]">
-                      <p className="text-[10px] text-dim uppercase tracking-wide mb-1.5">Controls</p>
+                      <p className="text-[10px] text-dim uppercase tracking-wide mb-1.5">Quick Select</p>
                       <div className="flex flex-wrap gap-1">
                         {detectedControls.map((c) => {
                           const active = c.kind === "bone" ? selectedBoneId === c.id : selectedIKChainId === c.id;
+                          const hasControl = c.kind === "bone"
+                            ? controls.some((ctrl) => ctrl.attachment.kind === "bone" && ctrl.attachment.boneUuid === c.id)
+                            : controls.some((ctrl) => ctrl.attachment.kind === "ikTarget" && ctrl.attachment.chainId === c.id);
                           return (
-                            <button
-                              key={`${c.kind}-${c.id}`}
-                              onClick={() => c.kind === "bone"
-                                ? handleSelectBone(c.entryId, active ? null : c.id)
-                                : handleSelectIKChain(c.entryId, active ? null : c.id)}
-                              title={c.kind === "bone"
-                                ? "Direct FK handle — drag to rotate/position this bone on its own, independent of any IK chain"
-                                : "IK target — drag the gizmo and the chain solves toward it"}
-                              style={{ background: active ? "rgba(196,123,232,.22)" : "#1e1a17", color: active ? PURPLE : "#8aa0b4", border: `1px solid ${active ? PURPLE : "#3a3530"}` }}
-                              className="px-2 py-1 rounded text-[10.5px] font-medium transition-colors">
-                              {c.label}
-                            </button>
+                            <div key={`${c.kind}-${c.id}`} className="flex items-stretch">
+                              <button
+                                onClick={() => c.kind === "bone"
+                                  ? handleSelectBone(c.entryId, active ? null : c.id)
+                                  : handleSelectIKChain(c.entryId, active ? null : c.id)}
+                                title={c.kind === "bone"
+                                  ? "Direct FK handle — drag to rotate/position this bone on its own, independent of any IK chain"
+                                  : "IK target — drag the gizmo and the chain solves toward it"}
+                                style={{ background: active ? "rgba(196,123,232,.22)" : "#1e1a17", color: active ? PURPLE : "#8aa0b4", border: `1px solid ${active ? PURPLE : "#3a3530"}`, borderRight: hasControl ? "none" : undefined }}
+                                className="px-2 py-1 rounded-l text-[10.5px] font-medium transition-colors">
+                                {c.label}
+                              </button>
+                              <button
+                                onClick={() => c.kind === "bone" ? handleAddControlToBone(c.entryId, c.id) : handleAddControlToIKChain(c.entryId, c.id)}
+                                disabled={hasControl}
+                                title={hasControl ? "Already has a control ring" : "Add a control ring"}
+                                className="px-1.5 rounded-r text-[10px] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                style={{ background: "#1e1a17", color: "#5ac8e8", border: "1px solid #3a3530", borderLeft: "none" }}>
+                                {hasControl ? "○" : "+○"}
+                              </button>
+                            </div>
                           );
                         })}
                       </div>
@@ -1309,18 +1387,31 @@ export default function MeshSculptClient() {
 
                   <p className="text-[10px] text-dim uppercase tracking-wide mb-1.5">Bones</p>
                   <div className="max-h-60 overflow-y-auto space-y-0.5">
-                    {bones.map((bone) => (
-                      <button
-                        key={bone.id}
-                        onClick={() => handleSelectBone(bone.entryId, bone.id === selectedBoneId ? null : bone.id)}
-                        style={{ paddingLeft: `${8 + bone.depth * 14}px`, background: selectedBoneId === bone.id ? "rgba(196,123,232,.22)" : "transparent", color: selectedBoneId === bone.id ? PURPLE : "#8aa0b4" }}
-                        className="w-full text-left py-1 rounded text-[11px] truncate transition-colors hover:bg-[#1e1a17]">
-                        {bone.name}
-                      </button>
-                    ))}
+                    {bones.map((bone) => {
+                      const hasControl = controls.some((ctrl) => ctrl.attachment.kind === "bone" && ctrl.attachment.boneUuid === bone.id);
+                      return (
+                        <div key={bone.id} className="flex items-center gap-1">
+                          <button
+                            onClick={() => handleSelectBone(bone.entryId, bone.id === selectedBoneId ? null : bone.id)}
+                            style={{ paddingLeft: `${8 + bone.depth * 14}px`, background: selectedBoneId === bone.id ? "rgba(196,123,232,.22)" : "transparent", color: selectedBoneId === bone.id ? PURPLE : "#8aa0b4" }}
+                            className="flex-1 text-left py-1 rounded text-[11px] truncate transition-colors hover:bg-[#1e1a17]">
+                            {bone.name}
+                          </button>
+                          <button
+                            onClick={() => hasControl ? undefined : handleAddControlToBone(bone.entryId, bone.id)}
+                            disabled={hasControl}
+                            title={hasControl ? "Already has a control ring" : "Add a control ring"}
+                            className="text-[10px] px-1.5 py-0.5 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                            style={{ color: "#5ac8e8", border: "1px solid #3a3530" }}>
+                            {hasControl ? "○" : "+○"}
+                          </button>
+                        </div>
+                      );
+                    })}
                   </div>
-                  <p className="text-[10.5px] mt-2" style={{ color: selectedBoneId ? PURPLE : "#6a8098" }}>
-                    {selectedBoneId ? "Drag the gizmo to pose the selected bone" : "Click a bone (in the list or viewport) to select it"}
+                  {controlMsg && <p className="text-[10.5px] mt-2" style={{ color: "#e05a4e" }}>{controlMsg}</p>}
+                  <p className="text-[10.5px] mt-2" style={{ color: selectedBoneId || selectedIKChainId ? PURPLE : "#6a8098" }}>
+                    {selectedBoneId || selectedIKChainId ? "Drag the gizmo (or a control ring) to pose the selection" : "Click a bone/control (in a list, or the viewport) to select it"}
                   </p>
                   {selectedBoneId && (
                     <button
@@ -1331,6 +1422,7 @@ export default function MeshSculptClient() {
                       Reset Selected Bone
                     </button>
                   )}
+
                 </div>
               )}
 
@@ -1338,13 +1430,10 @@ export default function MeshSculptClient() {
                 <div className="mt-2">
                   <p className="text-[10.5px] mb-3" style={{ color: "#6a8098" }}>
                     Click the mesh to place a joint (click again from a
-                    selected joint to chain the next one). Select a joint
-                    and hit "+ Circle" to add a control circle — a bigger,
-                    Maya-style click target for that joint; drag its own
-                    points to reshape it, or click anywhere on the ring to
-                    select/pose the joint. To isolate a region for an
-                    unbound joint to scale/rotate/move, paint it with the
-                    Mask brush first (Sculpt mode).
+                    selected joint to chain the next one). To isolate a
+                    region for a joint to scale/rotate/move, paint it with
+                    the Mask brush first (Sculpt mode). Once you Bind Skin
+                    below, posing and control rings live in Pose mode.
                   </p>
 
                   {joints.length > 0 && (
@@ -1420,13 +1509,6 @@ export default function MeshSculptClient() {
                             {joint.name}
                           </button>
                         )}
-                        <button
-                          onClick={() => joint.hasCircle ? handleRemoveControlCircle(joint.entryId, joint.id) : handleAddControlCircle(joint.entryId, joint.id)}
-                          title={joint.hasCircle ? "Remove control circle" : "Add a control circle (Maya-style rig control) at this joint"}
-                          className="text-[10px] px-1.5 py-0.5 rounded transition-colors whitespace-nowrap"
-                          style={{ color: joint.hasCircle ? "#5ac8e8" : "#8aa0b4", border: "1px solid #3a3530" }}>
-                          {joint.hasCircle ? "− Circle" : "+ Circle"}
-                        </button>
                         <button
                           onClick={() => handleDeleteJoint(joint.entryId, joint.id)}
                           title="Delete joint (children reparent up)"
@@ -1947,6 +2029,65 @@ export default function MeshSculptClient() {
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
         >
+          {/* Channel Box — floating/transparent over the viewport, same
+              look as World Builder's own panels (lib/world-builder/
+              editor.css's .panel rule), not embedded in the sidebar.
+              Click a field's axis label to select it, Shift-click to
+              multi-select several; typing a value into any selected
+              field and hitting Enter/blurring applies it to every
+              selected field at once (Maya's own Channel Box gesture). */}
+          {editMode === "pose" && (selectedBoneId || selectedIKChainId) && selectedTransform && (
+            <div
+              className="absolute top-4 right-4 z-20 w-60 p-3"
+              style={{
+                background: "rgba(7,10,16,0.82)",
+                backdropFilter: "blur(8px)",
+                WebkitBackdropFilter: "blur(8px)",
+                border: "1px solid rgba(255,255,255,0.12)",
+                borderRadius: "8px",
+              }}
+            >
+              <p className="text-[10px] uppercase tracking-wide mb-2" style={{ color: "#d3dbe8" }}>Channel Box</p>
+              {([
+                { label: "Translate", digits: 3, fields: ["px", "py", "pz"] as TransformField[], values: selectedTransform.position },
+                ...(selectedTransform.kind === "bone" ? [
+                  { label: "Rotate", digits: 1, fields: ["rx", "ry", "rz"] as TransformField[], values: selectedTransform.rotationDeg },
+                  { label: "Scale", digits: 3, fields: ["sx", "sy", "sz"] as TransformField[], values: selectedTransform.scale },
+                ] : []),
+              ]).map((row) => (
+                <div key={row.label} className="mb-2 last:mb-0">
+                  <p className="text-[9.5px] uppercase tracking-wide mb-1" style={{ color: "#6a8098" }}>{row.label}</p>
+                  <div className="grid grid-cols-3 gap-1">
+                    {(["X", "Y", "Z"] as const).map((axisLabel, i) => {
+                      const field = row.fields[i];
+                      const isSelected = channelSelection.has(field);
+                      return (
+                        <div key={field}>
+                          <button
+                            onClick={(e) => handleChannelLabelClick(field, e.shiftKey)}
+                            title="Click to select · Shift-click to select multiple, then type one value to apply to all"
+                            className="w-full text-[9px] rounded-t px-1 py-0.5 text-left transition-colors"
+                            style={{ background: isSelected ? "rgba(196,123,232,.3)" : "rgba(255,255,255,0.06)", color: isSelected ? PURPLE : "#8aa0b4" }}>
+                            {axisLabel}
+                          </button>
+                          <input
+                            key={`${field}-${selectedBoneId ?? selectedIKChainId ?? ""}`}
+                            type="number"
+                            step="0.01"
+                            defaultValue={row.values[i].toFixed(row.digits)}
+                            onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                            onBlur={(e) => handleCommitChannel(field, e.target.value)}
+                            className="w-full text-[10.5px] px-1 py-1 text-center outline-none"
+                            style={{ background: "#1e1a17", color: "#e8e0d8", border: `1px solid ${isSelected ? PURPLE : "#3a3530"}`, borderTop: "none", borderRadius: "0 0 4px 4px" }}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
           {/* Empty workspace — shows drop zone */}
           {!loadingAsset && vertexCount === null && (
             <div
@@ -2010,7 +2151,7 @@ export default function MeshSculptClient() {
             onJointSelect={handleJointSelectionChange}
             onJointShiftClick={(_entryId, jointId) => handleMarkPendingParent(jointId)}
             onCurveSelect={handleCurveSelectionChange}
-            onRequestPoseMode={() => setEditMode("pose")}
+            onSelectedTransformChange={handleSelectedTransformChange}
             onProjectionChange={setIsOrthographic}
             onPoseTimeChange={handlePoseTimeChange}
             paintColor={paintColor}

@@ -1033,7 +1033,11 @@ export default function MeshSculptClient() {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       if (e.key === "Tab") {
         e.preventDefault();
-        setEditMode((m) => (m === "sculpt" ? "poly_edit" : "sculpt"));
+        setEditMode((m) => {
+          if (m === "sculpt") return "poly_edit";
+          if (m === "poly_edit") return "sculpt";
+          return m; // pose/rig: Tab has no meaning here, don't eject the user
+        });
         return;
       }
       // Above the poly_edit branch (like Tab) so it works in both modes —

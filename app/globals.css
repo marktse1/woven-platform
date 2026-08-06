@@ -70,3 +70,26 @@ body {
 
 .animate-spin-slow { animation: spin 0.7s linear infinite; }
 .animate-pulse-green { animation: pulse-green 1.6s infinite; }
+
+/* Every native <input type="range"> site-wide relies on Tailwind's
+   accent-* utility for thumb/fill color, which themes the filled portion
+   correctly but leaves the unfilled track at the browser's light default
+   — this darkens just the track so it matches the app, without touching
+   the accent-color-driven fill/thumb. */
+input[type="range"] {
+  height: 16px;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--color-panel);
+  border: 1px solid var(--color-line);
+}
+
+input[type="range"]::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--color-panel);
+  border: 1px solid var(--color-line);
+}

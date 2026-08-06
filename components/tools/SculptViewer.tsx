@@ -1952,7 +1952,7 @@ export default function SculptViewer({
     controlRingGroup.visible = false;
     scene.add(controlRingGroup);
     controlRingsRef.current = controlRingGroup;
-    const controlRingGeometry = new THREE.TorusGeometry(0.25, 0.02, 8, 24);
+    const controlRingGeometry = new THREE.TorusGeometry(0.25, 0.0025, 8, 24);
     const controlRingMaterial = new THREE.MeshBasicMaterial({
       color: 0x5ac8e8, transparent: true, opacity: 0.7, depthTest: false, side: THREE.DoubleSide,
     });

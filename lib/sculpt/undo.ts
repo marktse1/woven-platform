@@ -1,13 +1,11 @@
 // Snapshot stack for sculpt undo/redo — mesh vertex-position edits (brush
-// strokes, poly-edit's gizmo, Rig mode's masked-vertex drag), Pose mode's
-// bone transforms, and control-ring point edits share one history so
-// interleaved edits undo in the order they actually happened, rather than
-// separate stacks the user would have to reason about independently.
-// Snapshot at drag/stroke start (before any displacement), restore on
-// Ctrl+Z.
+// strokes, poly-edit's gizmo, Rig mode's masked-vertex drag) and Pose
+// mode's bone transforms share one history so interleaved edits undo in
+// the order they actually happened, rather than separate stacks the user
+// would have to reason about independently. Snapshot at drag/stroke start
+// (before any displacement), restore on Ctrl+Z.
 
 import type * as THREE from "three";
-import type { ControlCurve } from "./curve";
 
 export type SculptMeshSnapshot = {
   mesh: THREE.Mesh;
@@ -21,15 +19,9 @@ export type BonePoseSnapshot = {
   scale: THREE.Vector3;
 };
 
-export type CurvePointsSnapshot = {
-  curve: ControlCurve;
-  points: [number, number, number][];
-};
-
 export type UndoEntry =
   | { kind: "mesh"; snapshots: SculptMeshSnapshot[] }
-  | { kind: "pose"; snapshots: BonePoseSnapshot[] }
-  | { kind: "curve"; snapshots: CurvePointsSnapshot[] };
+  | { kind: "pose"; snapshots: BonePoseSnapshot[] };
 
 const MAX_UNDO = 32;
 
@@ -51,13 +43,6 @@ function capturePose(bones: THREE.Bone[]): BonePoseSnapshot[] {
   }));
 }
 
-function captureCurves(curves: ControlCurve[]): CurvePointsSnapshot[] {
-  return curves.map((curve) => ({
-    curve,
-    points: curve.points.map((p) => [p[0], p[1], p[2]] as [number, number, number]),
-  }));
-}
-
 export class SculptUndoStack {
   private past: UndoEntry[] = [];
   private future: UndoEntry[] = [];
@@ -75,12 +60,6 @@ export class SculptUndoStack {
     this.pushEntry({ kind: "pose", snapshots: capturePose(bones) });
   }
 
-  /** Call at the start of a control ring's CV drag (dragging-changed,
-   * value === true). */
-  pushCurve(curves: ControlCurve[]): void {
-    this.pushEntry({ kind: "curve", snapshots: captureCurves(curves) });
-  }
-
   private pushEntry(entry: UndoEntry): void {
     this.past.push(entry);
     if (this.past.length > MAX_UNDO) this.past.shift();
@@ -91,10 +70,7 @@ export class SculptUndoStack {
     if (entry.kind === "mesh") {
       return { kind: "mesh", snapshots: captureMesh(entry.snapshots.map((s) => s.mesh)) };
     }
-    if (entry.kind === "pose") {
-      return { kind: "pose", snapshots: capturePose(entry.snapshots.map((s) => s.bone)) };
-    }
-    return { kind: "curve", snapshots: captureCurves(entry.snapshots.map((s) => s.curve)) };
+    return { kind: "pose", snapshots: capturePose(entry.snapshots.map((s) => s.bone)) };
   }
 
   undo(): UndoEntry | null {

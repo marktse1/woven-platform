@@ -1,18 +1,17 @@
-// Control circles for Mesh Sculptor's Pose mode — pure data/graph logic,
+// Control rings for Mesh Sculptor's Pose mode — pure data/graph logic,
 // no Three.js scene wiring, same lib/sculpt/* = math, SculptViewer.tsx =
 // orchestration split as rig.ts/mirror.ts/topology.ts.
 //
-// A ControlCurve is a Maya-style rig control: a closed ring of points
-// attached to a real, live, posable Pose-mode object — a skeleton bone
-// (FK rotate control) or an IK chain's target/pole bone (IK position
-// control) — standing in for a NURBS circle (three.js has no NURBS
-// authoring path). It is deliberately a SKIN over the existing
-// selection/gizmo/keyframe system, not a separate transform: clicking the
-// ring selects the attached bone/IK-target exactly like clicking its own
-// tiny handle would, so posing and keyframing it needs no new machinery.
-// Points are stored as LOCAL offsets from the attached object's current
-// position, so the ring automatically follows it — see SculptViewer.tsx's
-// curveWorldPoints for the live world-space lookup by attachment kind.
+// A ControlCurve is a Maya-style rig control: a ring attached to a real,
+// live, posable Pose-mode object — a skeleton bone (FK rotate control) or
+// an IK chain's target/pole bone (IK position control). It is deliberately
+// a SKIN over the existing selection/gizmo/keyframe system, not a separate
+// transform: clicking the ring selects the attached bone/IK-target exactly
+// like clicking its own tiny handle would, so posing and keyframing it
+// needs no new machinery. SculptViewer.tsx renders it as real geometry
+// (a torus) positioned/oriented every frame from the live attachment, and
+// hit-tests it with the normal three.js raycaster — no per-point shape to
+// track here.
 
 export type ControlAttachment =
   | { kind: "bone"; boneUuid: string }
@@ -23,11 +22,10 @@ export type ControlCurve = {
   id: string;
   name: string;
   attachment: ControlAttachment;
-  points: [number, number, number][];
 };
 
-export function createControlCurve(name: string, attachment: ControlAttachment, points: [number, number, number][]): ControlCurve {
-  return { id: crypto.randomUUID(), name, attachment, points };
+export function createControlCurve(name: string, attachment: ControlAttachment): ControlCurve {
+  return { id: crypto.randomUUID(), name, attachment };
 }
 
 /** A reasonable default name for the next control — "Control", "Control.002", ... */
@@ -52,12 +50,6 @@ export function findControlForAttachment(curves: ControlCurve[], attachment: Con
 
 export function findControl(curves: ControlCurve[], id: string): ControlCurve | undefined {
   return curves.find((c) => c.id === id);
-}
-
-/** Removes one control point (CV) by index. A ring needs at least 3 points
- * to read as a shape — callers should treat fewer as effectively empty. */
-export function removeCurvePoint(curve: ControlCurve, index: number): void {
-  curve.points.splice(index, 1);
 }
 
 export function deleteControl(curves: ControlCurve[], id: string): ControlCurve[] {

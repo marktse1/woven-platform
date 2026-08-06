@@ -272,12 +272,6 @@ export default function MeshSculptClient() {
   const [pendingParentJointId, setPendingParentJointId] = useState<string | null>(null);
   const [rigMsg, setRigMsg] = useState("");
 
-  // Rig mode: which control-circle CV (if any) currently has the gizmo
-  // attached — only used to gate Backspace/Delete between removing a CV
-  // point vs. a joint (lib/sculpt/curve.ts's ControlCurve, one per joint,
-  // surfaced via each joint's own `hasCircle` flag, not a separate list).
-  const [selectedCurveId, setSelectedCurveId] = useState<string | null>(null);
-
   // Bind Skin: converts the placed joints into a real posable skeleton
   // (lib/sculpt/skinning.ts's two weighting algorithms). rigBindInfo is
   // null when the primary rig entry has no joints at all (nothing to bind).
@@ -906,13 +900,6 @@ export default function MeshSculptClient() {
     refreshControls();
   }, [refreshControls]);
 
-  // Fired whenever a control's CV gets selected/deselected (viewport
-  // click) — only used to gate Backspace/Delete below between removing a
-  // CV point vs. something else.
-  const handleCurveSelectionChange = useCallback((curveId: string | null) => {
-    setSelectedCurveId(curveId);
-  }, []);
-
   // Click a Channel Box field's label to select just it; Shift-click
   // adds/removes it from the selection — exact Maya gesture, so typing a
   // value into any selected field can apply to all of them at once.
@@ -1070,15 +1057,6 @@ export default function MeshSculptClient() {
           const j = joints.find((jt) => jt.id === selectedJointId);
           if (j) handleDeleteJoint(j.entryId, j.id);
         }
-        // Deletes whichever control's CV currently has the gizmo attached
-        // (not the whole control) — the point-level selection lives only
-        // in the viewer, so this always delegates rather than looking it
-        // up here. Controls live in Pose mode now (they skin a real bone/
-        // IK-target, not a Rig-mode joint).
-        else if (editMode === "pose" && selectedCurveId && (e.key === "Backspace" || e.key === "Delete")) {
-          e.preventDefault();
-          viewerHandleRef.current?.deleteSelectedCurvePoint();
-        }
         // Maya's own key for this exact gesture: select child, shift-select
         // parent last, press P. Shift+P un-parents. Reserved — don't rebind.
         else if (editMode === "rig" && selectedJointId && e.key.toLowerCase() === "p") {
@@ -1106,7 +1084,7 @@ export default function MeshSculptClient() {
     window.addEventListener("keydown", onDown);
     window.addEventListener("keyup", onUp);
     return () => { window.removeEventListener("keydown", onDown); window.removeEventListener("keyup", onUp); };
-  }, [editMode, brushMode, handleClearMask, selectedJointId, joints, handleDeleteJoint, handleParentJoint, selectedCurveId]);
+  }, [editMode, brushMode, handleClearMask, selectedJointId, joints, handleDeleteJoint, handleParentJoint]);
 
   const handleToggleSubmeshVisible = useCallback((id: string, visible: boolean) => {
     viewerHandleRef.current?.setEntryVisible(id, visible);
@@ -1518,16 +1496,14 @@ export default function MeshSculptClient() {
                       </div>
                     ))}
                   </div>
-                  <p className="text-[10.5px] mt-2" style={{ color: rigMsg ? "#e05a4e" : pendingParentJointId ? "#e8a83f" : selectedCurveId ? "#5ac8e8" : selectedJointId ? PURPLE : "#6a8098" }}>
+                  <p className="text-[10.5px] mt-2" style={{ color: rigMsg ? "#e05a4e" : pendingParentJointId ? "#e8a83f" : selectedJointId ? PURPLE : "#6a8098" }}>
                     {rigMsg
                       ? rigMsg
                       : pendingParentJointId
                         ? "Press P to parent the selected joint under this one (Shift+P to un-parent)"
-                        : selectedCurveId
-                          ? "Drag a control-circle point to reshape it · Backspace/Delete removes the selected point"
-                          : selectedJointId
-                            ? "Drag the gizmo to reposition · Shift-click another joint (list or viewport) to mark it as parent, then press P"
-                            : "Click a joint (in the list or viewport) to select it"}
+                        : selectedJointId
+                          ? "Drag the gizmo to reposition · Shift-click another joint (list or viewport) to mark it as parent, then press P"
+                          : "Click a joint (in the list or viewport) to select it"}
                   </p>
                 </div>
               )}
@@ -2150,7 +2126,6 @@ export default function MeshSculptClient() {
             onBoneSelect={setSelectedBoneId}
             onJointSelect={handleJointSelectionChange}
             onJointShiftClick={(_entryId, jointId) => handleMarkPendingParent(jointId)}
-            onCurveSelect={handleCurveSelectionChange}
             onSelectedTransformChange={handleSelectedTransformChange}
             onProjectionChange={setIsOrthographic}
             onPoseTimeChange={handlePoseTimeChange}

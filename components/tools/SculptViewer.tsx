@@ -1396,6 +1396,14 @@ export default function SculptViewer({
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     rendererRef.current = renderer;
+    // Explicit stacking, matching World Builder's own canvas (lib/
+    // world-builder/editor.ts) — pins the canvas to z-index 0 instead of
+    // relying on default document flow/paint order for a WebGL canvas
+    // specifically to stay under floating HTML panels (e.g. Mesh
+    // Sculptor's Channel Box) positioned as its siblings.
+    renderer.domElement.style.position = "absolute";
+    renderer.domElement.style.inset = "0";
+    renderer.domElement.style.zIndex = "0";
     mount.appendChild(renderer.domElement);
 
     const ktx2Loader = new KTX2Loader();
@@ -5191,5 +5199,5 @@ export default function SculptViewer({
     }
   }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance, extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb, getBones, selectBoneById, resetPose, resetBone, recenterView, toggleProjection, conformToReference, getJoints, selectJointById, renameJoint, deleteJoint, reparentJoint, getControls, addControlToBone, addControlToIKChain, removeControl, bindSkin, unbindSkin, getRigBindInfo, setSelectedTransformFields, getClips, getActiveClipId, setActiveClip, createAnimationClip, renameAnimationClip, duplicateAnimationClip, deleteAnimationClip, insertKeyframe, removeKeyframe, setPoseTime, setPosePlaying, getKeyframeTimes, setClipLength, getIKChains, getHipBoneId, selectIKChain]);
 
-  return <div ref={mountRef} className="w-full h-full" style={{ touchAction: "none" }} />;
+  return <div ref={mountRef} className="w-full h-full" style={{ touchAction: "none", position: "relative" }} />;
 }

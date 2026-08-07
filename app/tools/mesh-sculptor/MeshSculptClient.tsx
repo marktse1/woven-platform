@@ -2039,7 +2039,7 @@ export default function MeshSculptClient() {
               selected field at once (Maya's own Channel Box gesture). */}
           {editMode === "pose" && (
             <div
-              className="absolute top-4 right-4 z-20 w-60 p-3"
+              className="absolute top-4 right-4 z-30 w-60 p-3"
               style={{
                 background: "rgba(7,10,16,0.82)",
                 backdropFilter: "blur(8px)",

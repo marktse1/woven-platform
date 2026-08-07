@@ -15,6 +15,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
+import { CSS3DRenderer, CSS3DObject } from "three/examples/jsm/renderers/CSS3DRenderer.js";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { Water as ThreeWater } from "three/examples/jsm/objects/Water.js";
@@ -817,6 +818,44 @@ const timeControls = {
 const inspector = ui.inspector;
 const sceneOutliner = ui.sceneOutliner;
 const placeablesPanel = ui.placeablesPanel;
+
+// Inspector panel — reparented from its fixed right-edge spot into a
+// real CSS3DObject positioned in 3D world-space near the current
+// selection, same technique as Mesh Sculptor's Channel Box
+// (components/tools/SculptViewer.tsx): a second, lightweight renderer
+// layered over the WebGL canvas. Despite the name, CSS3DRenderer does no
+// GPU rasterization at all — it just computes a CSS transform per object
+// and sets it on the real DOM element each frame, letting the browser's
+// own compositor draw it (negligible cost, not a second WebGL pass).
+// Its wrapper is pointer-events:none so empty viewport space still
+// orbits/pans normally; the host div holding the panel's real content
+// opts back into pointer-events so its own inputs work — World Builder's
+// own click-to-select listeners are on `renderer.domElement` itself
+// (not a shared ancestor container the panel also lives under, unlike
+// Mesh Sculptor's `mount`), so there's no click-through-deselect risk
+// here to guard against.
+const cssRenderer = new CSS3DRenderer();
+cssRenderer.setSize(ui.root.clientWidth || 1, ui.root.clientHeight || 1);
+cssRenderer.domElement.style.position = "absolute";
+cssRenderer.domElement.style.inset = "0";
+cssRenderer.domElement.style.zIndex = "25";
+cssRenderer.domElement.style.pointerEvents = "none";
+ui.viewport.appendChild(cssRenderer.domElement);
+const cssScene = new THREE.Scene();
+
+const inspectorPanelEl = inspector.closest<HTMLElement>(".panel-inspector");
+const inspectorHost = document.createElement("div");
+inspectorHost.style.pointerEvents = "auto";
+if (inspectorPanelEl) {
+  // No longer pinned to .shell's absolute right:0/top:0 — position and
+  // apparent size now come entirely from the CSS3DObject's own world
+  // transform (see tick()'s per-frame follow logic).
+  inspectorPanelEl.style.position = "static";
+  inspectorHost.appendChild(inspectorPanelEl);
+}
+const inspectorObject = new CSS3DObject(inspectorHost);
+inspectorObject.visible = false;
+cssScene.add(inspectorObject);
 
 manifestInput.value = state.manifestUrl;
 catalogInput.value = state.assetCatalogUrl;
@@ -5098,12 +5137,17 @@ function applyPanelSizes() {
     // Inspector sits top:0 and World sits bottom:0 with near-full height).
     // Both panels are absolutely positioned within .shell, so offsetTop/
     // offsetHeight (relative to that same containing block) is the right
-    // coordinate space here, not viewport-relative values.
+    // coordinate space here, not viewport-relative values — only valid
+    // while the Inspector is still actually docked there; once it's been
+    // reparented into the CSS3D world-space layer (see its own setup
+    // above), those measurements are meaningless, so fall back to the
+    // plain default height instead.
+    const inspectorDocked = inspectorPanel?.closest(".shell") != null;
     if (collapsed) {
       worldPanel.style.top = "auto";
       worldPanel.style.bottom = "16px";
       worldPanel.style.height = "auto";
-    } else if (inspectorPanel) {
+    } else if (inspectorPanel && inspectorDocked) {
       const gap = 10;
       const top = inspectorPanel.offsetTop + inspectorPanel.offsetHeight + gap;
       worldPanel.style.top = `${top}px`;
@@ -5594,6 +5638,7 @@ function onResize() {
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
   renderer.setSize(width, height);
+  cssRenderer.setSize(width, height);
   // World panel's position/height (see applyPanelSizes) is computed from
   // concrete pixel measurements, not a live CSS calc() — needs recomputing
   // on viewport resize so it doesn't drift below the viewport or back into
@@ -6132,9 +6177,40 @@ function updateActiveWaterMeshes(elapsedSeconds: number) {
   });
 }
 
+// Inspector world-space follow state — same state machine as Mesh
+// Sculptor's Channel Box (components/tools/SculptViewer.tsx): damped
+// position/rotation follow while the same object/road stays selected
+// (not a rigid snap — reads as a floating object with presence), a
+// collapse-and-reappear (shrink out, snap, grow back in) when switching
+// to a DIFFERENT selection instead of gliding across the scene between
+// two unrelated world positions, and a scale/fade-in on first appearing.
+let lastTickTime = performance.now();
+const inspectorTargetPos = new THREE.Vector3();
+const inspectorCurrentPos = new THREE.Vector3();
+const inspectorCurrentQuat = new THREE.Quaternion();
+const inspectorCamRight = new THREE.Vector3();
+const inspectorCamUp = new THREE.Vector3();
+const inspectorCamForward = new THREE.Vector3();
+let inspectorCurrentScale = 0;
+let inspectorInitialized = false;
+let inspectorKey: string | null = null;
+let inspectorCollapsing = false;
+// World Builder's scene scale (roads, buildings, terrain) is much
+// larger than Mesh Sculptor's per-character units — these starting
+// values are a guess and will likely need their own tuning pass.
+const INSPECTOR_OFFSET_RIGHT = 6;
+const INSPECTOR_OFFSET_UP = 4;
+const INSPECTOR_BASE_SCALE = 0.02; // CSS px -> world units, tune to taste
+const INSPECTOR_FOLLOW_SPEED = 6;
+const INSPECTOR_SCALE_SPEED = 10;
+
 function tick() {
   if (disposed) return;
   rafId = requestAnimationFrame(tick);
+
+  const now = performance.now();
+  const delta = Math.min((now - lastTickTime) / 1000, 0.1);
+  lastTickTime = now;
 
   if (state.playing) {
     state.timeOfDay = (state.timeOfDay + 0.01 * Number(timeControls.speed.value)) % 24;
@@ -6147,7 +6223,68 @@ function tick() {
   updateActiveWaterMeshes(elapsedSeconds);
   syncGrassWindUniforms(elapsedSeconds);
   controls.update();
+
+  const anchorMesh = state.selectedRoadId
+    ? roadMeshes.get(state.selectedRoadId)
+    : state.selectedObjectId
+      ? objectMeshes.get(state.selectedObjectId)
+      : undefined;
+  const anchorKey = state.selectedRoadId
+    ? `road:${state.selectedRoadId}`
+    : state.selectedObjectId
+      ? `object:${state.selectedObjectId}`
+      : null;
+  const followT = 1 - Math.exp(-INSPECTOR_FOLLOW_SPEED * delta);
+  const scaleT = 1 - Math.exp(-INSPECTOR_SCALE_SPEED * delta);
+
+  if (!inspectorCollapsing && inspectorKey !== null && anchorKey !== null && anchorKey !== inspectorKey) {
+    inspectorCollapsing = true;
+  }
+
+  if (inspectorCollapsing) {
+    inspectorCurrentScale += (0 - inspectorCurrentScale) * scaleT;
+    if (inspectorCurrentScale < 0.02) {
+      inspectorCollapsing = false;
+      inspectorCurrentScale = 0;
+      inspectorInitialized = false;
+      inspectorKey = null;
+      inspectorObject.visible = false;
+    } else {
+      inspectorObject.visible = true;
+      inspectorObject.scale.setScalar(INSPECTOR_BASE_SCALE * inspectorCurrentScale);
+    }
+  } else if (anchorMesh) {
+    anchorMesh.getWorldPosition(inspectorTargetPos);
+    camera.matrixWorld.extractBasis(inspectorCamRight, inspectorCamUp, inspectorCamForward);
+    inspectorTargetPos.addScaledVector(inspectorCamRight, INSPECTOR_OFFSET_RIGHT).addScaledVector(inspectorCamUp, INSPECTOR_OFFSET_UP);
+    if (!inspectorInitialized) {
+      inspectorCurrentPos.copy(inspectorTargetPos);
+      inspectorCurrentQuat.copy(camera.quaternion);
+      inspectorInitialized = true;
+    } else {
+      inspectorCurrentPos.lerp(inspectorTargetPos, followT);
+      inspectorCurrentQuat.slerp(camera.quaternion, followT);
+    }
+    inspectorKey = anchorKey;
+    inspectorCurrentScale += (1 - inspectorCurrentScale) * scaleT;
+    inspectorObject.visible = true;
+    inspectorObject.position.copy(inspectorCurrentPos);
+    inspectorObject.quaternion.copy(inspectorCurrentQuat);
+    inspectorObject.scale.setScalar(INSPECTOR_BASE_SCALE * inspectorCurrentScale);
+  } else {
+    inspectorInitialized = false;
+    inspectorKey = null;
+    inspectorCurrentScale += (0 - inspectorCurrentScale) * scaleT;
+    if (inspectorCurrentScale < 0.01) {
+      inspectorObject.visible = false;
+      inspectorCurrentScale = 0;
+    } else {
+      inspectorObject.scale.setScalar(INSPECTOR_BASE_SCALE * inspectorCurrentScale);
+    }
+  }
+
   renderer.render(scene, camera);
+  cssRenderer.render(cssScene, camera);
 }
 
 function buildUi() {

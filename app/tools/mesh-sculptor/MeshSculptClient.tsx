@@ -139,6 +139,12 @@ const PRIMITIVES: { type: PrimitiveType; label: string; icon: string }[] = [
 ];
 
 const PURPLE = "#c47be8";
+// Channel Box panel size, used to keep it clamped inside the canvas when
+// anchored near a selection close to an edge — matches its own w-60
+// className; height is an estimate (actual height varies with bone vs.
+// IK-target row count), close enough for a soft clamp.
+const CHANNEL_BOX_WIDTH = 240;
+const CHANNEL_BOX_HEIGHT_ESTIMATE = 170;
 
 /** Picks a "nice" (1/2/5 × power of 10) frame interval for the
  * timeline ruler's major tick marks, aiming for roughly `targetTicks`
@@ -245,7 +251,11 @@ export default function MeshSculptClient() {
   const [controlMsg, setControlMsg] = useState("");
   // Real Channel Box for whatever's currently selected — local Position/
   // Rotation/Scale, editable, multi-select-then-batch-type like Maya's own.
-  const [selectedTransform, setSelectedTransform] = useState<{ kind: "bone" | "ikTarget"; position: [number, number, number]; rotationDeg: [number, number, number]; scale: [number, number, number] } | null>(null);
+  const [selectedTransform, setSelectedTransform] = useState<{ kind: "bone" | "ikTarget" | "ikPole"; position: [number, number, number]; rotationDeg: [number, number, number]; scale: [number, number, number] } | null>(null);
+  // Live screen-space position of whatever's selected (bone/IK target/
+  // pole), updated every frame including through camera orbit — lets the
+  // Channel Box float near the selection instead of a fixed corner.
+  const [selectedAnchor, setSelectedAnchor] = useState<{ x: number; y: number } | null>(null);
   const [channelSelection, setChannelSelection] = useState<Set<TransformField>>(new Set());
   const [selectedBoneId, setSelectedBoneId] = useState<string | null>(null);
   // "ik" controls select via SculptViewerHandle.selectIKChain (id =
@@ -302,6 +312,7 @@ export default function MeshSculptClient() {
   const viewerHandleRef = useRef<SculptViewerHandle | null>(null);
   const navigatorBarRef = useRef<HTMLDivElement | null>(null);
   const rulerRef = useRef<HTMLDivElement | null>(null);
+  const canvasWrapperRef = useRef<HTMLDivElement | null>(null);
 
   // Mesh Sculptor no longer keeps its own "browse my assets" list — the
   // global My Assets panel (app/layout.tsx) is the universal loader now.
@@ -697,7 +708,7 @@ export default function MeshSculptClient() {
     refreshControls();
   }, [refreshSubmeshes, refreshBones, refreshDetectedControls, refreshJoints, refreshControls]);
 
-  const handleSelectedTransformChange = useCallback((info: { kind: "bone" | "ikTarget"; position: [number, number, number]; rotationDeg: [number, number, number]; scale: [number, number, number] } | null) => {
+  const handleSelectedTransformChange = useCallback((info: { kind: "bone" | "ikTarget" | "ikPole"; position: [number, number, number]; rotationDeg: [number, number, number]; scale: [number, number, number] } | null) => {
     setSelectedTransform(info);
   }, []);
 
@@ -741,6 +752,19 @@ export default function MeshSculptClient() {
   const handleScrubFrame = useCallback((frame: number) => {
     handleScrub(frame / poseFrameRate);
   }, [handleScrub, poseFrameRate]);
+
+  // Jumps the playhead exactly onto the nearest existing keyframe before/
+  // after the current frame — scrubbing by hand can land you close to a
+  // keyframe but not precisely on it.
+  const handleJumpToKeyframe = useCallback((direction: "prev" | "next") => {
+    const currentFrame = Math.round(Math.min(poseTime, poseDuration) * poseFrameRate);
+    const candidates = direction === "prev"
+      ? poseKeyframeFrames.filter((f) => f < currentFrame)
+      : poseKeyframeFrames.filter((f) => f > currentFrame);
+    if (candidates.length === 0) return;
+    const target = direction === "prev" ? Math.max(...candidates) : Math.min(...candidates);
+    handleScrubFrame(target);
+  }, [poseTime, poseDuration, poseFrameRate, poseKeyframeFrames, handleScrubFrame]);
 
   const handleTogglePlay = useCallback(() => {
     const entryId = primaryPoseEntryId();
@@ -909,8 +933,8 @@ export default function MeshSculptClient() {
     refreshControls();
   }, [refreshControls]);
 
-  const handleAddControlToIKChain = useCallback((entryId: string, chainId: string) => {
-    const result = viewerHandleRef.current?.addControlToIKChain(entryId, chainId, "target");
+  const handleAddControlToIKChain = useCallback((entryId: string, chainId: string, part: "target" | "pole" = "target") => {
+    const result = viewerHandleRef.current?.addControlToIKChain(entryId, chainId, part);
     if (result && !result.ok) setControlMsg(result.reason ?? "Couldn't add control.");
     else setControlMsg("");
     refreshControls();
@@ -1088,6 +1112,12 @@ export default function MeshSculptClient() {
           e.preventDefault();
           handleParentJoint(e.shiftKey);
         }
+        // Maya's own key for "Set Key" — mirrors the Add Keyframe button's
+        // own gating (needs at least one bone in the rig).
+        else if (editMode === "pose" && bones.length > 0 && e.key.toLowerCase() === "s") {
+          e.preventDefault();
+          handleInsertKeyframe();
+        }
         else if (e.key.toLowerCase() === "w") setTransformMode("translate");
         else if (e.key.toLowerCase() === "e") setTransformMode("rotate");
         else if (e.key.toLowerCase() === "r") setTransformMode("scale");
@@ -1109,7 +1139,7 @@ export default function MeshSculptClient() {
     window.addEventListener("keydown", onDown);
     window.addEventListener("keyup", onUp);
     return () => { window.removeEventListener("keydown", onDown); window.removeEventListener("keyup", onUp); };
-  }, [editMode, brushMode, handleClearMask, selectedJointId, joints, handleDeleteJoint, handleParentJoint]);
+  }, [editMode, brushMode, handleClearMask, selectedJointId, joints, handleDeleteJoint, handleParentJoint, bones, handleInsertKeyframe]);
 
   const handleToggleSubmeshVisible = useCallback((id: string, visible: boolean) => {
     viewerHandleRef.current?.setEntryVisible(id, visible);
@@ -1360,6 +1390,7 @@ export default function MeshSculptClient() {
                           const hasControl = c.kind === "bone"
                             ? controls.some((ctrl) => ctrl.attachment.kind === "bone" && ctrl.attachment.boneUuid === c.id)
                             : controls.some((ctrl) => ctrl.attachment.kind === "ikTarget" && ctrl.attachment.chainId === c.id);
+                          const hasPoleControl = c.kind === "ik" && controls.some((ctrl) => ctrl.attachment.kind === "ikPole" && ctrl.attachment.chainId === c.id);
                           return (
                             <div key={`${c.kind}-${c.id}`} className="flex items-stretch">
                               <button
@@ -1374,13 +1405,23 @@ export default function MeshSculptClient() {
                                 {c.label}
                               </button>
                               <button
-                                onClick={() => c.kind === "bone" ? handleAddControlToBone(c.entryId, c.id) : handleAddControlToIKChain(c.entryId, c.id)}
+                                onClick={() => c.kind === "bone" ? handleAddControlToBone(c.entryId, c.id) : handleAddControlToIKChain(c.entryId, c.id, "target")}
                                 disabled={hasControl}
                                 title={hasControl ? "Already has a control ring" : "Add a control ring"}
-                                className="px-1.5 rounded-r text-[10px] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                                style={{ background: "#1e1a17", color: "#5ac8e8", border: "1px solid #3a3530", borderLeft: "none" }}>
+                                className={`px-1.5 text-[10px] transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${c.kind === "ik" ? "" : "rounded-r"}`}
+                                style={{ background: "#1e1a17", color: "#5ac8e8", border: "1px solid #3a3530", borderLeft: "none", borderRight: c.kind === "ik" ? "none" : undefined }}>
                                 {hasControl ? "○" : "+○"}
                               </button>
+                              {c.kind === "ik" && (
+                                <button
+                                  onClick={() => handleAddControlToIKChain(c.entryId, c.id, "pole")}
+                                  disabled={hasPoleControl}
+                                  title={hasPoleControl ? "Already has a pole control ring" : "Add a pole control ring (bend-direction handle)"}
+                                  className="px-1.5 rounded-r text-[10px] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                  style={{ background: "#1e1a17", color: "#5ac8e8", border: "1px solid #3a3530", borderLeft: "none" }}>
+                                  {hasPoleControl ? "P" : "+P"}
+                                </button>
+                              )}
                             </div>
                           );
                         })}
@@ -2025,6 +2066,7 @@ export default function MeshSculptClient() {
 
         {/* Canvas */}
         <div
+          ref={canvasWrapperRef}
           className="flex-1 relative"
           onDrop={handleDrop}
           onDragOver={handleDragOver}
@@ -2033,14 +2075,27 @@ export default function MeshSculptClient() {
           {/* Channel Box — floating/transparent over the viewport, same
               look as World Builder's own panels (lib/world-builder/
               editor.css's .panel rule), not embedded in the sidebar.
+              Positioned near the current selection (selectedAnchor, a
+              live screen-space projection from SculptViewer that tracks
+              camera orbit as well as posing) rather than a fixed corner
+              — falls back to the corner when nothing's selected yet.
               Click a field's axis label to select it, Shift-click to
               multi-select several; typing a value into any selected
               field and hitting Enter/blurring applies it to every
               selected field at once (Maya's own Channel Box gesture). */}
           {editMode === "pose" && (
             <div
-              className="absolute top-4 right-4 z-30 w-60 p-3"
+              className="absolute z-30 w-60 p-3"
               style={{
+                ...(selectedAnchor
+                  ? (() => {
+                      const containerWidth = canvasWrapperRef.current?.clientWidth ?? Infinity;
+                      const containerHeight = canvasWrapperRef.current?.clientHeight ?? Infinity;
+                      const left = Math.max(8, Math.min(selectedAnchor.x + 24, containerWidth - CHANNEL_BOX_WIDTH - 8));
+                      const top = Math.max(8, Math.min(selectedAnchor.y - 24, containerHeight - CHANNEL_BOX_HEIGHT_ESTIMATE - 8));
+                      return { left, top };
+                    })()
+                  : { top: 16, right: 16 }),
                 background: "rgba(7,10,16,0.82)",
                 backdropFilter: "blur(8px)",
                 WebkitBackdropFilter: "blur(8px)",
@@ -2155,9 +2210,11 @@ export default function MeshSculptClient() {
             onSelectionChange={setSelectionCount}
             onLoopPreview={handleLoopPreview}
             onBoneSelect={setSelectedBoneId}
+            onIKChainSelect={setSelectedIKChainId}
             onJointSelect={handleJointSelectionChange}
             onJointShiftClick={(_entryId, jointId) => handleMarkPendingParent(jointId)}
             onSelectedTransformChange={handleSelectedTransformChange}
+            onSelectedAnchorChange={setSelectedAnchor}
             onProjectionChange={setIsOrthographic}
             onPoseTimeChange={handlePoseTimeChange}
             paintColor={paintColor}
@@ -2208,6 +2265,18 @@ export default function MeshSculptClient() {
                   <span className="text-[10.5px]" style={{ color: "#6a8098" }}>fps</span>
                 </div>
                 <div className="flex-1" />
+                <button onClick={() => handleJumpToKeyframe("prev")} disabled={!activeClipId}
+                  title="Jump to previous keyframe"
+                  className="px-2 py-1.5 rounded text-[11px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ background: "#1e1a17", color: "#8aa0b4" }}>
+                  ◀ Key
+                </button>
+                <button onClick={() => handleJumpToKeyframe("next")} disabled={!activeClipId}
+                  title="Jump to next keyframe"
+                  className="px-2 py-1.5 rounded text-[11px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ background: "#1e1a17", color: "#8aa0b4" }}>
+                  Key ▶
+                </button>
                 <button onClick={handleInsertKeyframe} disabled={bones.length === 0}
                   className="px-3 py-1.5 rounded text-[11px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                   style={{ background: "#1e1a17", color: PURPLE, border: `1px solid ${PURPLE}` }}>

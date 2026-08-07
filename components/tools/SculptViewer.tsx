@@ -852,6 +852,10 @@ type Props = {
    * cleared on mode exit) — same "event, not polled ref" reasoning as
    * onSelectionChange, so the Bones list panel can highlight the active row. */
   onBoneSelect?: (boneId: string | null) => void;
+  /** Same as onBoneSelect, for Pose mode's IK chains (target/pole
+   * gizmo) — selectIKChain has no other way to tell the parent which
+   * chain (if any) is now selected. */
+  onIKChainSelect?: (chainId: string | null) => void;
   /** Same as onBoneSelect, for Rig mode's manually-placed joints. */
   onJointSelect?: (jointId: string | null) => void;
   /** Fired on a Shift-click of a joint in the viewport while another joint
@@ -866,7 +870,16 @@ type Props = {
    * meaningful: an IK target has no real rotation/scale (rotationDeg is
    * always 0, scale always 1 — shown for type-shape convenience, not
    * meant to be editable for that kind). Null when nothing's selected. */
-  onSelectedTransformChange?: (info: { kind: "bone" | "ikTarget"; position: [number, number, number]; rotationDeg: [number, number, number]; scale: [number, number, number] } | null) => void;
+  onSelectedTransformChange?: (info: { kind: "bone" | "ikTarget" | "ikPole"; position: [number, number, number]; rotationDeg: [number, number, number]; scale: [number, number, number] } | null) => void;
+  /** Fired every render frame while something's selected (bone/IK target/
+   * pole) with its CURRENT screen-space pixel position, relative to the
+   * canvas's own top-left corner — same coordinate space a CSS `left`/
+   * `top` on an absolutely-positioned sibling of this component's root
+   * div would use. Recomputed every frame (not just on selection change
+   * or drag) so a floating panel anchored to it can track the selection
+   * through camera orbit/pan/zoom too, not just posing. Null when
+   * nothing's selected. */
+  onSelectedAnchorChange?: (pos: { x: number; y: number } | null) => void;
   /** Fired whenever the Perspective/Ortho projection toggle switches, so
    * the toggle button can show which mode is currently active. */
   onProjectionChange?: (isOrthographic: boolean) => void;
@@ -905,9 +918,11 @@ export default function SculptViewer({
   onSelectionChange,
   onLoopPreview,
   onBoneSelect,
+  onIKChainSelect,
   onJointSelect,
   onJointShiftClick,
   onSelectedTransformChange,
+  onSelectedAnchorChange,
   onProjectionChange,
   onPoseTimeChange,
   handleRef,
@@ -1016,9 +1031,11 @@ export default function SculptViewer({
   const onSelectionChangeRef = useRef(onSelectionChange);
   const onLoopPreviewRef = useRef(onLoopPreview);
   const onBoneSelectRef = useRef(onBoneSelect);
+  const onIKChainSelectRef = useRef(onIKChainSelect);
   const onJointSelectRef = useRef(onJointSelect);
   const onJointShiftClickRef = useRef(onJointShiftClick);
   const onSelectedTransformChangeRef = useRef(onSelectedTransformChange);
+  const onSelectedAnchorChangeRef = useRef(onSelectedAnchorChange);
   const onProjectionChangeRef = useRef(onProjectionChange);
   const onPoseTimeChangeRef = useRef(onPoseTimeChange);
   useEffect(() => { onModelLoadedRef.current = onModelLoaded; }, [onModelLoaded]);
@@ -1026,9 +1043,11 @@ export default function SculptViewer({
   useEffect(() => { onSelectionChangeRef.current = onSelectionChange; }, [onSelectionChange]);
   useEffect(() => { onLoopPreviewRef.current = onLoopPreview; }, [onLoopPreview]);
   useEffect(() => { onBoneSelectRef.current = onBoneSelect; }, [onBoneSelect]);
+  useEffect(() => { onIKChainSelectRef.current = onIKChainSelect; }, [onIKChainSelect]);
   useEffect(() => { onJointSelectRef.current = onJointSelect; }, [onJointSelect]);
   useEffect(() => { onJointShiftClickRef.current = onJointShiftClick; }, [onJointShiftClick]);
   useEffect(() => { onSelectedTransformChangeRef.current = onSelectedTransformChange; }, [onSelectedTransformChange]);
+  useEffect(() => { onSelectedAnchorChangeRef.current = onSelectedAnchorChange; }, [onSelectedAnchorChange]);
   useEffect(() => { onProjectionChangeRef.current = onProjectionChange; }, [onProjectionChange]);
   useEffect(() => { onPoseTimeChangeRef.current = onPoseTimeChange; }, [onPoseTimeChange]);
 
@@ -1159,7 +1178,13 @@ export default function SculptViewer({
   const ikPoleTransformHelperRef = useRef<THREE.Object3D | null>(null);
   const selectedIKChainIdRef = useRef<string | null>(null);
   const selectedIKEntryRef = useRef<SculptMeshEntry | null>(null);
-  const selectIKChainRef = useRef<(entry: SculptMeshEntry | null, chainId: string | null) => void>(() => {});
+  // Which half of the selected chain the Channel Box/anchor should
+  // report — both gizmos (target + pole) attach together regardless (see
+  // selectIKChain), this only decides which one's values are shown.
+  // Defaults to the target for chain-level selections (Quick Select);
+  // set to "ikPole" only when the pole ring itself was clicked.
+  const selectedIKPartRef = useRef<"ikTarget" | "ikPole">("ikTarget");
+  const selectIKChainRef = useRef<(entry: SculptMeshEntry | null, chainId: string | null, part?: "ikTarget" | "ikPole") => void>(() => {});
   const solveIKChainRef = useRef<(entry: SculptMeshEntry, chainId: string) => void>(() => {});
   const setSelectedTransformFieldsRef = useRef<(entry: SculptMeshEntry, fields: Partial<Record<TransformField, number>>) => void>(() => {});
 
@@ -1588,11 +1613,14 @@ export default function SculptViewer({
       }
       const chainId = selectedIKChainIdRef.current;
       const ikEntry = selectedIKEntryRef.current;
-      const targetBone = chainId ? ikEntry?.ikTargetBones?.get(chainId) : undefined;
-      if (targetBone) {
+      const part = selectedIKPartRef.current;
+      const ikBone = chainId
+        ? (part === "ikPole" ? ikEntry?.ikPoleBones?.get(chainId) : ikEntry?.ikTargetBones?.get(chainId))
+        : undefined;
+      if (ikBone) {
         cb({
-          kind: "ikTarget",
-          position: [targetBone.position.x, targetBone.position.y, targetBone.position.z],
+          kind: part,
+          position: [ikBone.position.x, ikBone.position.y, ikBone.position.z],
           rotationDeg: [0, 0, 0],
           scale: [1, 1, 1],
         });
@@ -1630,13 +1658,14 @@ export default function SculptViewer({
       }
       const chainId = selectedIKChainIdRef.current;
       if (selectedIKEntryRef.current === entry && chainId) {
-        const targetBone = entry.ikTargetBones?.get(chainId);
-        if (!targetBone) return;
-        undoRef.current.pushPose([...ikChainBones(entry, chainId), targetBone]);
-        if (fields.px !== undefined) targetBone.position.x = fields.px;
-        if (fields.py !== undefined) targetBone.position.y = fields.py;
-        if (fields.pz !== undefined) targetBone.position.z = fields.pz;
-        targetBone.updateMatrixWorld(true);
+        const part = selectedIKPartRef.current;
+        const ikBone = part === "ikPole" ? entry.ikPoleBones?.get(chainId) : entry.ikTargetBones?.get(chainId);
+        if (!ikBone) return;
+        undoRef.current.pushPose([...ikChainBones(entry, chainId), ikBone]);
+        if (fields.px !== undefined) ikBone.position.x = fields.px;
+        if (fields.py !== undefined) ikBone.position.y = fields.py;
+        if (fields.pz !== undefined) ikBone.position.z = fields.pz;
+        ikBone.updateMatrixWorld(true);
         solveIKChain(entry, chainId);
         updateControlRingsRef.current();
         emitSelectedTransform();
@@ -1755,6 +1784,7 @@ export default function SculptViewer({
       selectedBoneRef.current = bone;
       onBoneSelectRef.current?.(bone?.uuid ?? null);
       emitSelectedTransform();
+      updateControlRingsRef.current();
       const tc = poseTransformControlsRef.current;
       const helper = poseTransformHelperRef.current;
       if (!tc) return;
@@ -1961,8 +1991,14 @@ export default function SculptViewer({
     scene.add(controlRingGroup);
     controlRingsRef.current = controlRingGroup;
     const controlRingGeometry = new THREE.TorusGeometry(0.25, 0.0025, 8, 24);
+    // Grey by default, purple (matching the Channel Box's own PURPLE
+    // accent, #c47be8) when the ring's own attachment is the current
+    // selection — picked per-mesh in updateControlRings below.
     const controlRingMaterial = new THREE.MeshBasicMaterial({
-      color: 0x5ac8e8, transparent: true, opacity: 0.7, depthTest: false, side: THREE.DoubleSide,
+      color: 0x8a8a8a, transparent: true, opacity: 0.7, depthTest: false, side: THREE.DoubleSide,
+    });
+    const controlRingSelectedMaterial = new THREE.MeshBasicMaterial({
+      color: 0xc47be8, transparent: true, opacity: 0.9, depthTest: false, side: THREE.DoubleSide,
     });
     // controlId -> its live mesh — mesh.userData carries {entry, attachment}
     // for the raycaster hit-test below, which only gets the THREE.Object3D
@@ -2032,7 +2068,7 @@ export default function SculptViewer({
     }
     solveIKChainRef.current = solveIKChain;
 
-    function selectIKChain(entry: SculptMeshEntry | null, chainId: string | null) {
+    function selectIKChain(entry: SculptMeshEntry | null, chainId: string | null, part: "ikTarget" | "ikPole" = "ikTarget") {
       // Selecting an IK target deselects any manually-selected pose
       // bone/rig joint and vice versa (selectBone does the same) — only
       // one gizmo is ever active at a time. Guarded on chainId (like
@@ -2044,7 +2080,10 @@ export default function SculptViewer({
       }
       selectedIKEntryRef.current = entry;
       selectedIKChainIdRef.current = chainId;
+      selectedIKPartRef.current = part;
+      onIKChainSelectRef.current?.(chainId ?? null);
       emitSelectedTransform();
+      updateControlRingsRef.current();
       const tc = ikTransformControlsRef.current;
       const helper = ikTransformHelperRef.current;
       const poleTc = ikPoleTransformControlsRef.current;
@@ -2384,6 +2423,10 @@ export default function SculptViewer({
           const { position, quaternion } = controlRingTransform(entry, curve.attachment, obj);
           mesh.position.copy(position);
           mesh.quaternion.copy(quaternion);
+          const isSelected = curve.attachment.kind === "bone"
+            ? selectedBoneRef.current?.uuid === curve.attachment.boneUuid
+            : selectedIKChainIdRef.current === curve.attachment.chainId && selectedIKPartRef.current === curve.attachment.kind;
+          mesh.material = isSelected ? controlRingSelectedMaterial : controlRingMaterial;
         }
       }
       for (const [id, mesh] of controlRingMeshes) {
@@ -2437,7 +2480,7 @@ export default function SculptViewer({
         const bone = entry.skeleton?.bones.find((b) => b.uuid === attachment.boneUuid);
         if (bone) selectBoneRef.current(entry, bone);
       } else {
-        selectIKChainRef.current(entry, attachment.chainId);
+        selectIKChainRef.current(entry, attachment.chainId, attachment.kind);
       }
     }
     selectControlAttachmentRef.current = selectControlAttachment;
@@ -2589,6 +2632,13 @@ export default function SculptViewer({
 
     let raf = 0;
     let lastTime = performance.now();
+    // Only fires onSelectedAnchorChange when the projected position
+    // actually moves — every-frame identical {x,y} objects would
+    // otherwise re-render the whole parent UI 60x/sec even while the
+    // camera and selection are both sitting still.
+    const anchorWp = new THREE.Vector3();
+    let lastAnchorX: number | null = null;
+    let lastAnchorY: number | null = null;
     const tick = () => {
       const now = performance.now();
       // Clamp so a backgrounded tab (or a debugger pause) resuming doesn't
@@ -2607,6 +2657,34 @@ export default function SculptViewer({
       }
       if (bonesDirty) updateBoneHandlesRef.current();
       controls.update();
+
+      const anchorCb = onSelectedAnchorChangeRef.current;
+      if (anchorCb) {
+        const bone = selectedBoneRef.current;
+        const chainId = selectedIKChainIdRef.current;
+        const ikEntry = selectedIKEntryRef.current;
+        const ikBone = chainId
+          ? (selectedIKPartRef.current === "ikPole" ? ikEntry?.ikPoleBones?.get(chainId) : ikEntry?.ikTargetBones?.get(chainId))
+          : undefined;
+        const anchorObj = bone ?? ikBone;
+        if (anchorObj) {
+          anchorObj.getWorldPosition(anchorWp);
+          anchorWp.project(cameraRef.current!);
+          const rect = renderer.domElement.getBoundingClientRect();
+          const ax = (anchorWp.x * 0.5 + 0.5) * rect.width;
+          const ay = (-anchorWp.y * 0.5 + 0.5) * rect.height;
+          if (ax !== lastAnchorX || ay !== lastAnchorY) {
+            lastAnchorX = ax;
+            lastAnchorY = ay;
+            anchorCb({ x: ax, y: ay });
+          }
+        } else if (lastAnchorX !== null || lastAnchorY !== null) {
+          lastAnchorX = null;
+          lastAnchorY = null;
+          anchorCb(null);
+        }
+      }
+
       renderer.render(scene, cameraRef.current!);
       raf = requestAnimationFrame(tick);
     };

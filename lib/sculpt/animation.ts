@@ -91,10 +91,18 @@ export type PoseAnimationState = {
    * that one bone, standard in every biped rig. Null if detection found
    * nothing that looks like a hip/pelvis/root bone. */
   hipBoneName: string | null;
+  /** Same idea as hipBoneName, for the head/neck — plain FK handles, not
+   * IK chains. Spine bend in general is FK too (this codebase's IK is
+   * target-reaching, not the spline/ribbon solve a smoothly-rippling
+   * spine would need) — head/neck are just the two bones common enough
+   * across biped rigs to detect by naming convention; other spine bones
+   * are reachable via the regular Bones list, same as any FK bone. */
+  headBoneName: string | null;
+  neckBoneName: string | null;
 };
 
 export function createPoseAnimationState(): PoseAnimationState {
-  return { clips: [], activeClipId: null, ikChains: [], hipBoneName: null };
+  return { clips: [], activeClipId: null, ikChains: [], hipBoneName: null, headBoneName: null, neckBoneName: null };
 }
 
 // ── biped control auto-detection ──────────────────────────────────────────
@@ -148,12 +156,14 @@ function findSideBone(names: string[], side: "l" | "r", include: string, exclude
 
 /** Auto-detects leg/arm IK chains and a hip/COG control from a skeleton's
  * bone names, run once at GLB import time. */
-export function detectBipedControls(boneNames: string[]): { ikChains: IKChain[]; hipBoneName: string | null } {
+export function detectBipedControls(boneNames: string[]): { ikChains: IKChain[]; hipBoneName: string | null; headBoneName: string | null; neckBoneName: string | null } {
   const hipBoneName =
     boneNames.find((n) => norm(n).includes("pelvis")) ??
     boneNames.find((n) => norm(n).includes("hip")) ??
     boneNames.find((n) => norm(n) === "root") ??
     null;
+  const headBoneName = boneNames.find((n) => norm(n).includes("head")) ?? null;
+  const neckBoneName = boneNames.find((n) => norm(n).includes("neck")) ?? null;
 
   const ikChains: IKChain[] = [];
   for (const side of ["l", "r"] as const) {
@@ -176,7 +186,7 @@ export function detectBipedControls(boneNames: string[]): { ikChains: IKChain[];
     }
   }
 
-  return { ikChains, hipBoneName };
+  return { ikChains, hipBoneName, headBoneName, neckBoneName };
 }
 
 /** A reasonable default name for the next clip — "Clip", "Clip.002",

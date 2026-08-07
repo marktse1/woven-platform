@@ -8,6 +8,7 @@ import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { CCDIKSolver } from "three/examples/jsm/animation/CCDIKSolver.js";
+import { CSS3DRenderer, CSS3DObject } from "three/examples/jsm/renderers/CSS3DRenderer.js";
 import { MeshBVH, acceleratedRaycast } from "three-mesh-bvh";
 import "three-mesh-bvh"; // pulls in BufferGeometry.boundsTree augmentation
 import { buildSeamData, type SeamData } from "@/lib/sculpt/seams";
@@ -606,6 +607,9 @@ export type SculptViewerHandle = {
   /** The auto-detected hip/pelvis/root bone's id (THREE.Bone uuid), for
    * a one-click "select the hip control" shortcut — null if none found. */
   getHipBoneId: (entryId: string) => string | null;
+  /** Same as getHipBoneId, for the auto-detected head/neck bones. */
+  getHeadBoneId: (entryId: string) => string | null;
+  getNeckBoneId: (entryId: string) => string | null;
   /** Attaches the IK drag gizmo to a chain's target bone (deselecting
    * any manually-selected pose bone/rig joint), or detaches it if
    * chainId is null. Dragging the gizmo solves the whole chain live via
@@ -870,16 +874,16 @@ type Props = {
    * meaningful: an IK target has no real rotation/scale (rotationDeg is
    * always 0, scale always 1 — shown for type-shape convenience, not
    * meant to be editable for that kind). Null when nothing's selected. */
-  onSelectedTransformChange?: (info: { kind: "bone" | "ikTarget" | "ikPole"; position: [number, number, number]; rotationDeg: [number, number, number]; scale: [number, number, number] } | null) => void;
-  /** Fired every render frame while something's selected (bone/IK target/
-   * pole) with its CURRENT screen-space pixel position, relative to the
-   * canvas's own top-left corner — same coordinate space a CSS `left`/
-   * `top` on an absolutely-positioned sibling of this component's root
-   * div would use. Recomputed every frame (not just on selection change
-   * or drag) so a floating panel anchored to it can track the selection
-   * through camera orbit/pan/zoom too, not just posing. Null when
-   * nothing's selected. */
-  onSelectedAnchorChange?: (pos: { x: number; y: number } | null) => void;
+  onSelectedTransformChange?: (info: { kind: "bone" | "ikTarget" | "ikPole"; name: string; position: [number, number, number]; rotationDeg: [number, number, number]; scale: [number, number, number] } | null) => void;
+  /** Fired once, the first time the Channel Box's CSS3DObject host div is
+   * created (a plain, empty <div> living inside a CSS3DRenderer scene,
+   * positioned in real 3D world-space near whatever's selected — see the
+   * per-frame follow logic in the component body). The parent should
+   * portal its Channel Box JSX into this element instead of rendering it
+   * in its own tree, so the SAME React state/logic renders content that
+   * physically exists as an object in the 3D scene rather than a 2D
+   * screen overlay. Fired with null on teardown. */
+  onChannelBoxHostReady?: (host: HTMLDivElement | null) => void;
   /** Fired whenever the Perspective/Ortho projection toggle switches, so
    * the toggle button can show which mode is currently active. */
   onProjectionChange?: (isOrthographic: boolean) => void;
@@ -922,7 +926,7 @@ export default function SculptViewer({
   onJointSelect,
   onJointShiftClick,
   onSelectedTransformChange,
-  onSelectedAnchorChange,
+  onChannelBoxHostReady,
   onProjectionChange,
   onPoseTimeChange,
   handleRef,
@@ -1035,7 +1039,7 @@ export default function SculptViewer({
   const onJointSelectRef = useRef(onJointSelect);
   const onJointShiftClickRef = useRef(onJointShiftClick);
   const onSelectedTransformChangeRef = useRef(onSelectedTransformChange);
-  const onSelectedAnchorChangeRef = useRef(onSelectedAnchorChange);
+  const onChannelBoxHostReadyRef = useRef(onChannelBoxHostReady);
   const onProjectionChangeRef = useRef(onProjectionChange);
   const onPoseTimeChangeRef = useRef(onPoseTimeChange);
   useEffect(() => { onModelLoadedRef.current = onModelLoaded; }, [onModelLoaded]);
@@ -1047,7 +1051,7 @@ export default function SculptViewer({
   useEffect(() => { onJointSelectRef.current = onJointSelect; }, [onJointSelect]);
   useEffect(() => { onJointShiftClickRef.current = onJointShiftClick; }, [onJointShiftClick]);
   useEffect(() => { onSelectedTransformChangeRef.current = onSelectedTransformChange; }, [onSelectedTransformChange]);
-  useEffect(() => { onSelectedAnchorChangeRef.current = onSelectedAnchorChange; }, [onSelectedAnchorChange]);
+  useEffect(() => { onChannelBoxHostReadyRef.current = onChannelBoxHostReady; }, [onChannelBoxHostReady]);
   useEffect(() => { onProjectionChangeRef.current = onProjectionChange; }, [onProjectionChange]);
   useEffect(() => { onPoseTimeChangeRef.current = onPoseTimeChange; }, [onPoseTimeChange]);
 
@@ -1431,6 +1435,29 @@ export default function SculptViewer({
     renderer.domElement.style.zIndex = "0";
     mount.appendChild(renderer.domElement);
 
+    // Channel Box, projected as a real object in 3D world-space instead
+    // of a 2D screen overlay — CSS3DRenderer positions actual DOM content
+    // via CSS transforms (no GPU rasterization, just transform math the
+    // browser's own compositor draws — negligible cost). Its wrapper is
+    // pointer-events:none so empty viewport space still orbits the
+    // camera normally; the one host div holding the panel's real content
+    // opts back into pointer-events so its own buttons/inputs work.
+    // Proof of concept — never added to modelRef.current or the main
+    // scene GLTFExporter walks, so it can never end up in an export.
+    const cssRenderer = new CSS3DRenderer();
+    cssRenderer.domElement.style.position = "absolute";
+    cssRenderer.domElement.style.inset = "0";
+    cssRenderer.domElement.style.zIndex = "10";
+    cssRenderer.domElement.style.pointerEvents = "none";
+    mount.appendChild(cssRenderer.domElement);
+    const cssScene = new THREE.Scene();
+    const channelBoxHost = document.createElement("div");
+    channelBoxHost.style.pointerEvents = "auto";
+    const channelBoxObject = new CSS3DObject(channelBoxHost);
+    channelBoxObject.visible = false;
+    cssScene.add(channelBoxObject);
+    onChannelBoxHostReadyRef.current?.(channelBoxHost);
+
     const ktx2Loader = new KTX2Loader();
     ktx2Loader.setTranscoderPath("/basis/");
     ktx2Loader.detectSupport(renderer);
@@ -1605,6 +1632,7 @@ export default function SculptViewer({
         const euler = new THREE.Euler().setFromQuaternion(bone.quaternion, "XYZ");
         cb({
           kind: "bone",
+          name: bone.name,
           position: [bone.position.x, bone.position.y, bone.position.z],
           rotationDeg: [THREE.MathUtils.radToDeg(euler.x), THREE.MathUtils.radToDeg(euler.y), THREE.MathUtils.radToDeg(euler.z)],
           scale: [bone.scale.x, bone.scale.y, bone.scale.z],
@@ -1618,8 +1646,11 @@ export default function SculptViewer({
         ? (part === "ikPole" ? ikEntry?.ikPoleBones?.get(chainId) : ikEntry?.ikTargetBones?.get(chainId))
         : undefined;
       if (ikBone) {
+        const chain = chainId ? ikEntry?.poseAnimation?.ikChains.find((c) => c.id === chainId) : undefined;
+        const chainName = chain?.name ?? "IK Chain";
         cb({
           kind: part,
+          name: `${chainName} — ${part === "ikPole" ? "Pole" : "Target"}`,
           position: [ikBone.position.x, ikBone.position.y, ikBone.position.z],
           rotationDeg: [0, 0, 0],
           scale: [1, 1, 1],
@@ -2004,6 +2035,16 @@ export default function SculptViewer({
     // for the raycaster hit-test below, which only gets the THREE.Object3D
     // back, not this map's key.
     const controlRingMeshes = new Map<string, THREE.Mesh>();
+    // A separate, fatter, fully invisible torus per control, used ONLY
+    // for raycasting — the visible ring is deliberately hairline-thin
+    // (cosmetic request), which makes it a genuinely tiny target for
+    // exact mesh-geometry raycasting on its own. Standard DCC-gizmo
+    // pattern: thin visual line over a fat invisible hit-proxy.
+    // opacity:0 still raycasts fine — three.js only checks `.visible`,
+    // not material opacity.
+    const controlRingHitGeometry = new THREE.TorusGeometry(0.25, 0.03, 8, 24);
+    const controlRingHitMaterial = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
+    const controlRingHitMeshes = new Map<string, THREE.Mesh>();
 
     // IK target gizmo — translate-only (a target position is all
     // CCDIKSolver/solveTwoBoneIK read), attaches to a chain's synthetic
@@ -2418,11 +2459,19 @@ export default function SculptViewer({
             group.add(mesh);
             controlRingMeshes.set(curve.id, mesh);
           }
-          mesh.userData.entry = entry;
-          mesh.userData.attachment = curve.attachment;
+          let hitMesh = controlRingHitMeshes.get(curve.id);
+          if (!hitMesh) {
+            hitMesh = new THREE.Mesh(controlRingHitGeometry, controlRingHitMaterial);
+            group.add(hitMesh);
+            controlRingHitMeshes.set(curve.id, hitMesh);
+          }
+          hitMesh.userData.entry = entry;
+          hitMesh.userData.attachment = curve.attachment;
           const { position, quaternion } = controlRingTransform(entry, curve.attachment, obj);
           mesh.position.copy(position);
           mesh.quaternion.copy(quaternion);
+          hitMesh.position.copy(position);
+          hitMesh.quaternion.copy(quaternion);
           const isSelected = curve.attachment.kind === "bone"
             ? selectedBoneRef.current?.uuid === curve.attachment.boneUuid
             : selectedIKChainIdRef.current === curve.attachment.chainId && selectedIKPartRef.current === curve.attachment.kind;
@@ -2433,6 +2482,11 @@ export default function SculptViewer({
         if (seen.has(id)) continue;
         group.remove(mesh);
         controlRingMeshes.delete(id);
+      }
+      for (const [id, hitMesh] of controlRingHitMeshes) {
+        if (seen.has(id)) continue;
+        group.remove(hitMesh);
+        controlRingHitMeshes.delete(id);
       }
       const inPoseMode = editModeRef.current === "pose";
       group.visible = inPoseMode && boneViewerModeRef.current !== "off" && controlRingMeshes.size > 0;
@@ -2457,7 +2511,7 @@ export default function SculptViewer({
     // selectBone/selectIKChain a Quick Select button already calls.
     function getControlRingHitFromEvent(e: PointerEvent): { entry: SculptMeshEntry; attachment: ControlAttachment } | null {
       const group = controlRingsRef.current;
-      if (!group || !group.visible || controlRingMeshes.size === 0) return null;
+      if (!group || !group.visible || controlRingHitMeshes.size === 0) return null;
       const rect = renderer.domElement.getBoundingClientRect();
       const ndc = new THREE.Vector2(
         ((e.clientX - rect.left) / rect.width) * 2 - 1,
@@ -2465,7 +2519,7 @@ export default function SculptViewer({
       );
       const ringRaycaster = new THREE.Raycaster();
       ringRaycaster.setFromCamera(ndc, camera);
-      const hits = ringRaycaster.intersectObjects(Array.from(controlRingMeshes.values()), false);
+      const hits = ringRaycaster.intersectObjects(Array.from(controlRingHitMeshes.values()), false);
       if (hits.length === 0) return null;
       const { entry, attachment } = hits[0].object.userData as { entry: SculptMeshEntry; attachment: ControlAttachment };
       return { entry, attachment };
@@ -2581,6 +2635,7 @@ export default function SculptViewer({
       const w = mount.clientWidth || 1;
       const h = mount.clientHeight || 1;
       renderer.setSize(w, h);
+      cssRenderer.setSize(w, h);
       const aspect = w / h;
       camera.aspect = aspect;
       camera.updateProjectionMatrix();
@@ -2632,13 +2687,34 @@ export default function SculptViewer({
 
     let raf = 0;
     let lastTime = performance.now();
-    // Only fires onSelectedAnchorChange when the projected position
-    // actually moves — every-frame identical {x,y} objects would
-    // otherwise re-render the whole parent UI 60x/sec even while the
-    // camera and selection are both sitting still.
-    const anchorWp = new THREE.Vector3();
-    let lastAnchorX: number | null = null;
-    let lastAnchorY: number | null = null;
+    // Channel Box world-space follow — a real object position/orientation
+    // (not a screen-space pixel projection), offset from whatever's
+    // selected along the CAMERA's own right/up vectors so it reads
+    // sensibly from any viewing angle, damped toward that target each
+    // frame (not snapped) so it reads as a floating object with presence
+    // rather than a label glued to a point, and scaled in/out on
+    // appearance rather than popping instantly.
+    const channelBoxTargetPos = new THREE.Vector3();
+    const channelBoxCurrentPos = new THREE.Vector3();
+    const channelBoxCurrentQuat = new THREE.Quaternion();
+    const camRight = new THREE.Vector3();
+    const camUp = new THREE.Vector3();
+    const camForward = new THREE.Vector3();
+    let channelBoxCurrentScale = 0;
+    let channelBoxInitialized = false;
+    // Identity of what's currently shown (bone uuid, or chain+part for
+    // IK) — separate from its position, so a switch to a DIFFERENT
+    // selection can be told apart from the SAME selection just moving.
+    // Switching collapses first (see channelBoxCollapsing below) instead
+    // of gliding the panel in a straight line between two unrelated
+    // world positions.
+    let channelBoxKey: string | null = null;
+    let channelBoxCollapsing = false;
+    const CHANNEL_BOX_OFFSET_RIGHT = 0.6;
+    const CHANNEL_BOX_OFFSET_UP = 0.35;
+    const CHANNEL_BOX_BASE_SCALE = 0.0025; // CSS px -> world units, tune to taste
+    const CHANNEL_BOX_FOLLOW_SPEED = 6; // higher = snappier, lower = more lag/"weight"
+    const CHANNEL_BOX_SCALE_SPEED = 10;
     const tick = () => {
       const now = performance.now();
       // Clamp so a backgrounded tab (or a debugger pause) resuming doesn't
@@ -2658,34 +2734,69 @@ export default function SculptViewer({
       if (bonesDirty) updateBoneHandlesRef.current();
       controls.update();
 
-      const anchorCb = onSelectedAnchorChangeRef.current;
-      if (anchorCb) {
-        const bone = selectedBoneRef.current;
-        const chainId = selectedIKChainIdRef.current;
-        const ikEntry = selectedIKEntryRef.current;
-        const ikBone = chainId
-          ? (selectedIKPartRef.current === "ikPole" ? ikEntry?.ikPoleBones?.get(chainId) : ikEntry?.ikTargetBones?.get(chainId))
-          : undefined;
-        const anchorObj = bone ?? ikBone;
-        if (anchorObj) {
-          anchorObj.getWorldPosition(anchorWp);
-          anchorWp.project(cameraRef.current!);
-          const rect = renderer.domElement.getBoundingClientRect();
-          const ax = (anchorWp.x * 0.5 + 0.5) * rect.width;
-          const ay = (-anchorWp.y * 0.5 + 0.5) * rect.height;
-          if (ax !== lastAnchorX || ay !== lastAnchorY) {
-            lastAnchorX = ax;
-            lastAnchorY = ay;
-            anchorCb({ x: ax, y: ay });
-          }
-        } else if (lastAnchorX !== null || lastAnchorY !== null) {
-          lastAnchorX = null;
-          lastAnchorY = null;
-          anchorCb(null);
+      const cam = cameraRef.current!;
+      const bone = selectedBoneRef.current;
+      const chainId = selectedIKChainIdRef.current;
+      const ikEntry = selectedIKEntryRef.current;
+      const ikBone = chainId
+        ? (selectedIKPartRef.current === "ikPole" ? ikEntry?.ikPoleBones?.get(chainId) : ikEntry?.ikTargetBones?.get(chainId))
+        : undefined;
+      const anchorObj = editModeRef.current === "pose" ? (bone ?? ikBone) : undefined;
+      const anchorKey = anchorObj ? (bone ? `bone:${bone.uuid}` : `ik:${chainId}:${selectedIKPartRef.current}`) : null;
+      const followT = 1 - Math.exp(-CHANNEL_BOX_FOLLOW_SPEED * delta);
+      const scaleT = 1 - Math.exp(-CHANNEL_BOX_SCALE_SPEED * delta);
+
+      // A switch to a DIFFERENT selection (not a fresh appear from
+      // nothing, not the same one moving) collapses first rather than
+      // gliding across the scene.
+      if (!channelBoxCollapsing && channelBoxKey !== null && anchorKey !== null && anchorKey !== channelBoxKey) {
+        channelBoxCollapsing = true;
+      }
+
+      if (channelBoxCollapsing) {
+        channelBoxCurrentScale += (0 - channelBoxCurrentScale) * scaleT;
+        if (channelBoxCurrentScale < 0.02) {
+          channelBoxCollapsing = false;
+          channelBoxCurrentScale = 0;
+          channelBoxInitialized = false; // forces a snap (no glide) to the new target next frame
+          channelBoxKey = null; // next frame reads as a fresh appear at the new selection
+          channelBoxObject.visible = false;
+        } else {
+          channelBoxObject.visible = true;
+          channelBoxObject.scale.setScalar(CHANNEL_BOX_BASE_SCALE * channelBoxCurrentScale);
+        }
+      } else if (anchorObj) {
+        anchorObj.getWorldPosition(channelBoxTargetPos);
+        cam.matrixWorld.extractBasis(camRight, camUp, camForward);
+        channelBoxTargetPos.addScaledVector(camRight, CHANNEL_BOX_OFFSET_RIGHT).addScaledVector(camUp, CHANNEL_BOX_OFFSET_UP);
+        if (!channelBoxInitialized) {
+          channelBoxCurrentPos.copy(channelBoxTargetPos);
+          channelBoxCurrentQuat.copy(cam.quaternion);
+          channelBoxInitialized = true;
+        } else {
+          channelBoxCurrentPos.lerp(channelBoxTargetPos, followT);
+          channelBoxCurrentQuat.slerp(cam.quaternion, followT);
+        }
+        channelBoxKey = anchorKey;
+        channelBoxCurrentScale += (1 - channelBoxCurrentScale) * scaleT;
+        channelBoxObject.visible = true;
+        channelBoxObject.position.copy(channelBoxCurrentPos);
+        channelBoxObject.quaternion.copy(channelBoxCurrentQuat);
+        channelBoxObject.scale.setScalar(CHANNEL_BOX_BASE_SCALE * channelBoxCurrentScale);
+      } else {
+        channelBoxInitialized = false;
+        channelBoxKey = null;
+        channelBoxCurrentScale += (0 - channelBoxCurrentScale) * scaleT;
+        if (channelBoxCurrentScale < 0.01) {
+          channelBoxObject.visible = false;
+          channelBoxCurrentScale = 0;
+        } else {
+          channelBoxObject.scale.setScalar(CHANNEL_BOX_BASE_SCALE * channelBoxCurrentScale);
         }
       }
 
-      renderer.render(scene, cameraRef.current!);
+      renderer.render(scene, cam);
+      cssRenderer.render(cssScene, cam);
       raf = requestAnimationFrame(tick);
     };
     tick();
@@ -2707,6 +2818,8 @@ export default function SculptViewer({
       ktx2LoaderRef.current = null;
       renderer.dispose();
       if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement);
+      onChannelBoxHostReadyRef.current?.(null);
+      if (cssRenderer.domElement.parentNode === mount) mount.removeChild(cssRenderer.domElement);
     };
   }, []);
 
@@ -2850,10 +2963,12 @@ export default function SculptViewer({
           // naming — a skeleton matching neither known convention just
           // gets none of these, no crash, manual posing is unaffected.
           const boneNames = skinned.skeleton.bones.map((b) => b.name);
-          const { ikChains, hipBoneName } = detectBipedControls(boneNames);
+          const { ikChains, hipBoneName, headBoneName, neckBoneName } = detectBipedControls(boneNames);
           const poseAnimation = createPoseAnimationState();
           poseAnimation.ikChains = ikChains;
           poseAnimation.hipBoneName = hipBoneName;
+          poseAnimation.headBoneName = headBoneName;
+          poseAnimation.neckBoneName = neckBoneName;
           // A timeline with a real range exists the moment a rigged
           // character loads — matching Maya/Blender, where "create a
           // clip" isn't a step the user has to think about before the
@@ -2996,7 +3111,17 @@ export default function SculptViewer({
           const { ikChains, hipBoneName } = skeletonEntry.poseAnimation;
           const hipBone = hipBoneName ? pushedEntry.skeleton?.bones.find((b) => b.name === hipBoneName) : undefined;
           if (hipBone) addControlRef.current(pushedEntry, { kind: "bone", boneUuid: hipBone.uuid });
-          for (const chain of ikChains) addControlRef.current(pushedEntry, { kind: "ikTarget", chainId: chain.id });
+          for (const chain of ikChains) {
+            addControlRef.current(pushedEntry, { kind: "ikTarget", chainId: chain.id });
+            // The FK effector bone (foot/wrist) itself — separate ring
+            // from the IK target, right next to it: the target controls
+            // POSITION (where IK reaches for), this one rotates the
+            // bone's own local orientation (ankle flex, wrist twist)
+            // independent of where IK has placed it. Auto-added so
+            // rotating it doesn't require a manual "+ Ring" first.
+            const effectorBone = pushedEntry.skeleton?.bones.find((b) => b.name === chain.effectorBone);
+            if (effectorBone) addControlRef.current(pushedEntry, { kind: "bone", boneUuid: effectorBone.uuid });
+          }
         }
 
         // Wireframe overlay — excluded from GLB export, hidden by default
@@ -4857,6 +4982,20 @@ export default function SculptViewer({
     return entry.skeleton.bones.find((b) => b.name === hipName)?.uuid ?? null;
   }, []);
 
+  const getHeadBoneId = useCallback((entryId: string): string | null => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    const headName = entry?.poseAnimation?.headBoneName;
+    if (!entry?.skeleton || !headName) return null;
+    return entry.skeleton.bones.find((b) => b.name === headName)?.uuid ?? null;
+  }, []);
+
+  const getNeckBoneId = useCallback((entryId: string): string | null => {
+    const entry = meshEntriesRef.current.find((e) => e.id === entryId);
+    const neckName = entry?.poseAnimation?.neckBoneName;
+    if (!entry?.skeleton || !neckName) return null;
+    return entry.skeleton.bones.find((b) => b.name === neckName)?.uuid ?? null;
+  }, []);
+
   const selectIKChain = useCallback((entryId: string, chainId: string | null) => {
     const entry = meshEntriesRef.current.find((e) => e.id === entryId);
     if (entry) selectIKChainRef.current(entry, chainId);
@@ -5272,10 +5411,10 @@ export default function SculptViewer({
         bindSkin, unbindSkin, getRigBindInfo, setSelectedTransformFields,
         getClips, getActiveClipId, setActiveClip, createAnimationClip, renameAnimationClip,
         duplicateAnimationClip, deleteAnimationClip, insertKeyframe, removeKeyframe,
-        setPoseTime, setPosePlaying, getKeyframeTimes, setClipLength, getIKChains, getHipBoneId, selectIKChain,
+        setPoseTime, setPosePlaying, getKeyframeTimes, setClipLength, getIKChains, getHipBoneId, getHeadBoneId, getNeckBoneId, selectIKChain,
       };
     }
-  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance, extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb, getBones, selectBoneById, resetPose, resetBone, recenterView, toggleProjection, conformToReference, getJoints, selectJointById, renameJoint, deleteJoint, reparentJoint, getControls, addControlToBone, addControlToIKChain, removeControl, bindSkin, unbindSkin, getRigBindInfo, setSelectedTransformFields, getClips, getActiveClipId, setActiveClip, createAnimationClip, renameAnimationClip, duplicateAnimationClip, deleteAnimationClip, insertKeyframe, removeKeyframe, setPoseTime, setPosePlaying, getKeyframeTimes, setClipLength, getIKChains, getHipBoneId, selectIKChain]);
+  }, [handleRef, exportGlb, exportAtLevel, undo, redo, subdivide, subdivideDown, subdivLevel, loadPrimitive, remesh, loadGeometry, clearScene, extrudeSelection, getLoopPreview, getRecommendedExtrudeDistance, extractMask, detachMask, clearMask, getMeshEntries, setEntryVisible, deleteEntry, exportEntryGlb, getBones, selectBoneById, resetPose, resetBone, recenterView, toggleProjection, conformToReference, getJoints, selectJointById, renameJoint, deleteJoint, reparentJoint, getControls, addControlToBone, addControlToIKChain, removeControl, bindSkin, unbindSkin, getRigBindInfo, setSelectedTransformFields, getClips, getActiveClipId, setActiveClip, createAnimationClip, renameAnimationClip, duplicateAnimationClip, deleteAnimationClip, insertKeyframe, removeKeyframe, setPoseTime, setPosePlaying, getKeyframeTimes, setClipLength, getIKChains, getHipBoneId, getHeadBoneId, getNeckBoneId, selectIKChain]);
 
   return <div ref={mountRef} className="w-full h-full" style={{ touchAction: "none", position: "relative" }} />;
 }

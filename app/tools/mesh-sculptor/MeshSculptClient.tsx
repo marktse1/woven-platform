@@ -1,6 +1,7 @@
 "use client";
 
 import { Component, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import Image from "next/image";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -139,13 +140,6 @@ const PRIMITIVES: { type: PrimitiveType; label: string; icon: string }[] = [
 ];
 
 const PURPLE = "#c47be8";
-// Channel Box panel size, used to keep it clamped inside the canvas when
-// anchored near a selection close to an edge — matches its own w-60
-// className; height is an estimate (actual height varies with bone vs.
-// IK-target row count), close enough for a soft clamp.
-const CHANNEL_BOX_WIDTH = 240;
-const CHANNEL_BOX_HEIGHT_ESTIMATE = 170;
-
 /** Picks a "nice" (1/2/5 × power of 10) frame interval for the
  * timeline ruler's major tick marks, aiming for roughly `targetTicks`
  * of them across whatever range is currently visible — keeps the ruler
@@ -251,11 +245,12 @@ export default function MeshSculptClient() {
   const [controlMsg, setControlMsg] = useState("");
   // Real Channel Box for whatever's currently selected — local Position/
   // Rotation/Scale, editable, multi-select-then-batch-type like Maya's own.
-  const [selectedTransform, setSelectedTransform] = useState<{ kind: "bone" | "ikTarget" | "ikPole"; position: [number, number, number]; rotationDeg: [number, number, number]; scale: [number, number, number] } | null>(null);
-  // Live screen-space position of whatever's selected (bone/IK target/
-  // pole), updated every frame including through camera orbit — lets the
-  // Channel Box float near the selection instead of a fixed corner.
-  const [selectedAnchor, setSelectedAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [selectedTransform, setSelectedTransform] = useState<{ kind: "bone" | "ikTarget" | "ikPole"; name: string; position: [number, number, number]; rotationDeg: [number, number, number]; scale: [number, number, number] } | null>(null);
+  // The Channel Box's real DOM host — a plain <div> SculptViewer creates
+  // and wraps in a CSS3DObject, positioned as a genuine object in 3D
+  // world-space (not a screen-projected overlay). Portal the panel's JSX
+  // into it once available instead of rendering it in this tree.
+  const [channelBoxHost, setChannelBoxHost] = useState<HTMLDivElement | null>(null);
   const [channelSelection, setChannelSelection] = useState<Set<TransformField>>(new Set());
   const [selectedBoneId, setSelectedBoneId] = useState<string | null>(null);
   // "ik" controls select via SculptViewerHandle.selectIKChain (id =
@@ -312,7 +307,6 @@ export default function MeshSculptClient() {
   const viewerHandleRef = useRef<SculptViewerHandle | null>(null);
   const navigatorBarRef = useRef<HTMLDivElement | null>(null);
   const rulerRef = useRef<HTMLDivElement | null>(null);
-  const canvasWrapperRef = useRef<HTMLDivElement | null>(null);
 
   // Mesh Sculptor no longer keeps its own "browse my assets" list — the
   // global My Assets panel (app/layout.tsx) is the universal loader now.
@@ -625,6 +619,10 @@ export default function MeshSculptClient() {
     for (const entry of entries) {
       const hipBoneId = handle?.getHipBoneId(entry.id);
       if (hipBoneId) all.push({ entryId: entry.id, kind: "bone", id: hipBoneId, label: "Hip" });
+      const neckBoneId = handle?.getNeckBoneId(entry.id);
+      if (neckBoneId) all.push({ entryId: entry.id, kind: "bone", id: neckBoneId, label: "Neck" });
+      const headBoneId = handle?.getHeadBoneId(entry.id);
+      if (headBoneId) all.push({ entryId: entry.id, kind: "bone", id: headBoneId, label: "Head" });
       for (const chain of handle?.getIKChains(entry.id) ?? []) {
         // id is the CHAIN id here (for selectIKChain), not the
         // effector bone — deliberately different from the "bone" entries.
@@ -708,7 +706,7 @@ export default function MeshSculptClient() {
     refreshControls();
   }, [refreshSubmeshes, refreshBones, refreshDetectedControls, refreshJoints, refreshControls]);
 
-  const handleSelectedTransformChange = useCallback((info: { kind: "bone" | "ikTarget" | "ikPole"; position: [number, number, number]; rotationDeg: [number, number, number]; scale: [number, number, number] } | null) => {
+  const handleSelectedTransformChange = useCallback((info: { kind: "bone" | "ikTarget" | "ikPole"; name: string; position: [number, number, number]; rotationDeg: [number, number, number]; scale: [number, number, number] } | null) => {
     setSelectedTransform(info);
   }, []);
 
@@ -1400,7 +1398,14 @@ export default function MeshSculptClient() {
                                 title={c.kind === "bone"
                                   ? "Direct FK handle — drag to rotate/position this bone on its own, independent of any IK chain"
                                   : "IK target — drag the gizmo and the chain solves toward it"}
-                                style={{ background: active ? "rgba(196,123,232,.22)" : "#1e1a17", color: active ? PURPLE : "#8aa0b4", border: `1px solid ${active ? PURPLE : "#3a3530"}`, borderRight: hasControl ? "none" : undefined }}
+                                style={{
+                                  background: active ? "rgba(196,123,232,.22)" : "#1e1a17",
+                                  color: active ? PURPLE : "#8aa0b4",
+                                  borderTop: `1px solid ${active ? PURPLE : "#3a3530"}`,
+                                  borderBottom: `1px solid ${active ? PURPLE : "#3a3530"}`,
+                                  borderLeft: `1px solid ${active ? PURPLE : "#3a3530"}`,
+                                  borderRight: hasControl ? "none" : `1px solid ${active ? PURPLE : "#3a3530"}`,
+                                }}
                                 className="px-2 py-1 rounded-l text-[10.5px] font-medium transition-colors">
                                 {c.label}
                               </button>
@@ -1409,7 +1414,14 @@ export default function MeshSculptClient() {
                                 disabled={hasControl}
                                 title={hasControl ? "Already has a control ring" : "Add a control ring"}
                                 className={`px-1.5 text-[10px] transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${c.kind === "ik" ? "" : "rounded-r"}`}
-                                style={{ background: "#1e1a17", color: "#5ac8e8", border: "1px solid #3a3530", borderLeft: "none", borderRight: c.kind === "ik" ? "none" : undefined }}>
+                                style={{
+                                  background: "#1e1a17",
+                                  color: "#5ac8e8",
+                                  borderTop: "1px solid #3a3530",
+                                  borderBottom: "1px solid #3a3530",
+                                  borderLeft: "none",
+                                  borderRight: c.kind === "ik" ? "none" : "1px solid #3a3530",
+                                }}>
                                 {hasControl ? "○" : "+○"}
                               </button>
                               {c.kind === "ik" && (
@@ -1418,7 +1430,14 @@ export default function MeshSculptClient() {
                                   disabled={hasPoleControl}
                                   title={hasPoleControl ? "Already has a pole control ring" : "Add a pole control ring (bend-direction handle)"}
                                   className="px-1.5 rounded-r text-[10px] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                                  style={{ background: "#1e1a17", color: "#5ac8e8", border: "1px solid #3a3530", borderLeft: "none" }}>
+                                  style={{
+                                    background: "#1e1a17",
+                                    color: "#5ac8e8",
+                                    borderTop: "1px solid #3a3530",
+                                    borderBottom: "1px solid #3a3530",
+                                    borderLeft: "none",
+                                    borderRight: "1px solid #3a3530",
+                                  }}>
                                   {hasPoleControl ? "P" : "+P"}
                                 </button>
                               )}
@@ -2066,36 +2085,39 @@ export default function MeshSculptClient() {
 
         {/* Canvas */}
         <div
-          ref={canvasWrapperRef}
           className="flex-1 relative"
           onDrop={handleDrop}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
         >
-          {/* Channel Box — floating/transparent over the viewport, same
-              look as World Builder's own panels (lib/world-builder/
-              editor.css's .panel rule), not embedded in the sidebar.
-              Positioned near the current selection (selectedAnchor, a
-              live screen-space projection from SculptViewer that tracks
-              camera orbit as well as posing) rather than a fixed corner
-              — falls back to the corner when nothing's selected yet.
+          {/* Channel Box — a real object positioned in 3D world-space
+              (a CSS3DObject SculptViewer creates/positions/orients every
+              frame, offset from the selection and following it with a
+              bit of damped lag rather than snapping — see its own
+              per-frame logic), NOT a 2D screen overlay. This JSX renders
+              via a React portal into that object's host div instead of
+              this component's own tree — proof of concept, never part
+              of the exported model (the CSS3D scene is entirely separate
+              from the one GLTFExporter walks).
               Click a field's axis label to select it, Shift-click to
               multi-select several; typing a value into any selected
               field and hitting Enter/blurring applies it to every
               selected field at once (Maya's own Channel Box gesture). */}
-          {editMode === "pose" && (
+          {editMode === "pose" && channelBoxHost && createPortal(
             <div
-              className="absolute z-30 w-60 p-3"
+              className="w-60 p-3"
+              // The CSS3D host div is a real DOM descendant of the SAME
+              // `mount` div SculptViewer's viewport click-to-select/
+              // deselect listeners are attached to — native pointer
+              // events bubble by DOM ancestry, not visual z-order, so a
+              // click here would otherwise reach those listeners too,
+              // get raycast against the 3D scene (missing everything,
+              // since this panel isn't part of it), and read as "clicked
+              // empty space" — deselecting and closing this panel.
+              onPointerDown={(e) => e.stopPropagation()}
+              onPointerUp={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
               style={{
-                ...(selectedAnchor
-                  ? (() => {
-                      const containerWidth = canvasWrapperRef.current?.clientWidth ?? Infinity;
-                      const containerHeight = canvasWrapperRef.current?.clientHeight ?? Infinity;
-                      const left = Math.max(8, Math.min(selectedAnchor.x + 24, containerWidth - CHANNEL_BOX_WIDTH - 8));
-                      const top = Math.max(8, Math.min(selectedAnchor.y - 24, containerHeight - CHANNEL_BOX_HEIGHT_ESTIMATE - 8));
-                      return { left, top };
-                    })()
-                  : { top: 16, right: 16 }),
                 background: "rgba(7,10,16,0.82)",
                 backdropFilter: "blur(8px)",
                 WebkitBackdropFilter: "blur(8px)",
@@ -2103,7 +2125,8 @@ export default function MeshSculptClient() {
                 borderRadius: "8px",
               }}
             >
-              <p className="text-[10px] uppercase tracking-wide mb-2" style={{ color: "#d3dbe8" }}>Channel Box</p>
+              <p className="text-[9px] uppercase tracking-wide" style={{ color: "#6a8098" }}>Channel Box</p>
+              <p className="text-[12px] font-semibold mb-2 truncate" style={{ color: "#d3dbe8" }}>{selectedTransform?.name ?? "Nothing selected"}</p>
               <ChannelBoxErrorBoundary>
               {(selectedBoneId || selectedIKChainId) && selectedTransform ? (
                 ([
@@ -2136,7 +2159,15 @@ export default function MeshSculptClient() {
                               onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
                               onBlur={(e) => handleCommitChannel(field, e.target.value)}
                               className="w-full text-[10.5px] px-1 py-1 text-center outline-none"
-                              style={{ background: "#1e1a17", color: "#e8e0d8", border: `1px solid ${isSelected ? PURPLE : "#3a3530"}`, borderTop: "none", borderRadius: "0 0 4px 4px" }}
+                              style={{
+                                background: "#1e1a17",
+                                color: "#e8e0d8",
+                                borderTop: "none",
+                                borderBottom: `1px solid ${isSelected ? PURPLE : "#3a3530"}`,
+                                borderLeft: `1px solid ${isSelected ? PURPLE : "#3a3530"}`,
+                                borderRight: `1px solid ${isSelected ? PURPLE : "#3a3530"}`,
+                                borderRadius: "0 0 4px 4px",
+                              }}
                             />
                           </div>
                         );
@@ -2148,7 +2179,8 @@ export default function MeshSculptClient() {
                 <p className="text-[10.5px]" style={{ color: "#6a8098" }}>Select a bone to edit its transform</p>
               )}
               </ChannelBoxErrorBoundary>
-            </div>
+            </div>,
+            channelBoxHost
           )}
           {/* Empty workspace — shows drop zone */}
           {!loadingAsset && vertexCount === null && (
@@ -2214,7 +2246,7 @@ export default function MeshSculptClient() {
             onJointSelect={handleJointSelectionChange}
             onJointShiftClick={(_entryId, jointId) => handleMarkPendingParent(jointId)}
             onSelectedTransformChange={handleSelectedTransformChange}
-            onSelectedAnchorChange={setSelectedAnchor}
+            onChannelBoxHostReady={setChannelBoxHost}
             onProjectionChange={setIsOrthographic}
             onPoseTimeChange={handlePoseTimeChange}
             paintColor={paintColor}

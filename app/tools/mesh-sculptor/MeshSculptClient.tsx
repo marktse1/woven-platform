@@ -2016,7 +2016,7 @@ export default function MeshSculptClient() {
               multi-select several; typing a value into any selected
               field and hitting Enter/blurring applies it to every
               selected field at once (Maya's own Channel Box gesture). */}
-          {editMode === "pose" && (selectedBoneId || selectedIKChainId) && selectedTransform && (
+          {editMode === "pose" && (
             <div
               className="absolute top-4 right-4 z-20 w-60 p-3"
               style={{
@@ -2028,44 +2028,48 @@ export default function MeshSculptClient() {
               }}
             >
               <p className="text-[10px] uppercase tracking-wide mb-2" style={{ color: "#d3dbe8" }}>Channel Box</p>
-              {([
-                { label: "Translate", digits: 3, fields: ["px", "py", "pz"] as TransformField[], values: selectedTransform.position },
-                ...(selectedTransform.kind === "bone" ? [
-                  { label: "Rotate", digits: 1, fields: ["rx", "ry", "rz"] as TransformField[], values: selectedTransform.rotationDeg },
-                  { label: "Scale", digits: 3, fields: ["sx", "sy", "sz"] as TransformField[], values: selectedTransform.scale },
-                ] : []),
-              ]).map((row) => (
-                <div key={row.label} className="mb-2 last:mb-0">
-                  <p className="text-[9.5px] uppercase tracking-wide mb-1" style={{ color: "#6a8098" }}>{row.label}</p>
-                  <div className="grid grid-cols-3 gap-1">
-                    {(["X", "Y", "Z"] as const).map((axisLabel, i) => {
-                      const field = row.fields[i];
-                      const isSelected = channelSelection.has(field);
-                      return (
-                        <div key={field}>
-                          <button
-                            onClick={(e) => handleChannelLabelClick(field, e.shiftKey)}
-                            title="Click to select · Shift-click to select multiple, then type one value to apply to all"
-                            className="w-full text-[9px] rounded-t px-1 py-0.5 text-left transition-colors"
-                            style={{ background: isSelected ? "rgba(196,123,232,.3)" : "rgba(255,255,255,0.06)", color: isSelected ? PURPLE : "#8aa0b4" }}>
-                            {axisLabel}
-                          </button>
-                          <input
-                            key={`${field}-${selectedBoneId ?? selectedIKChainId ?? ""}`}
-                            type="number"
-                            step="0.01"
-                            defaultValue={row.values[i].toFixed(row.digits)}
-                            onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-                            onBlur={(e) => handleCommitChannel(field, e.target.value)}
-                            className="w-full text-[10.5px] px-1 py-1 text-center outline-none"
-                            style={{ background: "#1e1a17", color: "#e8e0d8", border: `1px solid ${isSelected ? PURPLE : "#3a3530"}`, borderTop: "none", borderRadius: "0 0 4px 4px" }}
-                          />
-                        </div>
-                      );
-                    })}
+              {(selectedBoneId || selectedIKChainId) && selectedTransform ? (
+                ([
+                  { label: "Translate", digits: 3, fields: ["px", "py", "pz"] as TransformField[], values: selectedTransform.position },
+                  ...(selectedTransform.kind === "bone" ? [
+                    { label: "Rotate", digits: 1, fields: ["rx", "ry", "rz"] as TransformField[], values: selectedTransform.rotationDeg },
+                    { label: "Scale", digits: 3, fields: ["sx", "sy", "sz"] as TransformField[], values: selectedTransform.scale },
+                  ] : []),
+                ]).map((row) => (
+                  <div key={row.label} className="mb-2 last:mb-0">
+                    <p className="text-[9.5px] uppercase tracking-wide mb-1" style={{ color: "#6a8098" }}>{row.label}</p>
+                    <div className="grid grid-cols-3 gap-1">
+                      {(["X", "Y", "Z"] as const).map((axisLabel, i) => {
+                        const field = row.fields[i];
+                        const isSelected = channelSelection.has(field);
+                        return (
+                          <div key={field}>
+                            <button
+                              onClick={(e) => handleChannelLabelClick(field, e.shiftKey)}
+                              title="Click to select · Shift-click to select multiple, then type one value to apply to all"
+                              className="w-full text-[9px] rounded-t px-1 py-0.5 text-left transition-colors"
+                              style={{ background: isSelected ? "rgba(196,123,232,.3)" : "rgba(255,255,255,0.06)", color: isSelected ? PURPLE : "#8aa0b4" }}>
+                              {axisLabel}
+                            </button>
+                            <input
+                              key={`${field}-${selectedBoneId ?? selectedIKChainId ?? ""}`}
+                              type="number"
+                              step="0.01"
+                              defaultValue={row.values[i].toFixed(row.digits)}
+                              onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                              onBlur={(e) => handleCommitChannel(field, e.target.value)}
+                              className="w-full text-[10.5px] px-1 py-1 text-center outline-none"
+                              style={{ background: "#1e1a17", color: "#e8e0d8", border: `1px solid ${isSelected ? PURPLE : "#3a3530"}`, borderTop: "none", borderRadius: "0 0 4px 4px" }}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))
+              ) : (
+                <p className="text-[10.5px]" style={{ color: "#6a8098" }}>Select a bone to edit its transform</p>
+              )}
             </div>
           )}
           {/* Empty workspace — shows drop zone */}

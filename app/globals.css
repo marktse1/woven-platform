@@ -25,6 +25,15 @@
 }
 
 body {
+  /* Tells the browser to render its own native form-control chrome
+     (range slider fill/track/thumb, checkboxes, and scrollbars) using its
+     dark palette instead of the default light one — combined with the
+     accent-color already set per-slider via Tailwind's accent-* utility,
+     this is the correct, spec-native way to theme native controls in a
+     dark app, with no custom pseudo-element overrides needed (those
+     fight the browser's own accent-color fill rendering instead of
+     cooperating with it). */
+  color-scheme: dark;
   background: linear-gradient(180deg, #0f151d 0, #0b0f14 360px, #0b0f14 100%);
   min-height: 100vh;
   color: #e7eef4;
@@ -71,25 +80,30 @@ body {
 .animate-spin-slow { animation: spin 0.7s linear infinite; }
 .animate-pulse-green { animation: pulse-green 1.6s infinite; }
 
-/* Every native <input type="range"> site-wide relies on Tailwind's
-   accent-* utility for thumb/fill color, which themes the filled portion
-   correctly but leaves the unfilled track at the browser's light default
-   — this darkens just the track so it matches the app, without touching
-   the accent-color-driven fill/thumb. */
-input[type="range"] {
-  height: 16px;
+/* Native scrollbar theming, site-wide — same palette already used as
+   precedent in app/library/page.tsx's own inline scrollbar styling, just
+   applied once instead of per-page. color-scheme: dark (above) already
+   nudges scrollbars dark on its own; this pins the exact thumb/track
+   colors to the app's own palette instead of a generic OS dark gray. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line2) transparent;
 }
 
-input[type="range"]::-webkit-slider-runnable-track {
-  height: 4px;
-  border-radius: 2px;
-  background: var(--color-panel);
-  border: 1px solid var(--color-line);
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
 }
 
-input[type="range"]::-moz-range-track {
-  height: 4px;
-  border-radius: 2px;
-  background: var(--color-panel);
-  border: 1px solid var(--color-line);
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-line2);
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-dim);
 }

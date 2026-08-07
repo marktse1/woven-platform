@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Component, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import Image from "next/image";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -151,6 +151,27 @@ function niceTickInterval(span: number, targetTicks = 10): number {
   const norm = rough / mag;
   const mult = norm < 1.5 ? 1 : norm < 3.5 ? 2 : norm < 7.5 ? 5 : 10;
   return Math.max(1, Math.round(mult * mag));
+}
+
+/** Scoped tightly to the Channel Box panel — if a render error there is
+ * getting swallowed invisibly (the panel vanishing with no trace, rather
+ * than the surrounding UI breaking), this surfaces it as visible text in
+ * the same spot instead. Error boundaries must be class components. */
+class ChannelBoxErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state: { error: Error | null } = { error: null };
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <p className="text-[10.5px]" style={{ color: "#e05a4e" }}>
+          Channel Box error: {this.state.error.message}
+        </p>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 export default function MeshSculptClient() {
@@ -2028,6 +2049,7 @@ export default function MeshSculptClient() {
               }}
             >
               <p className="text-[10px] uppercase tracking-wide mb-2" style={{ color: "#d3dbe8" }}>Channel Box</p>
+              <ChannelBoxErrorBoundary>
               {(selectedBoneId || selectedIKChainId) && selectedTransform ? (
                 ([
                   { label: "Translate", digits: 3, fields: ["px", "py", "pz"] as TransformField[], values: selectedTransform.position },
@@ -2070,6 +2092,7 @@ export default function MeshSculptClient() {
               ) : (
                 <p className="text-[10.5px]" style={{ color: "#6a8098" }}>Select a bone to edit its transform</p>
               )}
+              </ChannelBoxErrorBoundary>
             </div>
           )}
           {/* Empty workspace — shows drop zone */}

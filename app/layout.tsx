@@ -11,8 +11,8 @@ import { getSiteUrl } from "@/lib/siteUrl";
 
 const inter = Inter({ subsets: ["latin"], weight: ["400", "500", "600", "700", "800"] });
 
-const siteTitle = "Woven — Web Games Platform";
-const siteDescription = "Browse and play browser-native games. Publish your worlds.";
+const siteTitle = "Woven — Real Web Games, Made by Artists";
+const siteDescription = "A home for pushing the limits of web gaming, built for artists — not another shot of kings or noble kingdom out to drain your wallet. Play instantly in your browser, or publish your own.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(getSiteUrl()),

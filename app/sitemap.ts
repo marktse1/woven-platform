@@ -9,6 +9,11 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     { url: `${siteUrl}/community`, changeFrequency: "daily", priority: 0.6 },
     { url: `${siteUrl}/creator`, changeFrequency: "monthly", priority: 0.5 },
     { url: `${siteUrl}/marketplace`, changeFrequency: "weekly", priority: 0.5 },
+    { url: `${siteUrl}/tools/mesh-sculptor`, changeFrequency: "monthly", priority: 0.5 },
+    { url: `${siteUrl}/tools/world-builder`, changeFrequency: "monthly", priority: 0.5 },
+    { url: `${siteUrl}/tools/substance-weaver`, changeFrequency: "monthly", priority: 0.5 },
+    { url: `${siteUrl}/tools/retopology`, changeFrequency: "monthly", priority: 0.5 },
+    { url: `${siteUrl}/tools/shaderade`, changeFrequency: "monthly", priority: 0.5 },
   ];
 
   const admin = getSupabaseAdmin();
